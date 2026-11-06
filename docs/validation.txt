@@ -2,3 +2,7 @@ Integración completa: 110 passed, 1 skipped in 9.74s.
 Prueba omitida: acceso real a Dukascopy.
 HTTP y Telegram simulados; PPO/GARCH/holdout probados con históricos sintéticos.
 Los tests no acreditan rentabilidad ni envío real a Telegram.
+
+Protección adicional de contexto GARCH: 12 pruebas Telegram aprobadas en 7.20s.
+Primera ejecución de pruebas de GitHub Actions: success, run 42251506698.
+NumPy limitado a <2.4: evita deprecaciones de timedelta observadas con pandas 2.x en el primer runner.

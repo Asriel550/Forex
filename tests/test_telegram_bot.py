@@ -114,3 +114,14 @@ def test_uncertain_delivery_remains_pending_and_does_not_repeat(bundle,tmp_path,
     assert json.loads((tmp_path/'state.json').read_text())['status']=='pending'
     with pytest.raises(tb.SignalSkipped):tb.run_signal(**kwargs)
     assert sender.call_count==1
+
+
+
+def test_truncated_warmup_cannot_silently_shorten_refit_window():
+    raw=history(900)
+    config=QuantConfig(window=1000,min_observations=128,refit_every=96)
+    baseline=enrich_features(raw.iloc[:700],config).dropna(subset=['cond_volatility']).reset_index(drop=True)
+    # source_rows conserva el origen real; la ventana requerida en 704 tiene
+    # más retornos de los que quedaron después de quitar el warmup.
+    with pytest.raises(tb.AlertError,match='Contexto histórico insuficiente'):
+        tb.extend_quant_history(baseline,raw.iloc[699:])

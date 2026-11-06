@@ -128,7 +128,7 @@ def extend_quant_history(baseline, recent):
         current_return = (np.log(closes[i])-np.log(closes[i-1]))*SCALE
         if (global_row-config.min_observations)%config.refit_every == 0:
             sample = np.diff(np.log(closes[sample_start:i+1]))*SCALE
-            if len(sample)<config.min_observations:
+            if len(sample)<config.min_observations or len(sample)!=min(config.window,global_row):
                 raise AlertError('Contexto histórico insuficiente para reestimar GARCH')
             omega,alpha,beta,h_t = _fit_garch(sample,config.max_iterations)
             fits.append(dict(row=global_row,first_return=global_row-len(sample),

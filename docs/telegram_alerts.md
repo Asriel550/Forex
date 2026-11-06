@@ -136,3 +136,12 @@ Las pruebas simulan HTTP y Telegram: no envían mensajes reales. Incluyen
 pequeñas, igualdad GARCH incremental/completo, última observación, caducidad,
 formato, redacción de secretos y deduplicación/outbox. No se probaron secretos
 reales ni se ejecutó el workflow remoto en esta sesión.
+
+
+## Contexto mínimo para continuar GARCH
+
+En una reestimación se exige exactamente min(window, fila_global) retornos,
+además del mínimo de observaciones. Un bundle corto que haya eliminado su
+warmup y ya no conserve esa ventana se rechaza: no se ajusta silenciosamente
+un modelo con menos historia que el utilizado en la referencia completa.
+Los bundles multianuales del pipeline conservan suficiente contexto.
