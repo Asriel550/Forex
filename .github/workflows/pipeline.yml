@@ -1,0 +1,214 @@
+name: Forex M15 research and Telegram
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'train publica un nuevo bundle; alerts usa el último exitoso'
+        type: choice
+        options: [alerts, train]
+        default: alerts
+  schedule:
+    - cron: '15 6 * * 1'
+    - cron: '1,16,31,46 * * * *'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: '42'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  MPLBACKEND: Agg
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+jobs:
+  unit-tests:
+    if: >-
+      github.event_name == 'push' || github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'train') ||
+      (github.event_name == 'schedule' && github.event.schedule == '15 6 * * 1')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+      - run: python -m pytest -q --junitxml=test-results.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results.xml
+          retention-days: 14
+
+  research-pipeline:
+    needs: unit-tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    concurrency:
+      group: forex-research-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+      - id: historical-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            data/chunks
+            data/eurusd_m15.parquet
+          key: dukascopy-daily-v3-${{ hashFiles('src/data_loader.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            dukascopy-daily-v3-${{ hashFiles('src/data_loader.py') }}-
+      - name: Ingest five years with paced daily blocks
+        timeout-minutes: 120
+        run: |
+          if [ -f config/closures.json ]; then
+            python -m src.data_loader --years 5 --closures config/closures.json
+          else
+            python -m src.data_loader --years 5
+          fi
+      - name: Causal quant features and continuation state
+        timeout-minutes: 45
+        run: python -m src.quant_engine --drop-warmup --seed 42
+      - name: Train with untouched holdout
+        timeout-minutes: 120
+        run: python -m src.train --total-timesteps 100000 --seed 42
+      - name: Holdout backtest
+        timeout-minutes: 30
+        run: python -m src.backtest
+      - name: Publish alert inference bundle only after successful research
+        uses: actions/upload-artifact@v7
+        with:
+          name: forex-alert-bundle
+          path: |
+            models/best_ppo_agent.zip
+            models/normalizer.json
+            models/training_manifest.json
+            data/eurusd_m15_features.parquet
+          if-no-files-found: error
+          retention-days: 30
+      - name: Save completed and partial historical checkpoints
+        if: always() && steps.historical-cache.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            data/chunks
+            data/eurusd_m15.parquet
+          key: ${{ steps.historical-cache.outputs.cache-primary-key }}
+      - name: Upload research reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: forex-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/*.json
+            reports/*.csv
+            reports/*.png
+            models/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  telegram-alert:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '1,16,31,46 * * * *') ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'alerts' && github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: forex-alert-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install inference dependencies
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-alerts.txt
+      - name: Find latest successful research bundle on default branch
+        id: bundle
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const branch = context.payload.repository.default_branch;
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo,
+              {owner, repo, name:'forex-alert-bundle', per_page:100});
+            for (const artifact of artifacts.filter(a => !a.expired).sort((a,b)=>b.id-a.id)) {
+              if (!artifact.workflow_run || artifact.workflow_run.head_branch !== branch) continue;
+              const {data:run} = await github.rest.actions.getWorkflowRun(
+                {owner, repo, run_id:artifact.workflow_run.id});
+              if (run.conclusion !== 'success' || run.event === 'pull_request' ||
+                  run.head_repository?.full_name !== `${owner}/${repo}` ||
+                  run.path.split('@')[0] !== '.github/workflows/pipeline.yml') continue;
+              core.setOutput('artifact_id',artifact.id);
+              core.setOutput('run_id',run.id);
+              return;
+            }
+            core.setFailed('No hay bundle válido: ejecutar primero workflow_dispatch con mode=train.');
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.bundle.outputs.artifact_id }}
+          run-id: ${{ steps.bundle.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: .
+          merge-multiple: true
+      - name: Restore alert state and live data cache
+        id: live-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            data/live_m15.parquet
+            data/chunks
+            data/telegram_state.json
+          key: telegram-live-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: telegram-live-v1-
+      - name: Infer closed candle and send Telegram alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -f config/closures.json ]; then
+            python -m src.telegram_bot --closures config/closures.json
+          else
+            python -m src.telegram_bot
+          fi
+      - name: Persist sent or uncertain delivery state
+        if: always() && steps.live-cache.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            data/live_m15.parquet
+            data/chunks
+            data/telegram_state.json
+          key: ${{ steps.live-cache.outputs.cache-primary-key }}

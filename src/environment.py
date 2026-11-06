@@ -1,0 +1,260 @@
+"""Opciones binarias M15, expiración de una vela y liquidación sin solapamiento.
+
+La observación t utiliza exclusivamente velas hasta t, incluidas sus OHLC.
+Entrada hipotética al close[t], liquidación al close[t+1], 15 minutos después.
+El timestamp de la fuente es APERTURA: la decisión ocurre timestamp[t]+15min.
+No modela latencia, cotización contractual del broker ni ejecución real.
+Payout es beneficio neto sobre stake: acertar devuelve stake + payout*stake.
+No se añaden spread/comisiones Forex a un contrato cuyo payout ya está fijado.
+Los empates devuelven stake por defecto; se puede configurar empate=derrota.
+
+Los huecos separan episodios: jamás se abre un contrato de 15 minutos que
+expire el lunes a partir del viernes. El último close de cada segmento solo
+sirve para liquidar. Un evaluador puede transportar saldo/pico entre segmentos.
+Las features cuantitativas de entrada deben haberse calculado causalmente:
+ningún entorno puede detectar por sí solo leakage oculto dentro de un Parquet.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+import pandas as pd
+
+STEP = pd.Timedelta(minutes=15)
+QUANT_FEATURES = ("cond_volatility", "dist_p95", "dist_p05")
+ACCOUNT_FEATURES = ("balance_return", "drawdown", "previous_direction",
+                    "previous_reward", "stake_to_balance", "payout")
+
+
+@dataclass(frozen=True)
+class AccountConfig:
+    initial_balance: float = 1_000.0
+    stake: float = 10.0
+    payout: float = 0.80
+    tie_policy: str = "refund"
+    inactivity_penalty: float = 0.0
+    max_drawdown: float = 1.0
+
+    def __post_init__(self):
+        values = (self.initial_balance, self.stake, self.payout,
+                  self.inactivity_penalty, self.max_drawdown)
+        if not np.isfinite(values).all():
+            raise ValueError("Parámetros de cuenta deben ser finitos")
+        if self.stake <= 0 or self.initial_balance < self.stake:
+            raise ValueError("Requiere initial_balance >= stake > 0")
+        if not 0 < self.payout <= 1 or not 0 < self.max_drawdown <= 1:
+            raise ValueError("payout y max_drawdown deben estar en (0, 1]")
+        if self.inactivity_penalty < 0 or self.tie_policy not in ("refund", "loss"):
+            raise ValueError("inactivity_penalty >= 0; tie_policy=refund/loss")
+
+
+def market_feature_names(lookback=16):
+    return ("rsi_scaled", "atr_fraction", "spread_scaled", *QUANT_FEATURES,
+            *(f"log_return_lag_{lag}" for lag in range(lookback)))
+
+
+def prepare_market_data(df: pd.DataFrame, lookback=16, indicator_period=14):
+    """Indicadores y lags estrictamente causales; elimina solo warmup inicial.
+
+    RSI y ATR usan medias exponenciales de Wilder (alpha=1/period, adjust=False).
+    spread_pips es opcional y solo informativo; sin columna se usa cero.
+    No se aceptan nulos internos para no convertir huecos en velas contiguas.
+    El constructor ignora columnas ajenas a la lista explícita de features.
+    """
+    if not isinstance(lookback, int) or not isinstance(indicator_period, int) or min(lookback, indicator_period) < 1:
+        raise ValueError("lookback e indicator_period deben ser enteros positivos")
+    required = ["timestamp", "open", "high", "low", "close", *QUANT_FEATURES]
+    if not df.columns.is_unique or not set(required).issubset(df.columns):
+        raise ValueError(f"Se requieren columnas únicas: {required}")
+    out = df.copy().reset_index(drop=True)
+    out["timestamp"] = pd.to_datetime(out.timestamp, utc=True, errors="raise")
+    ts = out.timestamp
+    if ts.isna().any() or ts.duplicated().any() or not ts.is_monotonic_increasing or (ts != ts.dt.floor("15min")).any():
+        raise ValueError("timestamp debe ser único, ordenado, UTC y alineado a M15")
+    prices = out[["open", "high", "low", "close"]].apply(pd.to_numeric, errors="raise")
+    if not np.isfinite(prices).all().all() or (prices <= 0).any().any():
+        raise ValueError("OHLC debe ser positivo y finito")
+    if (prices.high < prices.max(axis=1)).any() or (prices.low > prices.min(axis=1)).any():
+        raise ValueError("OHLC incoherente")
+    out[prices.columns] = prices.astype(float)
+    delta = out.close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/indicator_period, adjust=False, min_periods=indicator_period).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/indicator_period, adjust=False, min_periods=indicator_period).mean()
+    rsi = 100 - 100/(1 + gain/loss.replace(0, np.nan))
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100).mask((loss == 0) & (gain == 0), 50)
+    out["rsi_scaled"] = rsi / 100
+    true_range = pd.concat([out.high-out.low, (out.high-out.close.shift()).abs(),
+                            (out.low-out.close.shift()).abs()], axis=1).max(axis=1)
+    out["atr_fraction"] = true_range.ewm(alpha=1/indicator_period, adjust=False,
+                                         min_periods=indicator_period).mean()/out.close
+    spread = pd.to_numeric(out["spread_pips"], errors="raise") if "spread_pips" in out else pd.Series(0., index=out.index)
+    if not np.isfinite(spread).all() or (spread < 0).any():
+        raise ValueError("spread_pips debe ser finito y no negativo")
+    out["spread_scaled"] = spread / 10
+    returns = np.log(out.close).diff()
+    for lag in range(lookback):
+        out[f"log_return_lag_{lag}"] = returns.shift(lag)
+    cols = list(market_feature_names(lookback))
+    out[cols] = out[cols].apply(pd.to_numeric, errors="raise")
+    if np.isinf(out[cols].to_numpy()).any():
+        raise ValueError("Infinitos en features")
+    ready = np.isfinite(out[cols].to_numpy()).all(axis=1)
+    if not ready.any():
+        raise ValueError("Sin filas completas tras warmup")
+    first = int(np.flatnonzero(ready)[0])
+    if not ready[first:].all():
+        raise ValueError("Nulos/infinitos internos en features después del warmup")
+    out = out.iloc[first:].reset_index(drop=True)
+    if (out.cond_volatility < 0).any():
+        raise ValueError("cond_volatility no puede ser negativa")
+    return out
+
+
+def fit_normalizer(prepared: pd.DataFrame, lookback=16):
+    """Estadísticos de entrenamiento únicamente; nunca llamar con validación/test."""
+    names = market_feature_names(lookback)
+    matrix = prepared[list(names)].to_numpy(dtype=float)
+    if len(matrix) < 2 or not np.isfinite(matrix).all():
+        raise ValueError("Normalización requiere al menos dos filas finitas")
+    std = matrix.std(axis=0)
+    return dict(features=list(names), mean=matrix.mean(axis=0).tolist(),
+                std=np.where(std < 1e-12, 1.0, std).tolist(), clip=10.0)
+
+
+class BinaryOptionsEnv(gym.Env):
+    """0=PUT, 1=NEUTRO, 2=CALL. step devuelve la API Gymnasium de cinco valores.
+
+    Retorno de stake constante: win=+payout, loss=-1, tie=0 (refund).
+    Recompensa neutra=-inactivity_penalty; el saldo nunca cambia al esperar.
+    Al liquidar no queda ninguna posición abierta ni PnL flotante.
+    Fin de datos/segmento o episode_length => truncated; insolvencia/DD => terminated.
+    reset(options={start_index, balance, peak_balance}) permite evaluación
+    continua por segmentos; random_start usa exclusivamente el RNG de Gymnasium.
+    """
+    metadata = {"render_modes": []}
+
+    def __init__(self, df, *, account=None, lookback=16, indicator_period=14,
+                 prepared=False, normalizer=None, random_start=False, episode_length=None):
+        super().__init__()
+        self.account = account or AccountConfig()
+        self.lookback = lookback
+        frame = df.copy().reset_index(drop=True) if prepared else prepare_market_data(df, lookback, indicator_period)
+        names = market_feature_names(lookback)
+        required = ["timestamp", "close", *names]
+        if not set(required).issubset(frame.columns) or len(frame) < 2:
+            raise ValueError("Datos preparados insuficientes/incompletos")
+        self._times = pd.DatetimeIndex(pd.to_datetime(frame.timestamp, utc=True)).as_unit("ns")
+        if (self._times.hasnans or not self._times.is_monotonic_increasing or not self._times.is_unique
+                or (self._times != self._times.floor("15min")).any()):
+            raise ValueError("Timestamps preparados inválidos")
+        self._close = frame.close.to_numpy(dtype=float, copy=True)
+        matrix = frame[list(names)].to_numpy(dtype=float, copy=True)
+        if not np.isfinite(matrix).all() or not np.isfinite(self._close).all() or (self._close <= 0).any():
+            raise ValueError("Features/precios preparados deben ser finitos y precios positivos")
+        if (frame.cond_volatility.to_numpy(dtype=float) < 0).any():
+            raise ValueError("cond_volatility no puede ser negativa")
+        if normalizer is not None:
+            mean, std = np.asarray(normalizer["mean"]), np.asarray(normalizer["std"])
+            clip = normalizer["clip"]
+            if (list(names) != normalizer["features"] or mean.shape != (len(names),)
+                    or std.shape != mean.shape or not np.isfinite(mean).all()
+                    or not np.isfinite(std).all() or (std <= 0).any() or not np.isfinite(clip) or clip <= 0):
+                raise ValueError("Normalizador incompatible o inválido")
+            matrix = np.clip((matrix-mean)/std, -clip, clip)
+        self._market = matrix.astype(np.float32)
+        if not np.isfinite(self._market).all():
+            raise ValueError("Features fuera del rango float32")
+        breaks = np.flatnonzero(np.diff(self._times.asi8) != STEP.value) + 1
+        boundaries = np.r_[0, breaks, len(frame)]
+        self.segments = tuple((int(a), int(b-1)) for a, b in zip(boundaries[:-1], boundaries[1:]) if b-a >= 2)
+        if not self.segments:
+            raise ValueError("No hay pares consecutivos de velas M15")
+        self._eligible = np.concatenate([np.arange(a, b) for a, b in self.segments])
+        if episode_length is not None and (not isinstance(episode_length, int) or episode_length < 1):
+            raise ValueError("episode_length debe ser entero positivo o None")
+        self.random_start, self.episode_length = random_start, episode_length
+        self.feature_names = (*names, *ACCOUNT_FEATURES)
+        self.action_space = spaces.Discrete(3)
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(len(self.feature_names),), dtype=np.float32)
+        self._done = True
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        options = options or {}
+        start = options.get("start_index")
+        if start is None:
+            start = int(self.np_random.choice(self._eligible)) if self.random_start else self.segments[0][0]
+        if isinstance(start, bool) or not isinstance(start, (int, np.integer)) or start not in self._eligible:
+            raise ValueError("start_index debe permitir liquidar en una vela M15 consecutiva")
+        end = next(b for a, b in self.segments if a <= start < b)
+        self._index = int(start)
+        self._end = min(end, start+self.episode_length) if self.episode_length else end
+        self.balance = float(options.get("balance", self.account.initial_balance))
+        self.peak_balance = float(options.get("peak_balance", max(self.balance, self.account.initial_balance)))
+        if (not np.isfinite([self.balance, self.peak_balance]).all()
+                or self.balance < self.account.stake or self.peak_balance < self.balance):
+            raise ValueError("Saldo/pico inicial inválidos")
+        self.previous_direction = 0.0
+        self.previous_reward = 0.0
+        self.trades = self.wins = self.losses = self.ties = self.steps = 0
+        self.max_drawdown = max(0., 1-self.balance/self.peak_balance)
+        self._done = False
+        return self._observation(), self._info()
+
+    def _observation(self):
+        state = np.array([self.balance/self.account.initial_balance-1,
+                          1-self.balance/self.peak_balance, self.previous_direction,
+                          self.previous_reward, self.account.stake/max(self.balance, 1e-12),
+                          self.account.payout], dtype=np.float32)
+        return np.concatenate([self._market[self._index], state]).astype(np.float32)
+
+    def _info(self):
+        return dict(index=self._index, timestamp=self._times[self._index].isoformat(),
+                    decision_time=(self._times[self._index]+STEP).isoformat(),
+                    balance=self.balance, peak_balance=self.peak_balance,
+                    drawdown=1-self.balance/self.peak_balance, max_drawdown=self.max_drawdown,
+                    trades=self.trades, wins=self.wins, losses=self.losses, ties=self.ties,
+                    open_positions=0)
+
+    def step(self, action):
+        if self._done:
+            raise RuntimeError("Llamar reset antes de step y después del fin del episodio")
+        if not self.action_space.contains(action):
+            raise ValueError("Acción inválida: 0=PUT, 1=NEUTRO, 2=CALL")
+        action = int(action)
+        entry_index = self._index
+        entry, settlement = self._close[entry_index:entry_index+2]
+        profit, reward, outcome = 0., -self.account.inactivity_penalty, "neutral"
+        if action != 1:
+            self.trades += 1
+            if settlement == entry:
+                self.ties += 1
+                outcome = "tie"
+                reward = 0. if self.account.tie_policy == "refund" else -1.
+            elif (action == 2 and settlement > entry) or (action == 0 and settlement < entry):
+                self.wins += 1
+                outcome, reward = "win", self.account.payout
+            else:
+                self.losses += 1
+                outcome, reward = "loss", -1.
+            profit = self.account.stake*reward
+            self.balance += profit
+        self.peak_balance = max(self.peak_balance, self.balance)
+        self.max_drawdown = max(self.max_drawdown, 1-self.balance/self.peak_balance)
+        self._index += 1  # exactamente una vela, dentro del segmento continuo.
+        self.steps += 1
+        self.previous_direction = float(action-1)
+        self.previous_reward = float(reward)
+        terminated = self.balance < self.account.stake or self.max_drawdown + 1e-12 >= self.account.max_drawdown
+        truncated = not terminated and self._index >= self._end
+        self._done = bool(terminated or truncated)
+        info = self._info()
+        info.update(action=action, entry_index=entry_index, entry_price=float(entry),
+                    settlement_price=float(settlement), profit=float(profit), outcome=outcome,
+                    expiry_time=(self._times[self._index]+STEP).isoformat(),
+                    end_reason=("insufficient_balance" if self.balance < self.account.stake else
+                                "max_drawdown" if terminated else "data_or_time_limit" if truncated else None))
+        return self._observation(), float(reward), bool(terminated), bool(truncated), info
