@@ -133,7 +133,9 @@ class BinaryOptionsEnv(gym.Env):
     Caja: win=+payout*stake, loss=-stake, tie=0 (refund).
     Por defecto RiskConfig aplica filtro causal y shaping de reward separado
     del saldo: PnL/riesgo ex ante, coste de actividad y drawdown incremental.
-    NEUTRO voluntario no se penaliza. Intentos bloqueados tienen coste de reward.
+    NEUTRO sin setup elegible es gratis. Si el setup supera los filtros puede
+    tener un coste pequeño y configurable; nunca depende de su resultado futuro.
+    Intentos bloqueados tienen coste de reward reducido, sin cambiar el saldo.
     RiskConfig(enabled=False) conserva explícitamente la liquidación/reward v2.
     Al liquidar no queda ninguna posición abierta ni PnL flotante.
     Fin de datos/segmento o episode_length => truncated; insolvencia/DD => terminated.
@@ -240,6 +242,11 @@ class BinaryOptionsEnv(gym.Env):
                                   payout=self.account.payout,tie_policy=self.account.tie_policy,
                                   risk=self.risk,n_paths=self._n_paths)
         action = decision['action']
+        # Para NEUTRO, resolve_action ya calcula confianza/edge de la mejor dirección.
+        # Todo se determina antes de mirar el cierre de liquidación.
+        missed_opportunity = bool(self.risk.enabled and requested_action==1
+            and decision['mc_confidence']>self.risk.min_confidence
+            and decision['expected_edge_lower']>self.risk.min_expected_edge)
         old_drawdown = 1-self.balance/self.peak_balance
         entry_index = self._index
         entry, settlement = self._close[entry_index:entry_index+2]
@@ -276,6 +283,8 @@ class BinaryOptionsEnv(gym.Env):
                 reward -= self.risk.overtrade_penalty*max(0.,self.trade_activity-self.risk.target_activity)
             elif decision['blocked']:
                 reward = -self.risk.blocked_penalty
+            elif missed_opportunity:
+                reward = -self.risk.neutral_opportunity_penalty
             reward -= self.risk.drawdown_penalty*max(0.,1-self.balance/self.peak_balance-old_drawdown)
             if self.max_drawdown+1e-12>=limit:reward -= self.risk.stop_penalty
         self.previous_reward = float(reward)
@@ -284,7 +293,7 @@ class BinaryOptionsEnv(gym.Env):
         self._done = bool(terminated or truncated)
         info = self._info()
         info.update(**decision)
-        info.update(action=action, entry_index=entry_index, entry_price=float(entry),
+        info.update(action=action,missed_opportunity=missed_opportunity, entry_index=entry_index, entry_price=float(entry),
                     settlement_price=float(settlement), profit=float(profit), outcome=outcome,
                     expiry_time=(self._times[self._index]+STEP).isoformat(),
                     end_reason=("insufficient_balance" if self.balance < self.account.stake else

@@ -74,7 +74,7 @@ def load_bundle(model_dir, history_path):
     """Hashes vinculan el baseline, normalizador y checkpoint seleccionados."""
     model_dir, history_path = Path(model_dir), Path(history_path)
     manifest = json.loads((model_dir/'training_manifest.json').read_text())
-    if manifest.get('manifest_version')!=3 or 'risk' not in manifest or manifest.get('reward_version')!='risk_adjusted_v1':
+    if manifest.get('manifest_version')!=3 or 'risk' not in manifest or manifest.get('reward_version') not in ('risk_adjusted_v1','risk_adjusted_v2'):
         raise AlertError('Se requiere bundle v3 con filtro de riesgo; regenerar features y entrenar')
     for path,key in [(model_dir/'best_ppo_agent.zip','best_model_sha256'),
                       (model_dir/'normalizer.json','normalizer_sha256'),
@@ -287,7 +287,7 @@ def run_signal(*, model_dir=ROOT/'models', history_path=ROOT/'data/eurusd_m15_fe
     action = np.asarray(action).item()
     if not model.action_space.contains(action) or action not in LABELS:
         raise AlertError('Predicción inválida')
-    risk = RiskConfig(**manifest['risk'])
+    risk = RiskConfig.from_metadata(manifest['risk'])
     decision = resolve_action(int(action),row.mc_prob_up,row.mc_prob_down,row.mc_prob_tie,
                               payout=manifest['account']['payout'],tie_policy=manifest['account']['tie_policy'],
                               risk=risk,n_paths=baseline.attrs['quant_config']['n_paths'])

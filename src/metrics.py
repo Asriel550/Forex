@@ -149,7 +149,7 @@ def decision_metrics(signals, *, thresholds=CONFIDENCE_THRESHOLDS,payout=.8):
             net_profit=float(profits.sum()),wins=int((profits>0).sum()),losses=int((profits<0).sum()),
             profit_factor=gain/loss if loss else None,
             profit_factor_status='finite' if loss else 'infinite_no_losses' if gain else 'no_trades' if not len(part) else 'undefined_no_profit_or_loss'))
-    return dict(payout=payout,break_even_win_rate_excluding_refunds=1/(1+payout),total_decisions=n,blocked_attempts=int(signals.blocked.sum()),decisions=out,
+    return dict(missed_opportunities=int(signals['missed_opportunity'].sum()) if 'missed_opportunity' in signals else 0,payout=payout,break_even_win_rate_excluding_refunds=1/(1+payout),total_decisions=n,blocked_attempts=int(signals.blocked.sum()),decisions=out,
                 confidence_segments=segmented,
                 confidence_scope='uncalibrated GBM model probability at one M15 step; not PPO confidence',
                 segment_scope='post-hoc subset of executed contracts, no policy rerun or threshold selection')
@@ -164,7 +164,7 @@ def markdown_report(metrics):
     for name,row in audit.get('decisions',{}).get('executed',{}).items():
         p=row['mean_mc_confidence'];value=f'{p:.4f}' if p is not None else 'N/D'
         text.append(f"| {name} | {row['count']} | {row['percentage']:.2f}% | {value} |")
-    text += ['', (f"Payout: {audit['payout']:.2f}; acierto de equilibrio (sin reembolsos): {100*audit['break_even_win_rate_excluding_refunds']:.2f}%." if 'payout' in audit else ''), '', 'NEUTRO usa max(P_up,P_down); no es probabilidad de acierto de una operación neutra.',
+    text += ['', f"Intentos bloqueados: {audit.get('blocked_attempts',0)}; configuraciones elegibles omitidas: {audit.get('missed_opportunities',0)}.", '', (f"Payout: {audit['payout']:.2f}; acierto de equilibrio (sin reembolsos): {100*audit['break_even_win_rate_excluding_refunds']:.2f}%." if 'payout' in audit else ''), '', 'NEUTRO usa max(P_up,P_down); no es probabilidad de acierto de una operación neutra.',
              'Las probabilidades son del GBM a una vela, no certezas calibradas.', '',
              '## Subconjuntos por confianza (solo contratos ejecutados)', '',
              '| Umbral estricto | Contratos | PnL USD | Profit Factor | Acierto sin reembolsos |', '| --- | ---: | ---: | ---: | ---: |']

@@ -1,0 +1,245 @@
+{
+  "purpose": "Paired single-seed research smoke test; not a production or profitability validation",
+  "base_commit": "ff4b67a55ad8043fa98fa2df4e141939c4aa9ec3",
+  "holdout_evaluated": false,
+  "confidence_threshold": 0.58,
+  "drift_scale": 1.5,
+  "runs": {
+    "control": {
+      "input_sha256": "b9a251d34563d92f82939e95e6066d8c853dc563c5b856bdb946be6693557360",
+      "seed": 42,
+      "versions": {
+        "numpy": "2.3.5",
+        "pandas": "2.2.3",
+        "torch": "2.6.0+cpu",
+        "gymnasium": "1.1.1",
+        "stable-baselines3": "2.7.1"
+      },
+      "actual_timesteps": 100352,
+      "ent_coef": 0.01,
+      "risk": {
+        "enabled": true,
+        "min_confidence": 0.58,
+        "min_expected_edge": 0.02,
+        "mc_z": 1.96,
+        "trade_penalty": 0.05,
+        "blocked_penalty": 0.25,
+        "neutral_opportunity_penalty": 0.0,
+        "overtrade_penalty": 2.0,
+        "activity_decay": 0.95,
+        "target_activity": 0.1,
+        "drawdown_penalty": 10.0,
+        "drawdown_limit": 0.2,
+        "stop_penalty": 5.0,
+        "risk_std_floor": 0.1
+      },
+      "exploration": {
+        "actual_timesteps": 100352,
+        "ent_coef": 0.01,
+        "evaluation_deterministic": true,
+        "requested": {
+          "PUT": 3539,
+          "NEUTRO": 92878,
+          "CALL": 3935
+        },
+        "executed": {
+          "PUT": 15,
+          "NEUTRO": 100327,
+          "CALL": 10
+        },
+        "blocked_attempts": 7449,
+        "missed_opportunities": 233,
+        "final_training_policy": {
+          "observations": 256,
+          "mean_entropy_nats": 0.0042341952212154865,
+          "mean_action_probabilities": {
+            "PUT": 0.00099432491697371,
+            "NEUTRO": 0.998604416847229,
+            "CALL": 0.00040129836997948587
+          }
+        },
+        "caveat": "Training proposals are stochastic; final training policy is not necessarily the selected checkpoint."
+      },
+      "best_validation": {
+        "timesteps": 25000,
+        "steps": 26395,
+        "selection_score": 0.005980678158742194,
+        "net_profit": 8.0,
+        "trades": 1,
+        "wins": 1,
+        "losses": 0,
+        "max_drawdown": 0.0,
+        "signals": {
+          "put": 0,
+          "neutral": 26394,
+          "call": 1
+        },
+        "policy_snapshot": {
+          "observations": 207,
+          "mean_entropy_nats": 0.11935974657535553,
+          "mean_action_probabilities": {
+            "PUT": 0.013654590584337711,
+            "NEUTRO": 0.9617571234703064,
+            "CALL": 0.024588335305452347
+          }
+        }
+      },
+      "validation_checkpoints": [
+        {
+          "timesteps": 0,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": -0.13671149838984656
+        },
+        {
+          "timesteps": 25000,
+          "trades": 1,
+          "net_profit": 8.0,
+          "selection_score": 0.005980678158742194
+        },
+        {
+          "timesteps": 50000,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": -6.630043568857738e-05
+        },
+        {
+          "timesteps": 75000,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": 0.0
+        },
+        {
+          "timesteps": 100000,
+          "trades": 5,
+          "net_profit": 22.0,
+          "selection_score": -0.07811365788975191
+        },
+        {
+          "timesteps": 100352,
+          "trades": 9,
+          "net_profit": 36.0,
+          "selection_score": -0.06422542148134122
+        }
+      ]
+    },
+    "trial": {
+      "input_sha256": "b9a251d34563d92f82939e95e6066d8c853dc563c5b856bdb946be6693557360",
+      "seed": 42,
+      "versions": {
+        "numpy": "2.3.5",
+        "pandas": "2.2.3",
+        "torch": "2.6.0+cpu",
+        "gymnasium": "1.1.1",
+        "stable-baselines3": "2.7.1"
+      },
+      "actual_timesteps": 100352,
+      "ent_coef": 0.02,
+      "risk": {
+        "enabled": true,
+        "min_confidence": 0.58,
+        "min_expected_edge": 0.02,
+        "mc_z": 1.96,
+        "trade_penalty": 0.025,
+        "blocked_penalty": 0.05,
+        "neutral_opportunity_penalty": 0.005,
+        "overtrade_penalty": 2.0,
+        "activity_decay": 0.95,
+        "target_activity": 0.1,
+        "drawdown_penalty": 10.0,
+        "drawdown_limit": 0.2,
+        "stop_penalty": 5.0,
+        "risk_std_floor": 0.1
+      },
+      "exploration": {
+        "actual_timesteps": 100352,
+        "ent_coef": 0.02,
+        "evaluation_deterministic": true,
+        "requested": {
+          "PUT": 4867,
+          "NEUTRO": 90182,
+          "CALL": 5303
+        },
+        "executed": {
+          "PUT": 18,
+          "NEUTRO": 100324,
+          "CALL": 10
+        },
+        "blocked_attempts": 10142,
+        "missed_opportunities": 211,
+        "final_training_policy": {
+          "observations": 256,
+          "mean_entropy_nats": 0.014125063084065914,
+          "mean_action_probabilities": {
+            "PUT": 0.004441354423761368,
+            "NEUTRO": 0.9937472939491272,
+            "CALL": 0.0018113777041435242
+          }
+        },
+        "caveat": "Training proposals are stochastic; final training policy is not necessarily the selected checkpoint."
+      },
+      "best_validation": {
+        "timesteps": 100352,
+        "steps": 26395,
+        "selection_score": -3.0687630232998675e-05,
+        "net_profit": 0.0,
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "max_drawdown": 0.0,
+        "signals": {
+          "put": 0,
+          "neutral": 26395,
+          "call": 0
+        },
+        "policy_snapshot": {
+          "observations": 207,
+          "mean_entropy_nats": 0.003942308481782675,
+          "mean_action_probabilities": {
+            "PUT": 0.00031222659163177013,
+            "NEUTRO": 0.9994021654129028,
+            "CALL": 0.0002855293860193342
+          }
+        }
+      },
+      "validation_checkpoints": [
+        {
+          "timesteps": 0,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": -0.027799204394771737
+        },
+        {
+          "timesteps": 25000,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": -0.00020420534192081837
+        },
+        {
+          "timesteps": 50000,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": -5.0198901307065734e-05
+        },
+        {
+          "timesteps": 75000,
+          "trades": 22,
+          "net_profit": 14.0,
+          "selection_score": -0.22568955062029722
+        },
+        {
+          "timesteps": 100000,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": -4.205341920818337e-05
+        },
+        {
+          "timesteps": 100352,
+          "trades": 0,
+          "net_profit": 0.0,
+          "selection_score": -3.0687630232998675e-05
+        }
+      ]
+    }
+  }
+}

@@ -14,8 +14,9 @@ class RiskConfig:
     min_confidence: float = .60
     min_expected_edge: float = .02
     mc_z: float = 1.96
-    trade_penalty: float = .05
-    blocked_penalty: float = .25
+    trade_penalty: float = .025
+    blocked_penalty: float = .05
+    neutral_opportunity_penalty: float = .005
     overtrade_penalty: float = 2.
     activity_decay: float = .95
     target_activity: float = .10
@@ -23,6 +24,13 @@ class RiskConfig:
     drawdown_limit: float = .20
     stop_penalty: float = 5.
     risk_std_floor: float = .10
+
+    @classmethod
+    def from_metadata(cls, metadata):
+        values=dict(metadata)
+        # Bundles anteriores no penalizaban oportunidades omitidas.
+        values.setdefault('neutral_opportunity_penalty',0.)
+        return cls(**values)
 
     def __post_init__(self):
         if not isinstance(self.enabled,bool):raise ValueError('enabled debe ser bool')
