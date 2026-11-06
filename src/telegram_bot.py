@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 
 from .agent import load_agent
+from .decision import RiskConfig, resolve_action
 from .data_loader import STEP, DEFAULT_INPUT_DIR, expected_grid, load_data, read_closures, utc
 from .http_utils import retry_after_seconds, wait_seconds
 from .environment import AccountConfig, market_feature_names, prepare_market_data
@@ -73,6 +74,8 @@ def load_bundle(model_dir, history_path):
     """Hashes vinculan el baseline, normalizador y checkpoint seleccionados."""
     model_dir, history_path = Path(model_dir), Path(history_path)
     manifest = json.loads((model_dir/'training_manifest.json').read_text())
+    if manifest.get('manifest_version')!=3 or 'risk' not in manifest or manifest.get('reward_version')!='risk_adjusted_v1':
+        raise AlertError('Se requiere bundle v3 con filtro de riesgo; regenerar features y entrenar')
     for path,key in [(model_dir/'best_ppo_agent.zip','best_model_sha256'),
                       (model_dir/'normalizer.json','normalizer_sha256'),
                       (history_path,'input_sha256')]:
@@ -82,6 +85,8 @@ def load_bundle(model_dir, history_path):
     if sha256_file(history_path) != manifest['input_sha256']:
         raise AlertError('El baseline cambió durante la lectura')
     metadata = baseline.attrs
+    if metadata.get('direction_probability_horizon')!=1:
+        raise AlertError('El bundle no contiene probabilidades de decisión a una vela')
     if not {'source_rows','origin_timestamp','garch_fits','quant_config'}.issubset(metadata):
         raise AlertError('Falta estado GARCH para inferencia incremental; regenerar features y entrenar')
     if metadata['quant_config'] != manifest['source_quant_metadata']['quant_config']:
@@ -140,6 +145,9 @@ def extend_quant_history(baseline, recent):
             raise AlertError('Varianza GARCH no válida')
         sigma = np.sqrt(next_h)/SCALE
         p05,p95 = mc.terminal_quantiles(closes[i],sigma,config.drift_per_bar)
+        up,down,tie = mc.direction_probabilities(sigma,config.drift_per_bar)
+        for name,value in [('mc_prob_up',up),('mc_prob_down',down),('mc_prob_tie',tie)]:
+            result.loc[i,name] = float(value)
         for name,value in [('cond_volatility',sigma),('mc_p05',float(p05)),('mc_p95',float(p95)),
                            ('dist_p05',(float(p05)-closes[i])/closes[i]),
                            ('dist_p95',(float(p95)-closes[i])/closes[i])]:
@@ -164,7 +172,7 @@ def latest_observation(prepared, normalizer, manifest):
             or not np.isfinite(std).all() or not np.isfinite(clip) or clip<=0):
         raise AlertError('Normalización u observación inválida')
     account = AccountConfig(**manifest['account'])
-    state = [0.,0.,0.,0.,account.stake/account.initial_balance,account.payout]
+    state = [0.,0.,0.,0.,account.stake/account.initial_balance,account.payout,0.]
     observation = np.r_[np.clip((values-mean)/std,-clip,clip),state].astype(np.float32)
     if not np.isfinite(observation).all():
         raise AlertError('Observación fuera de rango')
@@ -277,9 +285,14 @@ def run_signal(*, model_dir=ROOT/'models', history_path=ROOT/'data/eurusd_m15_fe
     action = np.asarray(action).item()
     if not model.action_space.contains(action) or action not in LABELS:
         raise AlertError('Predicción inválida')
+    risk = RiskConfig(**manifest['risk'])
+    decision = resolve_action(int(action),row.mc_prob_up,row.mc_prob_down,row.mc_prob_tie,
+                              payout=manifest['account']['payout'],tie_policy=manifest['account']['tie_policy'],
+                              risk=risk,n_paths=baseline.attrs['quant_config']['n_paths'])
+    action = decision['action']
     text = format_signal(int(action),row)
     if dry_run:
-        return dict(action=int(action),message=text,status='dry_run')
+        return dict(action=int(action),message=text,status='dry_run',decision=decision)
     token,chat_id = os.environ.get('TELEGRAM_BOT_TOKEN'),os.environ.get('TELEGRAM_CHAT_ID')
     if not token or not chat_id:
         raise TelegramRejected('Configurar TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID como secretos')

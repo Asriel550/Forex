@@ -1,5 +1,7 @@
 # Forex EUR/USD M15 — research and Telegram signals
 
+Cambios v3 de inacción/riesgo: [diseño, uso y límites](docs/risk_filter.md). Los bundles v2 requieren regenerar features y reentrenar.
+
 Sistema de investigación en Python para opciones binarias de una vela M15:
 archivos históricos CSV/ZIP, GARCH(1,1), Monte Carlo GBM, Gymnasium, PPO, holdout y
 alertas Telegram. No coloca órdenes ni utiliza MetaTrader, Windows o Yahoo.
@@ -42,7 +44,7 @@ y estado simulado de cuenta.
 
 Tras el warmup se separa cronológicamente 70% train, 20% validación y 10% test,
 con una barra adicional de purga en los límites. Solo train ajusta el normalizador
-y pesos; validación selecciona el checkpoint. El holdout se evalúa después,
+y pesos; validación selecciona el checkpoint por score de retorno, drawdown e intentos bloqueados. El holdout se evalúa después,
 sin seleccionar hiperparámetros con él. SHA256 vincula datos, pesos y normalizador.
 Los hashes son checks de consistencia, no una firma ni garantía sobre datos externos.
 

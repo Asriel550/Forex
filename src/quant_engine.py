@@ -37,6 +37,7 @@ from arch.utility.exceptions import ConvergenceWarning
 LOG = logging.getLogger(__name__)
 SCALE = 10_000.0
 FEATURES = ["cond_volatility", "dist_p95", "dist_p05"]
+PROBABILITY_FEATURES = ['mc_prob_up', 'mc_prob_down', 'mc_prob_tie']
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -84,6 +85,23 @@ class MonteCarloGBM:
         rng = np.random.Generator(np.random.PCG64(seed))
         self._brownian = rng.standard_normal((n_paths, horizon)).cumsum(axis=1)
         self._terminal = np.sort(self._brownian[:, -1])
+        self._one_step = np.sort(self._brownian[:, 0])
+
+    def direction_probabilities(self, sigma, drift=0.0):
+        """Fracciones empíricas de las mismas rutas en el PASO 1 (expiración).
+
+        P05/P95 siguen siendo a 32 pasos. Estas probabilidades no son una
+        confianza PPO ni probabilidades calibradas contra resultados reales.
+        searchsorted evita una matriz n_velas x 10,000; no usa cierres futuros.
+        """
+        _, sigma, drift = self._inputs(1., sigma, drift)
+        threshold = np.divide(.5*sigma**2-drift, sigma,
+                              out=np.zeros_like(sigma), where=sigma>0)
+        down = np.searchsorted(self._one_step, threshold, side='left')/self.n_paths
+        up = 1.-np.searchsorted(self._one_step, threshold, side='right')/self.n_paths
+        up = np.where(sigma>0, up, (drift>0).astype(float))
+        down = np.where(sigma>0, down, (drift<0).astype(float))
+        return up, down, np.maximum(0., 1.-up-down)
 
     @staticmethod
     def _inputs(spot, sigma, drift):
@@ -222,11 +240,17 @@ def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None) -> pd.D
     out.loc[ready, "mc_p95"] = p95
     out["dist_p95"] = (out.mc_p95 - out.close) / out.close
     out["dist_p05"] = (out.mc_p05 - out.close) / out.close
+    probabilities = mc.direction_probabilities(volatility[ready], config.drift_per_bar)
+    for name, values in zip(PROBABILITY_FEATURES, probabilities):
+        out[name] = np.nan
+        out.loc[ready, name] = values
     out.attrs = {"quant_config": asdict(config), "garch_fits": fits,
                  "source_rows": len(df), "origin_timestamp": timestamps.iloc[0].isoformat(),
                  "volatility_units": "decimal per M15 bar, forecast sigma[t+1|t]",
                  "available_at": "candle close; execute no earlier than next bar",
                  "monte_carlo": "terminal empirical quantiles; common random numbers"}
+    out.attrs['direction_probability_horizon'] = 1
+    out.attrs['probability_interpretation'] = 'GBM empirical model probability, not calibrated certainty'
     return out
 
 
@@ -261,3 +285,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

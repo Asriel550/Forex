@@ -20,13 +20,15 @@ from dataclasses import dataclass
 
 import gymnasium as gym
 from gymnasium import spaces
+from .decision import RiskConfig, ensure_probabilities, resolve_action
+from .quant_engine import PROBABILITY_FEATURES
 import numpy as np
 import pandas as pd
 
 STEP = pd.Timedelta(minutes=15)
 QUANT_FEATURES = ("cond_volatility", "dist_p95", "dist_p05")
 ACCOUNT_FEATURES = ("balance_return", "drawdown", "previous_direction",
-                    "previous_reward", "stake_to_balance", "payout")
+                    "previous_reward", "stake_to_balance", "payout", "trade_activity")
 
 
 @dataclass(frozen=True)
@@ -52,7 +54,7 @@ class AccountConfig:
 
 
 def market_feature_names(lookback=16):
-    return ("rsi_scaled", "atr_fraction", "spread_scaled", *QUANT_FEATURES,
+    return ("rsi_scaled", "atr_fraction", "spread_scaled", *QUANT_FEATURES, *PROBABILITY_FEATURES,
             *(f"log_return_lag_{lag}" for lag in range(lookback)))
 
 
@@ -69,7 +71,7 @@ def prepare_market_data(df: pd.DataFrame, lookback=16, indicator_period=14):
     required = ["timestamp", "open", "high", "low", "close", *QUANT_FEATURES]
     if not df.columns.is_unique or not set(required).issubset(df.columns):
         raise ValueError(f"Se requieren columnas únicas: {required}")
-    out = df.copy().reset_index(drop=True)
+    out = ensure_probabilities(df).reset_index(drop=True)
     out["timestamp"] = pd.to_datetime(out.timestamp, utc=True, errors="raise")
     ts = out.timestamp
     if ts.isna().any() or ts.duplicated().any() or not ts.is_monotonic_increasing or (ts != ts.dt.floor("15min")).any():
@@ -115,6 +117,7 @@ def prepare_market_data(df: pd.DataFrame, lookback=16, indicator_period=14):
 
 def fit_normalizer(prepared: pd.DataFrame, lookback=16):
     """Estadísticos de entrenamiento únicamente; nunca llamar con validación/test."""
+    prepared = ensure_probabilities(prepared)
     names = market_feature_names(lookback)
     matrix = prepared[list(names)].to_numpy(dtype=float)
     if len(matrix) < 2 or not np.isfinite(matrix).all():
@@ -127,8 +130,11 @@ def fit_normalizer(prepared: pd.DataFrame, lookback=16):
 class BinaryOptionsEnv(gym.Env):
     """0=PUT, 1=NEUTRO, 2=CALL. step devuelve la API Gymnasium de cinco valores.
 
-    Retorno de stake constante: win=+payout, loss=-1, tie=0 (refund).
-    Recompensa neutra=-inactivity_penalty; el saldo nunca cambia al esperar.
+    Caja: win=+payout*stake, loss=-stake, tie=0 (refund).
+    Por defecto RiskConfig aplica filtro causal y shaping de reward separado
+    del saldo: PnL/riesgo ex ante, coste de actividad y drawdown incremental.
+    NEUTRO voluntario no se penaliza. Intentos bloqueados tienen coste de reward.
+    RiskConfig(enabled=False) conserva explícitamente la liquidación/reward v2.
     Al liquidar no queda ninguna posición abierta ni PnL flotante.
     Fin de datos/segmento o episode_length => truncated; insolvencia/DD => terminated.
     reset(options={start_index, balance, peak_balance}) permite evaluación
@@ -137,11 +143,12 @@ class BinaryOptionsEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, df, *, account=None, lookback=16, indicator_period=14,
-                 prepared=False, normalizer=None, random_start=False, episode_length=None):
+                 prepared=False, normalizer=None, random_start=False, episode_length=None, risk=None):
         super().__init__()
         self.account = account or AccountConfig()
+        self.risk = risk if risk is not None else RiskConfig()
         self.lookback = lookback
-        frame = df.copy().reset_index(drop=True) if prepared else prepare_market_data(df, lookback, indicator_period)
+        frame = ensure_probabilities(df).reset_index(drop=True) if prepared else prepare_market_data(df, lookback, indicator_period)
         names = market_feature_names(lookback)
         required = ["timestamp", "close", *names]
         if not set(required).issubset(frame.columns) or len(frame) < 2:
@@ -150,6 +157,8 @@ class BinaryOptionsEnv(gym.Env):
         if (self._times.hasnans or not self._times.is_monotonic_increasing or not self._times.is_unique
                 or (self._times != self._times.floor("15min")).any()):
             raise ValueError("Timestamps preparados inválidos")
+        self._probabilities = frame[PROBABILITY_FEATURES].to_numpy(dtype=float,copy=True)
+        self._n_paths = int(frame.attrs.get("quant_config",{}).get("n_paths",10000))
         self._close = frame.close.to_numpy(dtype=float, copy=True)
         matrix = frame[list(names)].to_numpy(dtype=float, copy=True)
         if not np.isfinite(matrix).all() or not np.isfinite(self._close).all() or (self._close <= 0).any():
@@ -199,6 +208,8 @@ class BinaryOptionsEnv(gym.Env):
             raise ValueError("Saldo/pico inicial inválidos")
         self.previous_direction = 0.0
         self.previous_reward = 0.0
+        self.trade_activity = float(options.get("trade_activity",0.))
+        if not np.isfinite(self.trade_activity) or not 0<=self.trade_activity<=1:raise ValueError("trade_activity inválida")
         self.trades = self.wins = self.losses = self.ties = self.steps = 0
         self.max_drawdown = max(0., 1-self.balance/self.peak_balance)
         self._done = False
@@ -208,7 +219,7 @@ class BinaryOptionsEnv(gym.Env):
         state = np.array([self.balance/self.account.initial_balance-1,
                           1-self.balance/self.peak_balance, self.previous_direction,
                           self.previous_reward, self.account.stake/max(self.balance, 1e-12),
-                          self.account.payout], dtype=np.float32)
+                          self.account.payout, self.trade_activity], dtype=np.float32)
         return np.concatenate([self._market[self._index], state]).astype(np.float32)
 
     def _info(self):
@@ -217,17 +228,22 @@ class BinaryOptionsEnv(gym.Env):
                     balance=self.balance, peak_balance=self.peak_balance,
                     drawdown=1-self.balance/self.peak_balance, max_drawdown=self.max_drawdown,
                     trades=self.trades, wins=self.wins, losses=self.losses, ties=self.ties,
-                    open_positions=0)
+                    open_positions=0,trade_activity=self.trade_activity)
 
     def step(self, action):
         if self._done:
             raise RuntimeError("Llamar reset antes de step y después del fin del episodio")
         if not self.action_space.contains(action):
             raise ValueError("Acción inválida: 0=PUT, 1=NEUTRO, 2=CALL")
-        action = int(action)
+        requested_action = int(action)
+        decision = resolve_action(requested_action,*self._probabilities[self._index],
+                                  payout=self.account.payout,tie_policy=self.account.tie_policy,
+                                  risk=self.risk,n_paths=self._n_paths)
+        action = decision['action']
+        old_drawdown = 1-self.balance/self.peak_balance
         entry_index = self._index
         entry, settlement = self._close[entry_index:entry_index+2]
-        profit, reward, outcome = 0., -self.account.inactivity_penalty, "neutral"
+        profit, reward, outcome = 0., (0. if self.risk.enabled else -self.account.inactivity_penalty), "neutral"
         if action != 1:
             self.trades += 1
             if settlement == entry:
@@ -247,14 +263,31 @@ class BinaryOptionsEnv(gym.Env):
         self._index += 1  # exactamente una vela, dentro del segmento continuo.
         self.steps += 1
         self.previous_direction = float(action-1)
+        self.trade_activity = self.risk.activity_decay*self.trade_activity+(1-self.risk.activity_decay)*float(action!=1)
+        limit = min(self.account.max_drawdown,self.risk.drawdown_limit) if self.risk.enabled else self.account.max_drawdown
+        if self.risk.enabled:
+            if action!=1:
+                win = decision['mc_prob_up'] if action==2 else decision['mc_prob_down']
+                loss = decision['mc_prob_down'] if action==2 else decision['mc_prob_up']
+                if self.account.tie_policy=='loss':loss += decision['mc_prob_tie']
+                mean = self.account.payout*win-loss
+                scale = np.sqrt(max(self.account.payout**2*win+loss-mean**2,self.risk.risk_std_floor**2))
+                reward = (profit/self.account.stake)/scale-self.risk.trade_penalty
+                reward -= self.risk.overtrade_penalty*max(0.,self.trade_activity-self.risk.target_activity)
+            elif decision['blocked']:
+                reward = -self.risk.blocked_penalty
+            reward -= self.risk.drawdown_penalty*max(0.,1-self.balance/self.peak_balance-old_drawdown)
+            if self.max_drawdown+1e-12>=limit:reward -= self.risk.stop_penalty
         self.previous_reward = float(reward)
-        terminated = self.balance < self.account.stake or self.max_drawdown + 1e-12 >= self.account.max_drawdown
+        terminated = self.balance < self.account.stake or self.max_drawdown + 1e-12 >= limit
         truncated = not terminated and self._index >= self._end
         self._done = bool(terminated or truncated)
         info = self._info()
+        info.update(**decision)
         info.update(action=action, entry_index=entry_index, entry_price=float(entry),
                     settlement_price=float(settlement), profit=float(profit), outcome=outcome,
                     expiry_time=(self._times[self._index]+STEP).isoformat(),
                     end_reason=("insufficient_balance" if self.balance < self.account.stake else
                                 "max_drawdown" if terminated else "data_or_time_limit" if truncated else None))
         return self._observation(), float(reward), bool(terminated), bool(truncated), info
+

@@ -78,6 +78,7 @@ def export_reports(report_dir, metrics, trades, equity, signals):
     report_dir=Path(report_dir)
     payload=json.dumps(metrics,indent=2,allow_nan=False)+'\n'
     _atomic_write(report_dir/'metrics.json',lambda p:Path(p).write_text(payload,encoding='utf-8'))
+    _atomic_write(report_dir/'summary.md',lambda p:Path(p).write_text(markdown_report(metrics),encoding='utf-8'))
     for name,frame in [('trades',trades),('equity',equity),('signals',signals)]:
         _atomic_write(report_dir/f'{name}.csv',lambda p,f=frame:f.to_csv(p,index=False))
 
@@ -100,3 +101,66 @@ def plot_reports(report_dir,equity,signals):
     axis.bar(['PUT','NEUTRO','CALL'],[int(counts.get(i,0)) for i in range(3)])
     axis.set(ylabel='Decisiones',title='Señales holdout')
     _atomic_write(report_dir/'signals.png',lambda p:figure.savefig(p,format='png',dpi=150));plt.close(figure)
+
+
+
+def decision_metrics(signals, *, thresholds=(.60,.70,.80)):
+    """Desglose por decisión ejecutada y propuesta; NEUTRO no es un contrato.
+
+    Para CALL/PUT, confianza=probabilidad de ganar según MC en UNA vela.
+    Para NEUTRO, confianza=max(P_up,P_down): no existe 'probabilidad de ganar
+    NEUTRO'. El corte retrospectivo no reejecuta la política y no selecciona
+    umbrales con test; solo describe contratos que realmente se ejecutaron.
+    """
+    required={'mc_confidence','action','requested_action','mc_prob_up','mc_prob_down','profit','blocked'}
+    if not required.issubset(signals):raise ValueError('Se requieren señales auditables con probabilidades MC')
+    if not signals.action.isin([0,1,2]).all() or not signals.requested_action.isin([0,1,2]).all():
+        raise ValueError('Acciones inválidas')
+    n=len(signals);out={}
+    probs=signals[['mc_prob_up','mc_prob_down']].to_numpy(dtype=float)
+    if not np.isfinite(probs).all() or ((probs<0)|(probs>1)).any():raise ValueError('Confianzas inválidas')
+    for column,key in [('action','executed'),('requested_action','requested')]:
+        result={}
+        for action,label in [(0,'PUT'),(1,'NEUTRO'),(2,'CALL')]:
+            part=signals.loc[signals[column]==action]
+            confidence=part.mc_prob_up if action==2 else part.mc_prob_down if action==0 else part[['mc_prob_up','mc_prob_down']].max(axis=1)
+            result[label]=dict(count=len(part),percentage=100*len(part)/n if n else 0.,
+                               mean_mc_confidence=float(confidence.mean()) if len(part) else None,
+                               confidence_definition='max(up,down)' if action==1 else 'directional win probability')
+        out[key]=result
+    segmented=[]
+    for threshold in thresholds:
+        if not np.isfinite(threshold) or not 0<=threshold<1:raise ValueError('Umbral de reporte inválido')
+        part=signals.loc[(signals.action!=1)&(signals.mc_confidence>threshold)]
+        profits=part.profit.to_numpy(dtype=float)
+        if not np.isfinite(profits).all():raise ValueError('PnL inválido')
+        gain=float(profits[profits>0].sum());loss=float(-profits[profits<0].sum())
+        segmented.append(dict(threshold=float(threshold),comparison='strictly_greater',trades=len(part),
+            net_profit=float(profits.sum()),wins=int((profits>0).sum()),losses=int((profits<0).sum()),
+            profit_factor=gain/loss if loss else None,
+            profit_factor_status='finite' if loss else 'infinite_no_losses' if gain else 'no_trades' if not len(part) else 'undefined_no_profit_or_loss'))
+    return dict(total_decisions=n,blocked_attempts=int(signals.blocked.sum()),decisions=out,
+                confidence_segments=segmented,
+                confidence_scope='uncalibrated GBM model probability at one M15 step; not PPO confidence',
+                segment_scope='post-hoc subset of executed contracts, no policy rerun or threshold selection')
+
+
+def markdown_report(metrics):
+    text=['# Backtest de investigación', '',
+          f"Beneficio neto: {metrics['net_profit']:.2f} USD; drawdown máximo: {metrics['max_drawdown_pct']:.2f}%.",
+          '', '## Decisiones ejecutadas', '', '| Decisión | Cantidad | Porcentaje | Media probabilidad MC |',
+          '| --- | ---: | ---: | ---: |']
+    audit=metrics.get('decision_analysis',{})
+    for name,row in audit.get('decisions',{}).get('executed',{}).items():
+        p=row['mean_mc_confidence'];value=f'{p:.4f}' if p is not None else 'N/D'
+        text.append(f"| {name} | {row['count']} | {row['percentage']:.2f}% | {value} |")
+    text += ['', 'NEUTRO usa max(P_up,P_down); no es probabilidad de acierto de una operación neutra.',
+             'Las probabilidades son del GBM a una vela, no certezas calibradas.', '',
+             '## Subconjuntos por confianza (solo contratos ejecutados)', '',
+             '| Umbral estricto | Contratos | PnL USD | Profit Factor |', '| --- | ---: | ---: | ---: |']
+    for row in audit.get('confidence_segments',[]):
+        pf=row['profit_factor'];value=f'{pf:.4f}' if pf is not None else row['profit_factor_status']
+        text.append(f"| > {row['threshold']:.0%} | {row['trades']} | {row['net_profit']:.2f} | {value} |")
+    text += ['', 'Cortes descriptivos posteriores: no equivalen a reejecutar la política.',
+             'El holdout histórico ya se examinó: esta comparación es investigación, no una nueva prueba independiente.', '']
+    return '\n'.join(text)

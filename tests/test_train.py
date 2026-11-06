@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from stable_baselines3 import PPO
+from src.decision import RiskConfig
 
 from src.environment import (AccountConfig, BinaryOptionsEnv, fit_normalizer,
                              market_feature_names, prepare_market_data)
@@ -43,7 +44,7 @@ def test_evaluation_carries_cash_over_weekends_without_new_funding():
     ready['close']=[1.1,1.2,1.3,1.4]
     ready['timestamp']=pd.to_datetime(['2024-01-05T21:30Z','2024-01-05T21:45Z',
                                       '2024-01-07T22:00Z','2024-01-07T22:15Z'])
-    env=BinaryOptionsEnv(ready,prepared=True,lookback=2)
+    env=BinaryOptionsEnv(ready,prepared=True,lookback=2,risk=RiskConfig(enabled=False))
     class AlwaysCall:
         def predict(self,obs,deterministic=True): return np.array(2),None
     result=evaluate_policy(AlwaysCall(),env)
@@ -75,3 +76,4 @@ def test_short_real_ppo_training_saves_loadable_best_and_metadata(tmp_path):
     action,_=model.predict(obs,deterministic=True)
     assert env.action_space.contains(action)
     assert model.observation_space == env.observation_space
+
