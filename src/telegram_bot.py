@@ -27,7 +27,7 @@ from .decision import RiskConfig, resolve_action
 from .data_loader import STEP, DEFAULT_INPUT_DIR, expected_grid, load_data, read_closures, utc
 from .http_utils import retry_after_seconds, wait_seconds
 from .environment import AccountConfig, market_feature_names, prepare_market_data
-from .quant_engine import QuantConfig, MonteCarloGBM, SCALE, _fit_garch
+from .quant_engine import QuantConfig, MonteCarloGBM, SCALE, _fit_garch, causal_drift, DRIFT_AUDIT_FEATURES, project_monte_carlo
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ def extend_quant_history(baseline, recent):
     omega/alpha/beta están en puntos básicos² según quant_engine. Los fits
     nuevos usan únicamente su ventana pasada; MC reutiliza la misma semilla.
     """
-    config = QuantConfig(**baseline.attrs['quant_config'])
+    config = QuantConfig.from_metadata(baseline.attrs['quant_config'])
     count = baseline.attrs['source_rows']
     if not isinstance(count,int) or count < len(baseline):
         raise AlertError('Contador de origen GARCH inválido')
@@ -144,14 +144,16 @@ def extend_quant_history(baseline, recent):
         if not np.isfinite(next_h) or next_h<=0:
             raise AlertError('Varianza GARCH no válida')
         sigma = np.sqrt(next_h)/SCALE
-        p05,p95 = mc.terminal_quantiles(closes[i],sigma,config.drift_per_bar)
-        up,down,tie = mc.direction_probabilities(sigma,config.drift_per_bar)
-        for name,value in [('mc_prob_up',up),('mc_prob_down',down),('mc_prob_tie',tie)]:
+        result.loc[i,'cond_volatility'] = sigma
+        if config.drift_mode=='momentum' and i<min(config.drift_window,global_row):
+            raise AlertError('Contexto histórico insuficiente para momentum causal')
+        start = max(0,i-config.drift_window)
+        sigma_window = np.full(i-start+1,np.nan);sigma_window[-1] = sigma
+        drift = causal_drift(closes[start:i+1],sigma_window,config,result.timestamp.iloc[start:i+1])
+        mu = float(drift['mc_drift'][-1])
+        for name in DRIFT_AUDIT_FEATURES:result.loc[i,name] = float(drift[name][-1])
+        for name,value in project_monte_carlo(mc,closes[i],sigma,mu).items():
             result.loc[i,name] = float(value)
-        for name,value in [('cond_volatility',sigma),('mc_p05',float(p05)),('mc_p95',float(p95)),
-                           ('dist_p05',(float(p05)-closes[i])/closes[i]),
-                           ('dist_p95',(float(p95)-closes[i])/closes[i])]:
-            result.loc[i,name] = value
     result.attrs = dict(baseline.attrs,source_rows=count+len(fresh),garch_fits=fits)
     return result
 

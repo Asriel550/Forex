@@ -7,7 +7,7 @@ Se reestima cada refit_every velas con una ventana de pasado; entre ajustes
 se actualiza la recursión de varianza, nunca se ajusta toda la muestra futura.
 
 GBM: S[k] = S[0] exp((mu - sigma²/2) k + sigma W[k]), dt=1 vela.
-mu es drift aritmético POR VELA (cero por defecto), sigma queda congelada
+mu es drift aritmético POR VELA, derivado de momentum causal por defecto; sigma queda congelada
 32 pasos. Los percentiles son TERMINALES a 32 barras, no máximos/mínimos de
 las rutas ni niveles garantizados de soporte/resistencia. Un fin de semana
 hace que 32 barras de negociación no equivalgan a 8 horas de reloj.
@@ -38,6 +38,7 @@ LOG = logging.getLogger(__name__)
 SCALE = 10_000.0
 FEATURES = ["cond_volatility", "dist_p95", "dist_p05"]
 PROBABILITY_FEATURES = ['mc_prob_up', 'mc_prob_down', 'mc_prob_tie']
+DRIFT_AUDIT_FEATURES = ['mc_drift','mc_log_drift','momentum_mean','momentum_se','momentum_z']
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -55,10 +56,24 @@ class QuantConfig:
     seed: int = 42
     drift_per_bar: float = 0.0
     max_iterations: int = 500
+    drift_mode: str = 'momentum'
+    drift_window: int = 8
+    drift_shrinkage: float = .75
+    drift_noise_z: float = 1.96
+    drift_cap_sigma: float = .75
+    drift_clip_sigma: float = 3.
+
+    @classmethod
+    def from_metadata(cls, metadata):
+        # Un bundle anterior no declara modo: representa drift CONSTANTE.
+        # Nunca reinterpretar pesos viejos con los nuevos defaults de momentum.
+        values = dict(metadata)
+        values.setdefault('drift_mode','constant')
+        return cls(**values)
 
     def __post_init__(self):
         for name in ("window", "min_observations", "refit_every", "n_paths",
-                     "horizon", "max_iterations", "seed"):
+                     "horizon", "max_iterations", "seed", "drift_window"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
                 raise QuantError(f"{name} debe ser entero")
@@ -68,6 +83,14 @@ class QuantConfig:
             raise QuantError("Requiere window >= min_observations >= 100")
         if self.n_paths < 100 or not np.isfinite(self.drift_per_bar):
             raise QuantError("Requiere n_paths >= 100 y drift finito")
+        if self.drift_mode not in ('constant','momentum') or self.drift_window<4:
+            raise QuantError('drift_mode constant/momentum; drift_window >= 4')
+        params=[self.drift_shrinkage,self.drift_noise_z,self.drift_cap_sigma,self.drift_clip_sigma]
+        if (not np.isfinite(params).all() or not 0<=self.drift_shrinkage<=1
+                or self.drift_noise_z<0 or self.drift_cap_sigma<=0 or self.drift_clip_sigma<=0):
+            raise QuantError('Parámetros de momentum inválidos')
+        if self.drift_mode=='momentum' and self.drift_per_bar!=0:
+            raise QuantError('drift_per_bar no nulo requiere drift_mode=constant')
 
 
 class MonteCarloGBM:
@@ -142,6 +165,26 @@ class MonteCarloGBM:
         return tuple(quantiles)
 
 
+
+def project_monte_carlo(mc, spot, sigma, drift):
+    """Una misma mu alimenta bandas H y probabilidad al paso 1.
+
+    Las distancias conservan el signo: ambas bandas pueden quedar arriba o
+    abajo del spot. Posición sin clip=(spot-p05)/(p95-p05); bias=+1 si spot
+    está debajo de p05, -1 si supera p95. Son geometría a H, no probabilidades
+    binarias: el filtro de 70% sigue usando SOLO mc_prob_up/down del paso 1.
+    """
+    spot=np.asarray(spot,dtype=float)
+    p05,p95=mc.terminal_quantiles(spot,sigma,drift)
+    up,down,tie=mc.direction_probabilities(sigma,drift)
+    width=p95-p05
+    fallback=np.where(spot<p05,0.,np.where(spot>p95,1.,.5))
+    position=np.divide(spot-p05,width,out=np.broadcast_to(fallback,np.shape(width)).copy(),where=width>0)
+    return dict(mc_p05=p05,mc_p95=p95,dist_p05=(p05-spot)/spot,dist_p95=(p95-spot)/spot,
+                mc_prob_up=up,mc_prob_down=down,mc_prob_tie=tie,
+                mc_band_position=position,mc_band_bias=np.where(spot<p05,1.,np.where(spot>p95,-1.,0.)))
+
+
 def _fit_garch(sample: np.ndarray, max_iterations: int):
     """Máxima verosimilitud normal de ARCH; no usa inicialización aleatoria."""
     if np.var(sample) < 1e-12:
@@ -209,11 +252,69 @@ def causal_garch_volatility(close, config: QuantConfig):
     return volatility, fits
 
 
+
+def causal_drift(close, volatility, config: QuantConfig, timestamps=None):
+    """mu[t] GBM a partir de L retornos conocidos al CIERRE t.
+
+    En momentum se estima la MEDIA LOGARÍTMICA (no el drift aritmético GBM):
+      r = clip(log(P[j]/P[j-1]), +/- clip_sigma*sigma[t])
+      se = max(std(r,ddof=1),sigma[t])/sqrt(L)
+      log_mu = clip(shrink*sign(mean)*max(abs(mean)-z*se,0), +/- cap*sigma[t])
+      mu = log_mu + sigma[t]**2/2
+    Así el exponente GBM es log_mu, sin confundir retornos log y aritméticos.
+    La banda de ruido es una heurística de contracción, NO calibración predictiva.
+    Sin L retornos M15 contiguos, log_mu=0; sigma NaN conserva warmup NaN.
+    Si timestamps se omite, se asume que cada fila representa una vela contigua.
+    """
+    prices=np.asarray(close,dtype=float)
+    sigma=np.asarray(volatility,dtype=float)
+    if (prices.ndim!=1 or sigma.shape!=prices.shape or not np.isfinite(prices).all()
+            or (prices<=0).any() or np.isinf(sigma).any() or (sigma[np.isfinite(sigma)]<0).any()):
+        raise QuantError('Precios/volatilidad inválidos para drift causal')
+    n=len(prices);ready=np.isfinite(sigma)
+    ts=None
+    if timestamps is not None:
+        ts=pd.DatetimeIndex(pd.to_datetime(timestamps,utc=True,errors='raise')).as_unit('ns')
+        if len(ts)!=n or ts.hasnans or not ts.is_unique or not ts.is_monotonic_increasing:
+            raise QuantError('Timestamps inválidos para momentum')
+    out={name:np.full(n,np.nan) for name in DRIFT_AUDIT_FEATURES}
+    for name in DRIFT_AUDIT_FEATURES:out[name][ready]=0.
+    out['mc_drift'][ready]=config.drift_per_bar
+    out['mc_log_drift'][ready]=config.drift_per_bar-.5*sigma[ready]**2
+    if config.drift_mode=='constant':return out
+    # Sin señal se proyecta mediana plana, no una tendencia artificial.
+    out['mc_drift'][ready]=.5*sigma[ready]**2
+    out['mc_log_drift'][ready]=0.
+    length=config.drift_window
+    if n<=length:return out
+    candidates=np.arange(length,n)
+    valid=ready[candidates]
+    if ts is not None:
+        bad=np.r_[0,np.diff(ts.asi8)!=pd.Timedelta(minutes=15).value]
+        cumulative=np.r_[0,np.cumsum(bad)]
+        valid &= (cumulative[candidates+1]-cumulative[candidates-length+1])==0
+    candidates=candidates[valid]
+    if not len(candidates):return out
+    returns=np.diff(np.log(prices))
+    windows=np.lib.stride_tricks.sliding_window_view(returns,length)[candidates-length]
+    scales=sigma[candidates]
+    clipped=np.clip(windows,-config.drift_clip_sigma*scales[:,None],config.drift_clip_sigma*scales[:,None])
+    mean=clipped.mean(axis=1)
+    se=np.maximum(clipped.std(axis=1,ddof=1),scales)/np.sqrt(length)
+    z=np.divide(mean,se,out=np.zeros_like(mean),where=se>0)
+    excess=np.sign(mean)*np.maximum(np.abs(mean)-config.drift_noise_z*se,0.)
+    log_mu=np.clip(config.drift_shrinkage*excess,-config.drift_cap_sigma*scales,config.drift_cap_sigma*scales)
+    out['momentum_mean'][candidates]=mean;out['momentum_se'][candidates]=se
+    out['momentum_z'][candidates]=z;out['mc_log_drift'][candidates]=log_mu
+    out['mc_drift'][candidates]=log_mu+.5*scales**2
+    return out
+
+
 def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None) -> pd.DataFrame:
     """Copia enriquecida: conserva orden, índice, OHLCV y warmup sin rellenar.
 
     dist_p95=(p95-close)/close; dist_p05=(p05-close)/close. Son fracciones,
-    por ejemplo 0.01 significa 1%; dist_p05 es normalmente negativa.
+    por ejemplo 0.01 significa 1%; ambos signos se conservan con drift.
     Se incluyen mc_p05 y mc_p95 en unidades de precio para auditoría.
     El warmup debe excluirse antes de alimentar PPO, nunca rellenarse hacia
     atrás con información futura.
@@ -231,24 +332,20 @@ def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None) -> pd.D
     out["timestamp"] = timestamps
     volatility, fits = causal_garch_volatility(out.close, config)
     out["cond_volatility"] = volatility
+    drift = causal_drift(out.close,volatility,config,timestamps)
+    for name,values in drift.items():out[name]=values
     ready = np.isfinite(volatility)
     mc = MonteCarloGBM(config.n_paths, config.horizon, config.seed)
-    p05, p95 = mc.terminal_quantiles(out.close.to_numpy()[ready], volatility[ready],
-                                   config.drift_per_bar)
-    out["mc_p05"], out["mc_p95"] = np.nan, np.nan
-    out.loc[ready, "mc_p05"] = p05
-    out.loc[ready, "mc_p95"] = p95
-    out["dist_p95"] = (out.mc_p95 - out.close) / out.close
-    out["dist_p05"] = (out.mc_p05 - out.close) / out.close
-    probabilities = mc.direction_probabilities(volatility[ready], config.drift_per_bar)
-    for name, values in zip(PROBABILITY_FEATURES, probabilities):
+    projected = project_monte_carlo(mc,out.close.to_numpy()[ready],volatility[ready],out.mc_drift.to_numpy()[ready])
+    for name,values in projected.items():
         out[name] = np.nan
-        out.loc[ready, name] = values
+        out.loc[ready,name] = values
     out.attrs = {"quant_config": asdict(config), "garch_fits": fits,
                  "source_rows": len(df), "origin_timestamp": timestamps.iloc[0].isoformat(),
                  "volatility_units": "decimal per M15 bar, forecast sigma[t+1|t]",
                  "available_at": "candle close; execute no earlier than next bar",
                  "monte_carlo": "terminal empirical quantiles; common random numbers"}
+    out.attrs['drift_contract'] = 'causal_momentum_v1' if config.drift_mode=='momentum' else 'constant_v1'
     out.attrs['direction_probability_horizon'] = 1
     out.attrs['probability_interpretation'] = 'GBM empirical model probability, not calibrated certainty'
     return out
@@ -261,6 +358,10 @@ def main():
     for name in ("window", "min_observations", "refit_every", "n_paths", "horizon", "seed"):
         parser.add_argument("--" + name.replace("_", "-"), type=int,
                             default=getattr(QuantConfig(), name))
+    parser.add_argument('--drift-mode',choices=['constant','momentum'],default=QuantConfig().drift_mode)
+    parser.add_argument('--drift-window',type=int,default=QuantConfig().drift_window)
+    for name in ('drift_shrinkage','drift_noise_z','drift_cap_sigma','drift_clip_sigma'):
+        parser.add_argument('--'+name.replace('_','-'),type=float,default=getattr(QuantConfig(),name))
     parser.add_argument("--drift-per-bar", type=float, default=0.0)
     parser.add_argument("--drop-warmup", action="store_true")
     args = vars(parser.parse_args())

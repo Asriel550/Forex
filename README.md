@@ -1,5 +1,7 @@
 # Forex EUR/USD M15 — research and Telegram signals
 
+Drift de momentum causal: [fórmula, parámetros, compatibilidad y límites](docs/dynamic_drift.md).
+
 Cambios v3 de inacción/riesgo: [diseño, uso y límites](docs/risk_filter.md). Los bundles v2 requieren regenerar features y reentrenar.
 
 Sistema de investigación en Python para opciones binarias de una vela M15:
