@@ -23,7 +23,7 @@ ROOT=Path(__file__).resolve().parents[1]
 LOG=logging.getLogger(__name__)
 TRADE_COLUMNS=['trade_id','action','direction','entry_index','expiry_index','entry_time','expiry_time',
                'entry_price','settlement_price','stake','payout','outcome','profit','balance_before','balance_after']
-AUDIT_COLUMNS=['requested_action','mc_confidence','mc_lower_bound','expected_edge_lower','filter_reason','blocked','mc_prob_up','mc_prob_down','mc_prob_tie']
+AUDIT_COLUMNS=['missed_opportunity','requested_action','mc_confidence','mc_lower_bound','expected_edge_lower','filter_reason','blocked','mc_prob_up','mc_prob_down','mc_prob_tie']
 TRADE_COLUMNS += AUDIT_COLUMNS
 SIGNAL_COLUMNS=['entry_index','expiry_index','entry_time','expiry_time','action','outcome','reward','profit','balance_after']+AUDIT_COLUMNS
 
@@ -46,7 +46,7 @@ def load_holdout(input_path,model_path,normalizer_path,manifest_path):
     if (manifest.get('manifest_version')!=3 or manifest.get('actual_timesteps',0)<=0
             or manifest.get('normalizer_fit')!='train only' or manifest.get('holdout_test_evaluated') is not False
             or manifest.get('selection')!='validation risk_adjusted_score'
-            or 'risk' not in manifest or manifest.get('reward_version')!='risk_adjusted_v1'):
+            or 'risk' not in manifest or manifest.get('reward_version') not in ('risk_adjusted_v1','risk_adjusted_v2')):
         raise BacktestError('Requiere entrenamiento v3 completado y test reservado')
     if not np.isclose(manifest['train_fraction']+manifest['validation_fraction'],.90):
         raise BacktestError('Se exige el 10% final como holdout, antes de la purga')
@@ -127,7 +127,7 @@ def run_backtest(input_path=ROOT/'data/eurusd_m15_features.parquet',*,model_path
     holdout,normalizer,manifest=load_holdout(input_path,model_path,normalizer_path,manifest_path)
     model=load_agent(model_path);_verify_hash(model_path,manifest['best_model_sha256'],'Modelo tras carga')
     trades,equity,signals,meta=simulate_holdout(model,holdout,account=AccountConfig(**manifest['account']),
-                                               lookback=manifest['lookback'],normalizer=normalizer,risk=RiskConfig(**manifest['risk']))
+                                               lookback=manifest['lookback'],normalizer=normalizer,risk=RiskConfig.from_metadata(manifest['risk']))
     result=calculate_metrics(trades,equity,initial_balance=manifest['account']['initial_balance'])
     result.update(decision_analysis=decision_metrics(signals,payout=manifest['account']['payout']),risk_config=manifest['risk'],
                   holdout_use=manifest.get('holdout_use'),evaluation='frozen_holdout_only',holdout=manifest['splits']['test'],

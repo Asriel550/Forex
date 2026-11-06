@@ -21,6 +21,21 @@ on:
         type: choice
         options: ['1.0', '1.5', '2.0']
         default: '1.5'
+      ent_coef:
+        description: 'Regularización de entropía PPO para nuevo entrenamiento'
+        type: choice
+        options: ['0.01', '0.02', '0.03']
+        default: '0.02'
+      blocked_penalty:
+        description: 'Coste de reward por intento bloqueado'
+        type: choice
+        options: ['0.02', '0.05', '0.10', '0.25']
+        default: '0.05'
+      neutral_opportunity_penalty:
+        description: 'Coste por esperar SOLO si existe setup que pasa filtros'
+        type: choice
+        options: ['0', '0.005', '0.01']
+        default: '0.005'
   schedule:
     - cron: '15 6 * * 1'
     - cron: '1,16,31,46 * * * *'
@@ -34,6 +49,10 @@ env:
   MKL_NUM_THREADS: '1'
   MPLBACKEND: Agg
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  FOREX_ENT_COEF: ${{ inputs.ent_coef || vars.FOREX_ENT_COEF || '0.02' }}
+  FOREX_BLOCKED_PENALTY: ${{ inputs.blocked_penalty || vars.FOREX_BLOCKED_PENALTY || '0.05' }}
+  FOREX_NEUTRAL_OPPORTUNITY_PENALTY: ${{ inputs.neutral_opportunity_penalty || vars.FOREX_NEUTRAL_OPPORTUNITY_PENALTY || '0.005' }}
+  FOREX_TRADE_PENALTY: ${{ vars.FOREX_TRADE_PENALTY || '0.025' }}
   FOREX_MIN_CONFIDENCE: ${{ inputs.confidence_threshold || vars.FOREX_MIN_CONFIDENCE || '0.60' }}
   FOREX_DRIFT_SCALE: ${{ inputs.drift_scale || vars.FOREX_DRIFT_SCALE || '1.5' }}
   FOREX_INPUT_TIMEFRAME: ${{ vars.FOREX_INPUT_TIMEFRAME || 'auto' }}
@@ -103,7 +122,7 @@ jobs:
         run: python -m src.sensitivity
       - name: Train with untouched holdout
         timeout-minutes: 120
-        run: python -m src.train --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE"
+        run: python -m src.train --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
       - name: Holdout backtest
         timeout-minutes: 30
         run: python -m src.backtest

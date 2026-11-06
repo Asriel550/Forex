@@ -126,7 +126,7 @@ def test_train_freezes_risk_contract_and_never_uses_holdout_for_normalization(tm
     path=tmp_path/'source.parquet';frame=raw();frame.to_parquet(path,index=False)
     m=train(path,output_dir=tmp_path/'models',total_timesteps=16,n_steps=16,batch_size=8,n_epochs=1,eval_freq=16,lookback=1,indicator_period=1,verbose=0)
     assert m['manifest_version']==3 and m['risk']['min_confidence']==.60
-    assert m['holdout_test_evaluated'] is False and m['reward_version']=='risk_adjusted_v1'
+    assert m['holdout_test_evaluated'] is False and m['reward_version']=='risk_adjusted_v2'
     normal=json.loads((tmp_path/'models/normalizer.json').read_text())
     expected=fit_normalizer(chronological_split(prepare_market_data(frame,1,1))['train'],1)
     assert normal==expected

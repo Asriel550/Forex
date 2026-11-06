@@ -1,3 +1,5 @@
+> Actualización: [reward v2 y exploración PPO](ppo_exploration.md) documenta los nuevos costes y conserva los parámetros archivados de bundles anteriores.
+
 # Filtro causal de inacción y recompensa de riesgo (v3)
 
 Actualización de umbral: [rango operativo 58–65%](drift_threshold_sensitivity.md), con default de entrenamiento 60%. Los ejemplos de 70% de esta referencia corresponden a PR #5.

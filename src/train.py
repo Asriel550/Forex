@@ -27,6 +27,7 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 
 from .agent import build_agent
+from .exploration import ExplorationAuditCallback,policy_snapshot
 from .decision import RiskConfig
 from .metrics import decision_metrics
 from .artifacts import file_sha256
@@ -97,10 +98,13 @@ def evaluate_policy(model, env: BinaryOptionsEnv):
     max_drawdown = 0.
     stopped = False
     decisions = []
+    policy_observations=[]
     activity = 0.
     for start, _ in env.segments:
         obs, _ = env.reset(options=dict(start_index=start, balance=balance, peak_balance=peak,trade_activity=activity))
         while True:
+            if steps%128==0 and len(policy_observations)<256 and hasattr(model,'policy'):
+                policy_observations.append(obs.copy())
             action, _ = model.predict(obs, deterministic=True)
             action = int(np.asarray(action).item())
             obs, reward, terminated, truncated, info = env.step(action)
@@ -123,9 +127,10 @@ def evaluate_policy(model, env: BinaryOptionsEnv):
     analysis = decision_metrics(pd.DataFrame(decisions),payout=env.account.payout)
     score = (balance/env.account.initial_balance-1-env.risk.drawdown_penalty*max_drawdown
              -env.risk.trade_penalty*trades/max(steps,1)
-             -env.risk.blocked_penalty*analysis["blocked_attempts"]/max(steps,1))
+             -env.risk.blocked_penalty*analysis["blocked_attempts"]/max(steps,1)
+             -env.risk.neutral_opportunity_penalty*analysis["missed_opportunities"]/max(steps,1))
     if not env.risk.enabled:score = balance-env.account.initial_balance
-    return dict(selection_score=score,decision_analysis=analysis,net_profit=balance-env.account.initial_balance, final_balance=balance,
+    return dict(policy_snapshot=policy_snapshot(model,policy_observations) if policy_observations else None,selection_score=score,decision_analysis=analysis,net_profit=balance-env.account.initial_balance, final_balance=balance,
                 total_reward=total_reward, mean_reward=total_reward/steps if steps else 0.,
                 max_drawdown=max_drawdown, trades=trades, wins=wins, losses=losses,
                 ties=ties, win_rate=wins/trades if trades else 0., steps=steps,
@@ -182,7 +187,7 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
           train_fraction=.70, validation_fraction=.20, purge_bars=1,
           lookback=16, indicator_period=14, episode_length=512,
           account=None, risk=None, seed=42, n_steps=2048, batch_size=64,
-          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, verbose=1):
+          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, ent_coef=.02, verbose=1):
     """Devuelve manifiesto; guarda mejores pesos, pesos finales y normalización."""
     if total_timesteps < 1:
         raise ValueError("total_timesteps debe ser positivo")
@@ -205,13 +210,14 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
     training_env.reset(seed=seed)
     validation_env.reset(seed=seed+1)
     manifest = dict(manifest_version=3, input_file=str(input_path.resolve()), input_sha256=source_hash,
-                    account=asdict(account), risk=asdict(risk), reward_version="risk_adjusted_v1", seed=seed, lookback=lookback,
+                    account=asdict(account), risk=asdict(risk), reward_version="risk_adjusted_v2", seed=seed, lookback=lookback,
                     indicator_period=indicator_period, episode_length=episode_length,
                     requested_timesteps=total_timesteps, n_steps=n_steps, batch_size=batch_size,
-                    n_epochs=n_epochs, learning_rate=learning_rate, eval_freq=eval_freq,
+                    n_epochs=n_epochs, learning_rate=learning_rate, ent_coef=ent_coef, eval_freq=eval_freq,
                     train_fraction=train_fraction, validation_fraction=validation_fraction,
                     purge_bars=purge_bars, normalizer_fit="train only", selection="validation risk_adjusted_score",
                     features=list(market_feature_names(lookback)), holdout_test_evaluated=False, holdout_use="research; previously examined historical snapshot, requires fresh data for confirmation",
+                    exploration_evaluation="stochastic rollout audit; deterministic validation/holdout",
                     source_quant_metadata=raw.attrs,
                     splits={name:dict(rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
                                       end=frame.timestamp.iloc[-1].isoformat())
@@ -226,8 +232,8 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
     callback = BestValidationCallback(validation_env, output_dir, eval_freq, verbose)
     try:
         model = build_agent(monitored, seed=seed, n_steps=n_steps, batch_size=batch_size,
-                            n_epochs=n_epochs, learning_rate=learning_rate, verbose=verbose)
-        model.learn(total_timesteps=total_timesteps, callback=callback, progress_bar=False)
+                            n_epochs=n_epochs, learning_rate=learning_rate, ent_coef=ent_coef, verbose=verbose)
+        model.learn(total_timesteps=total_timesteps, callback=[ExplorationAuditCallback(output_dir),callback], progress_bar=False)
         atomic_save_model(model, output_dir/"final_ppo_agent.zip")
         if file_sha256(input_path) != source_hash or file_sha256(output_dir/"normalizer.json") != normalizer_hash:
             raise ValueError("Datos o normalizador cambiaron durante entrenamiento")
@@ -270,15 +276,17 @@ def main():
     parser.add_argument('--min-confidence',type=float,default=RiskConfig().min_confidence)
     parser.add_argument('--min-expected-edge',type=float,default=.02)
     parser.add_argument('--risk-drawdown-limit',type=float,default=.20)
-    parser.add_argument('--trade-penalty',type=float,default=.05)
-    parser.add_argument('--blocked-penalty',type=float,default=.25)
+    parser.add_argument('--trade-penalty',type=float,default=RiskConfig().trade_penalty)
+    parser.add_argument('--blocked-penalty',type=float,default=RiskConfig().blocked_penalty)
+    parser.add_argument('--neutral-opportunity-penalty',type=float,default=RiskConfig().neutral_opportunity_penalty)
+    parser.add_argument('--ent-coef',type=float,default=.02)
     parser.add_argument('--overtrade-penalty',type=float,default=2.)
     parser.add_argument('--drawdown-penalty',type=float,default=10.)
     args = vars(parser.parse_args())
     risk = RiskConfig(min_confidence=args.pop('min_confidence'),min_expected_edge=args.pop('min_expected_edge'),
                       drawdown_limit=args.pop('risk_drawdown_limit'),trade_penalty=args.pop('trade_penalty'),
                       blocked_penalty=args.pop('blocked_penalty'),overtrade_penalty=args.pop('overtrade_penalty'),
-                      drawdown_penalty=args.pop('drawdown_penalty'))
+                      drawdown_penalty=args.pop('drawdown_penalty'),neutral_opportunity_penalty=args.pop('neutral_opportunity_penalty'))
     account = AccountConfig(**{key:args.pop(key) for key in
                               ("initial_balance", "stake", "payout", "tie_policy",
                                "inactivity_penalty", "max_drawdown")})
