@@ -1,7 +1,7 @@
 # Forex EUR/USD M15 — research and Telegram signals
 
 Sistema de investigación en Python para opciones binarias de una vela M15:
-histórico Dukascopy, GARCH(1,1), Monte Carlo GBM, Gymnasium, PPO, holdout y
+archivos históricos CSV/ZIP, GARCH(1,1), Monte Carlo GBM, Gymnasium, PPO, holdout y
 alertas Telegram. No coloca órdenes ni utiliza MetaTrader, Windows o Yahoo.
 
 ## Ejecución local
@@ -14,7 +14,7 @@ source .venv/bin/activate
 python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r requirements.txt
 python -m pytest -q
-python -m src.data_loader --years 5
+python -m src.data_loader --input-dir datasets/eurusd
 python -m src.quant_engine --drop-warmup
 python -m src.train --total-timesteps 100000
 python -m src.backtest
@@ -54,13 +54,14 @@ y un estado explícito. Sharpe incluye barras inactivas y usa la convención 252
 
 El workflow .github/workflows/pipeline.yml contiene pruebas, investigación e
 inferencia separados. Las PR solo ejecutan pruebas sin secretos. La investigación
-usa caché de checkpoints, descarga datos, calcula features, entrena, evalúa el
-holdout y publica el artefacto forex-alert-bundle.
+lee los archivos estáticos de datasets/eurusd, calcula features, entrena, evalúa
+el holdout y publica el artefacto forex-alert-bundle. No descarga cotizaciones.
 
-1. Añadir los secretos de repositorio TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID.
-2. Dar al bot permiso para publicar en el chat/canal configurado.
-3. Ejecutar manualmente el workflow con mode=train y esperar a que termine bien.
-4. Usar mode=alerts o el cron de alertas cada quince minutos.
+1. Subir los archivos reales CSV/ZIP de EUR/USD a datasets/eurusd/ ([guía](docs/static_ingestion.md)).
+2. Añadir los secretos de repositorio TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID.
+3. Dar al bot permiso para publicar en el chat/canal configurado.
+4. Ejecutar manualmente el workflow con mode=train y esperar a que termine bien.
+5. Usar mode=alerts o el cron de alertas cada quince minutos.
 
 Los runners recuperan el último bundle de una ejecución exitosa de este workflow
 en la rama por defecto. No se entrena cada quince minutos. El bot continúa GARCH
@@ -71,26 +72,29 @@ mercado cerrado o datos incompletos se omite la alerta. La outbox y concurrencia
 reducen duplicados; la caché no garantiza exactly-once. Una entrega incierta queda
 pending para evitar reintentar un POST que quizá ya se entregó.
 
-HTTP 429 se gestiona con páginas pequeñas, pacing, backoff con jitter y Retry-After.
-Esto mitiga rate limiting, sin evitar cuotas ni controles del proveedor. HTTP 403,
-huecos desconocidos o indisponibilidad persistente detienen el proceso; no existe
-fallback silencioso a datos sintéticos. Cierres comprobados del proveedor se pueden
-declarar mediante config/closures.json.
+La ingesta es exclusivamente local: CSV, ZIP con CSV y Parquet. HistData usa
+EST fijo (UTC-5), sin horario de verano. Los M1 con nombre oficial se agregan a
+M15 con 15 minutos completos; para M1 renombrados usar --input-timeframe M1.
+Los CSV ya convertidos a UTC deben incluir Z/offset o usar --timezone UTC.
+No se interpolan huecos. Cierres comprobados se declaran en config/closures.json.
+
+Un histórico estático sirve para investigar y entrenar. Para señales vigentes
+hay que actualizar los archivos con la última vela cerrada; el cron no obtiene
+precios nuevos y omite datos caducados. Los secretos Telegram siguen vigentes.
 
 ## Documentación y alcance de pruebas
 
+- [Ingesta estática y carga desde Android](docs/static_ingestion.md)
 - [Inferencia y alertas](docs/telegram_alerts.md)
 - [Entorno y PPO](docs/binary_options_training.md)
 - [Backtest y métricas](docs/backtesting_pipeline.md)
 
-Las pruebas deterministas incluyen un entrenamiento PPO mínimo sobre datos
-sintéticos, carga de pesos, holdout, reintentos HTTP, causalidad e inferencia
-incremental. Telegram se simula: las pruebas no envían mensajes reales.
-Para probar explícitamente el proveedor remoto:
-
-```bash
-FOREX_LIVE_TESTS=1 python -m pytest -q tests/test_data_loader.py -k live_2018
-```
+Las pruebas deterministas incluyen lectura CSV/ZIP sin red, conversión EST/UTC,
+agregación M1, integridad de caché, un entrenamiento PPO mínimo con datos
+sintéticos, holdout, causalidad e inferencia incremental. Telegram se simula:
+las pruebas no envían mensajes reales. Los reintentos HTTP restantes pertenecen
+exclusivamente a Telegram; no existe cliente HTTP de datos de mercado.
 
 Sin un histórico/modelo reales y un backtest independiente completado, estas
 pruebas no acreditan rendimiento financiero de mercado.
+
