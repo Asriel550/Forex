@@ -11,7 +11,7 @@ from .quant_engine import MonteCarloGBM, PROBABILITY_FEATURES, QuantConfig
 @dataclass(frozen=True)
 class RiskConfig:
     enabled: bool = True
-    min_confidence: float = .70
+    min_confidence: float = .60
     min_expected_edge: float = .02
     mc_z: float = 1.96
     trade_penalty: float = .05
@@ -70,6 +70,17 @@ def ensure_probabilities(frame):
     return out
 
 
+def mc_probability_lower(probability,n_paths=10000,z=1.96):
+    """Límite Wilson, compartido por filtro escalar y diagnóstico vectorizado."""
+    p=np.asarray(probability,dtype=float)
+    if (not np.isfinite(p).all() or (p<0).any() or (p>1).any()
+            or not isinstance(n_paths,(int,np.integer)) or n_paths<2 or not np.isfinite(z) or z<0):
+        raise ValueError('Probabilidad, número de rutas o z inválido')
+    z2=z*z
+    lower=(p+z2/(2*n_paths)-z*np.sqrt(p*(1-p)/n_paths+z2/(4*n_paths**2)))/(1+z2/n_paths)
+    return np.clip(lower,0,1)
+
+
 def resolve_action(action, up, down, tie, *, payout, tie_policy, risk, n_paths=10000):
     """NEUTRO si p <= umbral o ventaja conservadora insuficiente.
 
@@ -81,9 +92,7 @@ def resolve_action(action, up, down, tie, *, payout, tie_policy, risk, n_paths=1
             or not np.isclose(p.sum(),1.,atol=1e-8,rtol=0) or n_paths<2):
         raise ValueError('Acción/probabilidades/n_paths inválidos')
     confidence=float(up if action==2 else down if action==0 else max(up,down))
-    z2=risk.mc_z**2
-    lower=(confidence+z2/(2*n_paths)-risk.mc_z*np.sqrt(confidence*(1-confidence)/n_paths+z2/(4*n_paths**2)))/(1+z2/n_paths)
-    lower=float(np.clip(lower,0,1));edge=float(payout*lower-(1-lower))
+    lower=float(mc_probability_lower(confidence,n_paths,risk.mc_z));edge=float(payout*lower-(1-lower))
     reason='agent_neutral' if action==1 else 'accepted'
     executed=int(action)
     if risk.enabled and action!=1:

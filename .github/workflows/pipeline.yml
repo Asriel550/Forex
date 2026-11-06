@@ -11,6 +11,16 @@ on:
         type: choice
         options: [alerts, train]
         default: alerts
+      confidence_threshold:
+        description: 'Umbral de entrenamiento; alerts conserva el del bundle'
+        type: choice
+        options: ['0.58', '0.60', '0.62', '0.65']
+        default: '0.60'
+      drift_scale:
+        description: 'Escala de momentum para un nuevo entrenamiento'
+        type: choice
+        options: ['1.0', '1.5', '2.0']
+        default: '1.5'
   schedule:
     - cron: '15 6 * * 1'
     - cron: '1,16,31,46 * * * *'
@@ -24,6 +34,8 @@ env:
   MKL_NUM_THREADS: '1'
   MPLBACKEND: Agg
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  FOREX_MIN_CONFIDENCE: ${{ inputs.confidence_threshold || vars.FOREX_MIN_CONFIDENCE || '0.60' }}
+  FOREX_DRIFT_SCALE: ${{ inputs.drift_scale || vars.FOREX_DRIFT_SCALE || '1.5' }}
   FOREX_INPUT_TIMEFRAME: ${{ vars.FOREX_INPUT_TIMEFRAME || 'auto' }}
   FOREX_SOURCE_TIMEZONE: ${{ vars.FOREX_SOURCE_TIMEZONE || 'EST' }}
 
@@ -85,10 +97,13 @@ jobs:
           fi
       - name: Causal quant features and continuation state
         timeout-minutes: 45
-        run: python -m src.quant_engine --drop-warmup --seed 42
+        run: python -m src.quant_engine --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE"
+      - name: Sensitivity on train and validation only (MC baseline, not PPO)
+        timeout-minutes: 10
+        run: python -m src.sensitivity
       - name: Train with untouched holdout
         timeout-minutes: 120
-        run: python -m src.train --total-timesteps 100000 --seed 42
+        run: python -m src.train --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE"
       - name: Holdout backtest
         timeout-minutes: 30
         run: python -m src.backtest

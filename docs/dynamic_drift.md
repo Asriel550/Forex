@@ -1,5 +1,7 @@
 # Drift de momentum causal para GBM
 
+Actualización de escala/umbral: [sensibilidad controlada](drift_threshold_sensitivity.md). Esta página conserva la fórmula y los resultados de referencia de PR #6 (escala efectiva 1.0); los nuevos defaults se documentan en la actualización.
+
 La simulación conserva sus 10.000 rutas independientes entre sí, 32 pasos,
 PCG64/semilla 42 y common random numbers. Lo que cambia por origen es mu[t],
 no las innovaciones ni el recuento de escenarios. La asimetría del precio GBM

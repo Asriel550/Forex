@@ -129,7 +129,7 @@ def run_backtest(input_path=ROOT/'data/eurusd_m15_features.parquet',*,model_path
     trades,equity,signals,meta=simulate_holdout(model,holdout,account=AccountConfig(**manifest['account']),
                                                lookback=manifest['lookback'],normalizer=normalizer,risk=RiskConfig(**manifest['risk']))
     result=calculate_metrics(trades,equity,initial_balance=manifest['account']['initial_balance'])
-    result.update(decision_analysis=decision_metrics(signals),risk_config=manifest['risk'],
+    result.update(decision_analysis=decision_metrics(signals,payout=manifest['account']['payout']),risk_config=manifest['risk'],
                   holdout_use=manifest.get('holdout_use'),evaluation='frozen_holdout_only',holdout=manifest['splits']['test'],
                   artifact_hashes={k:manifest[k] for k in ['input_sha256','best_model_sha256','normalizer_sha256']},**meta)
     report_dir.mkdir(parents=True,exist_ok=True)
