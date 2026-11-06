@@ -2,7 +2,7 @@
 
 Pipeline: Parquet causal -> indicadores/lags causales -> split cronológico
 70/20/10 (train/validation/test reservado) -> normalizador SOLO train -> PPO.
-La validación compara beneficio neto con stake fijo, transportando saldo y
+La validación compara un score de retorno neto ajustado por drawdown y actividad, con stake fijo, transportando saldo y
 pico entre segmentos continuos. Nunca se ejecutan contratos sobre un hueco.
 Se valida al comenzar, periódicamente y al terminar; incluso un entrenamiento
 corto produce best_ppo_agent.zip. Si la política inicial gana la comparación,
@@ -27,6 +27,8 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 
 from .agent import build_agent
+from .decision import RiskConfig
+from .metrics import decision_metrics
 from .artifacts import file_sha256
 from .environment import (AccountConfig, BinaryOptionsEnv, fit_normalizer,
                           market_feature_names, prepare_market_data)
@@ -94,13 +96,17 @@ def evaluate_policy(model, env: BinaryOptionsEnv):
     wins = losses = ties = trades = steps = 0
     max_drawdown = 0.
     stopped = False
+    decisions = []
+    activity = 0.
     for start, _ in env.segments:
-        obs, _ = env.reset(options=dict(start_index=start, balance=balance, peak_balance=peak))
+        obs, _ = env.reset(options=dict(start_index=start, balance=balance, peak_balance=peak,trade_activity=activity))
         while True:
             action, _ = model.predict(obs, deterministic=True)
             action = int(np.asarray(action).item())
             obs, reward, terminated, truncated, info = env.step(action)
-            counts[("put", "neutral", "call")[action]] += 1
+            counts[("put", "neutral", "call")[info["action"]]] += 1
+            decisions.append(info.copy())
+            activity = info["trade_activity"]
             total_reward += reward
             steps += 1
             balance, peak = info["balance"], info["peak_balance"]
@@ -114,7 +120,12 @@ def evaluate_policy(model, env: BinaryOptionsEnv):
                 break
         if stopped:
             break
-    return dict(net_profit=balance-env.account.initial_balance, final_balance=balance,
+    analysis = decision_metrics(pd.DataFrame(decisions))
+    score = (balance/env.account.initial_balance-1-env.risk.drawdown_penalty*max_drawdown
+             -env.risk.trade_penalty*trades/max(steps,1)
+             -env.risk.blocked_penalty*analysis["blocked_attempts"]/max(steps,1))
+    if not env.risk.enabled:score = balance-env.account.initial_balance
+    return dict(selection_score=score,decision_analysis=analysis,net_profit=balance-env.account.initial_balance, final_balance=balance,
                 total_reward=total_reward, mean_reward=total_reward/steps if steps else 0.,
                 max_drawdown=max_drawdown, trades=trades, wins=wins, losses=losses,
                 ties=ties, win_rate=wins/trades if trades else 0., steps=steps,
@@ -122,7 +133,7 @@ def evaluate_policy(model, env: BinaryOptionsEnv):
 
 
 class BestValidationCallback(BaseCallback):
-    """Selecciona por PnL monetario de validación, sin recompensas de entrenamiento."""
+    """Selecciona por score de riesgo de validación, sin mirar el holdout."""
     def __init__(self, validation_env, output_dir, eval_freq=25_000, verbose=1):
         super().__init__(verbose)
         if eval_freq < 1:
@@ -130,6 +141,7 @@ class BestValidationCallback(BaseCallback):
         self.validation_env, self.output_dir = validation_env, Path(output_dir)
         self.eval_freq = int(eval_freq)
         self.best_score = -np.inf
+        self.best_profit = -np.inf
         self.history = []
         self.next_eval = self.eval_freq
         self.last_eval = -1
@@ -139,13 +151,15 @@ class BestValidationCallback(BaseCallback):
         record = dict(timesteps=int(self.num_timesteps), **metrics)
         self.history.append(record)
         self.last_eval = self.num_timesteps
-        if metrics["net_profit"] > self.best_score:
-            self.best_score = metrics["net_profit"]
+        if metrics["selection_score"] > self.best_score:
+            self.best_score = metrics["selection_score"]
+            self.best_profit = metrics["net_profit"]
             atomic_save_model(self.model, self.output_dir/"best_ppo_agent.zip")
             write_json(self.output_dir/"best_validation.json", record)
         write_json(self.output_dir/"validation_history.json", self.history)
         self.logger.record("validation/net_profit", metrics["net_profit"])
         self.logger.record("validation/trades", metrics["trades"])
+        LOG.info("Decisiones/confianza validación: %s",json.dumps(metrics["decision_analysis"],allow_nan=False))
         LOG.info("Validación step=%d PnL=%.2f trades=%d DD=%.4f",
                  self.num_timesteps, metrics["net_profit"], metrics["trades"], metrics["max_drawdown"])
 
@@ -167,12 +181,13 @@ class BestValidationCallback(BaseCallback):
 def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
           train_fraction=.70, validation_fraction=.20, purge_bars=1,
           lookback=16, indicator_period=14, episode_length=512,
-          account=None, seed=42, n_steps=2048, batch_size=64,
+          account=None, risk=None, seed=42, n_steps=2048, batch_size=64,
           n_epochs=10, eval_freq=25_000, learning_rate=3e-4, verbose=1):
     """Devuelve manifiesto; guarda mejores pesos, pesos finales y normalización."""
     if total_timesteps < 1:
         raise ValueError("total_timesteps debe ser positivo")
     account = account or AccountConfig()
+    risk = risk if risk is not None else RiskConfig()
     input_path, output_dir = Path(input_path), Path(output_dir)
     source_hash = file_sha256(input_path)
     raw = pd.read_parquet(input_path)
@@ -182,21 +197,21 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
     splits = chronological_split(prepared, train_fraction=train_fraction,
                                   validation_fraction=validation_fraction, purge_bars=purge_bars)
     normalizer = fit_normalizer(splits["train"], lookback)
-    common = dict(account=account, lookback=lookback, prepared=True, normalizer=normalizer)
+    common = dict(account=account, risk=risk, lookback=lookback, prepared=True, normalizer=normalizer)
     training_env = BinaryOptionsEnv(splits["train"], random_start=True,
                                     episode_length=episode_length, **common)
     validation_env = BinaryOptionsEnv(splits["validation"], **common)
     check_env(training_env, warn=True, skip_render_check=True)
     training_env.reset(seed=seed)
     validation_env.reset(seed=seed+1)
-    manifest = dict(manifest_version=2, input_file=str(input_path.resolve()), input_sha256=source_hash,
-                    account=asdict(account), seed=seed, lookback=lookback,
+    manifest = dict(manifest_version=3, input_file=str(input_path.resolve()), input_sha256=source_hash,
+                    account=asdict(account), risk=asdict(risk), reward_version="risk_adjusted_v1", seed=seed, lookback=lookback,
                     indicator_period=indicator_period, episode_length=episode_length,
                     requested_timesteps=total_timesteps, n_steps=n_steps, batch_size=batch_size,
                     n_epochs=n_epochs, learning_rate=learning_rate, eval_freq=eval_freq,
                     train_fraction=train_fraction, validation_fraction=validation_fraction,
-                    purge_bars=purge_bars, normalizer_fit="train only", selection="validation net_profit",
-                    features=list(market_feature_names(lookback)), holdout_test_evaluated=False,
+                    purge_bars=purge_bars, normalizer_fit="train only", selection="validation risk_adjusted_score",
+                    features=list(market_feature_names(lookback)), holdout_test_evaluated=False, holdout_use="research; previously examined historical snapshot, requires fresh data for confirmation",
                     source_quant_metadata=raw.attrs,
                     splits={name:dict(rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
                                       end=frame.timestamp.iloc[-1].isoformat())
@@ -219,7 +234,8 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
         manifest["normalizer_sha256"] = normalizer_hash
         manifest["best_model_sha256"] = file_sha256(output_dir/"best_ppo_agent.zip")
         manifest["actual_timesteps"] = int(model.num_timesteps)
-        manifest["best_validation_net_profit"] = float(callback.best_score)
+        manifest["best_validation_net_profit"] = float(callback.best_profit)
+        manifest["best_validation_score"] = float(callback.best_score)
         manifest["best_model"] = str((output_dir/"best_ppo_agent.zip").resolve())
         write_json(output_dir/"training_manifest.json", manifest)
     finally:
@@ -251,15 +267,27 @@ def main():
     parser.add_argument("--n-epochs", type=int, default=10)
     parser.add_argument("--eval-freq", type=int, default=25_000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument('--min-confidence',type=float,default=.70)
+    parser.add_argument('--min-expected-edge',type=float,default=.02)
+    parser.add_argument('--risk-drawdown-limit',type=float,default=.20)
+    parser.add_argument('--trade-penalty',type=float,default=.05)
+    parser.add_argument('--blocked-penalty',type=float,default=.25)
+    parser.add_argument('--overtrade-penalty',type=float,default=2.)
+    parser.add_argument('--drawdown-penalty',type=float,default=10.)
     args = vars(parser.parse_args())
+    risk = RiskConfig(min_confidence=args.pop('min_confidence'),min_expected_edge=args.pop('min_expected_edge'),
+                      drawdown_limit=args.pop('risk_drawdown_limit'),trade_penalty=args.pop('trade_penalty'),
+                      blocked_penalty=args.pop('blocked_penalty'),overtrade_penalty=args.pop('overtrade_penalty'),
+                      drawdown_penalty=args.pop('drawdown_penalty'))
     account = AccountConfig(**{key:args.pop(key) for key in
                               ("initial_balance", "stake", "payout", "tie_policy",
                                "inactivity_penalty", "max_drawdown")})
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     input_path = args.pop("input")
-    result = train(input_path, account=account, **args)
+    result = train(input_path, account=account, risk=risk, **args)
     LOG.info("Mejor modelo: %s; test reservado sin evaluar", result["best_model"])
 
 
 if __name__ == "__main__":
     main()
+

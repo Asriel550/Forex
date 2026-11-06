@@ -109,6 +109,7 @@ jobs:
         with:
           name: forex-reports-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            reports/*.md
             reports/*.json
             reports/*.csv
             reports/*.png

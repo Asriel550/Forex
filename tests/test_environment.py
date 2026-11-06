@@ -1,5 +1,6 @@
 """Liquidación determinista, límites temporales y observaciones sin futuro."""
 from dataclasses import replace
+from src.decision import RiskConfig
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,8 @@ def prepared_frame(closes, times=None):
 
 
 def env_for(closes, **kwargs):
+    # Liquidación base se prueba sin shaping/filtro; riesgo se prueba por separado.
+    kwargs.setdefault("risk",RiskConfig(enabled=False))
     return BinaryOptionsEnv(prepared_frame(closes), prepared=True, lookback=2, **kwargs)
 
 
@@ -111,7 +114,7 @@ def test_episode_length_truncates_after_exact_number_of_transitions():
 def test_gap_never_becomes_a_15_minute_contract():
     times = pd.to_datetime(['2024-01-05T21:15Z','2024-01-05T21:30Z','2024-01-05T21:45Z',
                             '2024-01-07T22:00Z','2024-01-07T22:15Z'])
-    env = BinaryOptionsEnv(prepared_frame([1.1,1.2,1.3,1.0,1.1],times), prepared=True, lookback=2)
+    env = BinaryOptionsEnv(prepared_frame([1.1,1.2,1.3,1.0,1.1],times), prepared=True, lookback=2,risk=RiskConfig(enabled=False))
     assert env.segments == ((0,2),(3,4))
     env.reset()
     env.step(2)
@@ -201,3 +204,4 @@ def test_next_close_is_unobservable_until_after_action():
     np.testing.assert_array_equal(up.reset()[0],down.reset()[0])
     assert up.step(2)[1] == .8
     assert down.step(2)[1] == -1.
+

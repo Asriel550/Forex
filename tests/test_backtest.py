@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from src import backtest as bt
+from src.decision import RiskConfig
 from src.environment import AccountConfig,fit_normalizer,prepare_market_data
 from src.metrics import calculate_metrics,export_reports
 from src.train import train
@@ -32,7 +33,7 @@ class Policy:
 
 def simulate(frame,actions,account=None):
     policy=Policy(actions)
-    result=bt.simulate_holdout(policy,frame,account=account or AccountConfig(),lookback=2,normalizer=fit_normalizer(frame,2))
+    result=bt.simulate_holdout(policy,frame,account=account or AccountConfig(),lookback=2,normalizer=fit_normalizer(frame,2),risk=RiskConfig(enabled=False))
     return policy,result
 
 
@@ -142,7 +143,7 @@ def test_policy_only_receives_holdout(bundle,tmp_path,monkeypatch):
 
 def test_changed_future_cannot_change_earlier_observations():
     a=ready_prices([1.1,1.2,1.1,1.2,1.3]);b=a.copy();b.loc[4,'close']=1.0
-    pa,pb=Policy([2]*4),Policy([2]*4);kwargs=dict(account=AccountConfig(),lookback=2,normalizer=fit_normalizer(a.iloc[:2],2))
+    pa,pb=Policy([2]*4),Policy([2]*4);kwargs=dict(account=AccountConfig(),lookback=2,normalizer=fit_normalizer(a.iloc[:2],2),risk=RiskConfig(enabled=False))
     ra=bt.simulate_holdout(pa,a,**kwargs);rb=bt.simulate_holdout(pb,b,**kwargs)
     for left,right in zip(pa.observations,pb.observations):np.testing.assert_array_equal(left,right)
     assert ra[0].profit.iloc[-1]==8 and rb[0].profit.iloc[-1]==-10
@@ -156,3 +157,4 @@ def test_actual_checkpoint_is_repeatable_and_exports_png(bundle,tmp_path):
     assert a==b
     for name in ('metrics.json','trades.csv','equity.csv','signals.csv'):assert (tmp_path/'a'/name).exists()
     for name in ('signals.png','equity_drawdown.png'):assert (tmp_path/'a'/name).read_bytes().startswith(b'\x89PNG')
+

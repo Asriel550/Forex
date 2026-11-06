@@ -22,7 +22,7 @@ def test_incremental_garch_matches_full_engine_across_refits():
     base=enrich_features(raw.iloc[:700],config)
     incremental=tb.extend_quant_history(base,raw.iloc[699:])
     full=enrich_features(raw,config)
-    names=['cond_volatility','dist_p95','dist_p05','mc_p05','mc_p95']
+    names=['cond_volatility','dist_p95','dist_p05','mc_p05','mc_p95','mc_prob_up','mc_prob_down','mc_prob_tie']
     np.testing.assert_allclose(incremental[names],full[names],rtol=1e-12,atol=1e-14,equal_nan=True)
     assert incremental.attrs['source_rows']==900
 
@@ -169,3 +169,15 @@ def test_static_history_cannot_emit_stale_alert(bundle,tmp_path,monkeypatch):
                       state_path=tmp_path/'state.json',input_dir=tmp_path/'files')
     sender.assert_not_called();model.assert_not_called()
     assert not (tmp_path/'state.json').exists()
+
+
+def test_telegram_inference_applies_same_confidence_gate_as_training(bundle,tmp_path,monkeypatch):
+    root,path,raw=bundle;clock=raw.timestamp.iloc[-1]+pd.Timedelta(minutes=16)
+    monkeypatch.setattr(tb,'load_data',lambda **kwargs:raw.iloc[799:].copy())
+    model=tb.load_agent(root/'models/best_ppo_agent.zip')
+    monkeypatch.setattr(model,'predict',lambda *a,**kw:(np.array(2),None))
+    monkeypatch.setattr(tb,'load_agent',lambda *a,**kw:model)
+    result=tb.run_signal(model_dir=root/'models',history_path=path,state_path=tmp_path/'state.json',now=clock,dry_run=True)
+    assert result['action']==1 and result['decision']['requested_action']==2
+    assert result['decision']['blocked'] and result['decision']['filter_reason']=='confidence'
+    assert 'NEUTRO' in result['message'] and not (tmp_path/'state.json').exists()
