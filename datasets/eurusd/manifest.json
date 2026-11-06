@@ -1,0 +1,462 @@
+{
+  "provider": "HistData.com",
+  "instrument": "EURUSD",
+  "source_timeframe": "M1",
+  "output_timeframe": "M15",
+  "source_timezone": "EST fixed UTC-05:00 without DST",
+  "output_timezone": "UTC",
+  "acquired_at": "2026-11-06T20:09:17.063360+00:00",
+  "sources": [
+    {
+      "period": "2021",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2021",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_2021.zip",
+      "sha256": "64af4aa52958685a6889cfa15df400c62dc6ad543cf6ea10a13a0d3a7e01a563",
+      "bytes": 3285118,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2021.csv",
+          "uncompressed_bytes": 19953108
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2021.txt",
+          "uncompressed_bytes": 341751
+        }
+      ]
+    },
+    {
+      "period": "2022",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2022",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_2022.zip",
+      "sha256": "5ed361f3d93107f644834cac06870e830f9dc887d5aa5fde4b90c2accdf773f3",
+      "bytes": 3545446,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2022.csv",
+          "uncompressed_bytes": 20134710
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2022.txt",
+          "uncompressed_bytes": 114213
+        }
+      ]
+    },
+    {
+      "period": "2023",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2023",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_2023.zip",
+      "sha256": "26e41c4bccfd70f2c76ef7f3ffcba0e3b7097231927a41640f4a7c442815f34a",
+      "bytes": 2919186,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2023.csv",
+          "uncompressed_bytes": 17422452
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2023.txt",
+          "uncompressed_bytes": 167328
+        }
+      ]
+    },
+    {
+      "period": "2024",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2024",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_2024.zip",
+      "sha256": "58f074ba6b835eb2fbeaeb6678502a23b26768eefdfa509eb75ff5296bb2904d",
+      "bytes": 3229550,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2024.csv",
+          "uncompressed_bytes": 20108466
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2024.txt",
+          "uncompressed_bytes": 184031
+        }
+      ]
+    },
+    {
+      "period": "2025",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2025",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_2025.zip",
+      "sha256": "b7c23d20b9577588a8b13508d58fedbe487e569b7b8b5dd368bd1d2b61115de0",
+      "bytes": 3441226,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2025.csv",
+          "uncompressed_bytes": 20092536
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_2025.txt",
+          "uncompressed_bytes": 108302
+        }
+      ]
+    },
+    {
+      "period": "202601",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/1",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202601.zip",
+      "sha256": "7c3ad3ae3626d6ee9575c07679212424799f3b32aac056c42584db1b89298137",
+      "bytes": 274312,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202601.csv",
+          "uncompressed_bytes": 1628046
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202601.txt",
+          "uncompressed_bytes": 8480
+        }
+      ]
+    },
+    {
+      "period": "202602",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/2",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202602.zip",
+      "sha256": "2e38a7ae97579b0ac0180878df23b2e43aa7ee5cd7ef377f06f0f845fa8bd9e7",
+      "bytes": 258342,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202602.csv",
+          "uncompressed_bytes": 1549962
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202602.txt",
+          "uncompressed_bytes": 6984
+        }
+      ]
+    },
+    {
+      "period": "202603",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/3",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202603.zip",
+      "sha256": "f55203d8661af3e0ce04bee4fe2dd3d22dcf42aa93a50af9948cf939a7eeb313",
+      "bytes": 305630,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202603.csv",
+          "uncompressed_bytes": 1726866
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202603.txt",
+          "uncompressed_bytes": 6432
+        }
+      ]
+    },
+    {
+      "period": "202604",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/4",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202604.zip",
+      "sha256": "4141266da0c7cd9aab2f608ccf7d79bffb3fe573a4ad8745ee2381c2e6deb758",
+      "bytes": 283980,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202604.csv",
+          "uncompressed_bytes": 1702674
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202604.txt",
+          "uncompressed_bytes": 12937
+        }
+      ]
+    },
+    {
+      "period": "202605",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/5",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202605.zip",
+      "sha256": "200b70301142ed9ce112ba65896bddbe199592977b030342603d643f571f03fe",
+      "bytes": 260358,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202605.csv",
+          "uncompressed_bytes": 1595430
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202605.txt",
+          "uncompressed_bytes": 13255
+        }
+      ]
+    },
+    {
+      "period": "202606",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/6",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202606.zip",
+      "sha256": "f339d646269816031689c2f84d69db58fdfbbac23bd23a4a0c1a2323430c7713",
+      "bytes": 278938,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202606.csv",
+          "uncompressed_bytes": 1702080
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202606.txt",
+          "uncompressed_bytes": 14270
+        }
+      ]
+    },
+    {
+      "period": "202607",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/7",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202607.zip",
+      "sha256": "d5e51949169327a82a50c52182486397b206fd95d5a0c06b700b89b435eace26",
+      "bytes": 284767,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202607.csv",
+          "uncompressed_bytes": 1756998
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202607.txt",
+          "uncompressed_bytes": 14216
+        }
+      ]
+    },
+    {
+      "period": "202608",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/8",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202608.zip",
+      "sha256": "65c7c5d0f170abf4a60b86908723ef5068ccec7aa3c76baefbe8542f87eed5b3",
+      "bytes": 258302,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202608.csv",
+          "uncompressed_bytes": 1646784
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202608.txt",
+          "uncompressed_bytes": 16793
+        }
+      ]
+    },
+    {
+      "period": "202609",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/9",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202609.zip",
+      "sha256": "cac4e7b1e7bf6510eb5b3bdb4b336e87706c63ea8be740efefa1bb2ef2b39f09",
+      "bytes": 259835,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202609.csv",
+          "uncompressed_bytes": 1633230
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202609.txt",
+          "uncompressed_bytes": 14867
+        }
+      ]
+    },
+    {
+      "period": "202610",
+      "provider": "HistData.com",
+      "source_url": "https://www.histdata.com/download-free-forex-historical-data/?/ascii/1-minute-bar-quotes/eurusd/2026/10",
+      "zip_file": "HISTDATA_COM_ASCII_EURUSD_M1_202610.zip",
+      "sha256": "eda8700ef26c8e1c57dd4fc5f0669e612cfca1fd602f9bb301b508a2a6fd1737",
+      "bytes": 279914,
+      "entries": [
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202610.csv",
+          "uncompressed_bytes": 1683180
+        },
+        {
+          "name": "DAT_ASCII_EURUSD_M1_202610.txt",
+          "uncompressed_bytes": 6734
+        }
+      ]
+    }
+  ],
+  "source_audit": [
+    {
+      "period": "2021",
+      "source_rows": 369502,
+      "valid_unique_m1": 369442,
+      "exact_duplicate_rows_removed": 60,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "2022",
+      "source_rows": 372865,
+      "valid_unique_m1": 372805,
+      "exact_duplicate_rows_removed": 60,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "2023",
+      "source_rows": 322638,
+      "valid_unique_m1": 322578,
+      "exact_duplicate_rows_removed": 60,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "2024",
+      "source_rows": 372379,
+      "valid_unique_m1": 372379,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "2025",
+      "source_rows": 372084,
+      "valid_unique_m1": 372024,
+      "exact_duplicate_rows_removed": 60,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202601",
+      "source_rows": 30149,
+      "valid_unique_m1": 30149,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202602",
+      "source_rows": 28703,
+      "valid_unique_m1": 28703,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202603",
+      "source_rows": 31979,
+      "valid_unique_m1": 31979,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202604",
+      "source_rows": 31531,
+      "valid_unique_m1": 31531,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202605",
+      "source_rows": 29545,
+      "valid_unique_m1": 29545,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202606",
+      "source_rows": 31520,
+      "valid_unique_m1": 31520,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202607",
+      "source_rows": 32537,
+      "valid_unique_m1": 32529,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": [
+        "20260705 173100",
+        "20260705 173200",
+        "20260705 173400",
+        "20260705 173500"
+      ]
+    },
+    {
+      "period": "202608",
+      "source_rows": 30496,
+      "valid_unique_m1": 30496,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202609",
+      "source_rows": 30245,
+      "valid_unique_m1": 30245,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": []
+    },
+    {
+      "period": "202610",
+      "source_rows": 31170,
+      "valid_unique_m1": 31166,
+      "exact_duplicate_rows_removed": 0,
+      "conflicting_m1_timestamps_excluded": [
+        "20261009 110200",
+        "20261009 110300"
+      ]
+    }
+  ],
+  "aggregation": "open=first high=max low=min close=last volume=sum, exactly 15 unique M1 observations",
+  "policy": "Drop all conflicting M1 timestamps, then incomplete M15 groups. No interpolation, no forward-fill, no invented volume/prices.",
+  "exclusions_note": "Observed source omissions, NOT claims that the Forex market was closed. Environment terminates at every time gap.",
+  "rows": 135706,
+  "unique_m1_rows": 2117091,
+  "incomplete_m15_groups": 6234,
+  "missing_open_session_m15": 10853,
+  "exclusion_intervals": 4767,
+  "exclusions_path": "config/closures.json",
+  "exclusions_sha256": "8a152faad47f6c5c78b4cc01afbd999c4211c4cf79c93874fbb931e4a548bb3b",
+  "assets": [
+    {
+      "path": "datasets/eurusd/EURUSD_M15_UTC_2021.zip",
+      "rows": 22859,
+      "sha256": "0478975701310ee56ca6ed7197acb75f78ed403ff8c1eebb2eee57df111f9886",
+      "csv_sha256": "b161be82ca75241386288e6045d6dc8a52e03188566d8d25a31cd52f8cb2ccef",
+      "bytes": 270444,
+      "first_open_utc": "2021-01-03T22:15:00+00:00",
+      "last_open_utc": "2021-12-31T21:30:00+00:00"
+    },
+    {
+      "path": "datasets/eurusd/EURUSD_M15_UTC_2022.zip",
+      "rows": 24222,
+      "sha256": "c7b0758fabc13a5d980fe671c7094c2c5c339c6e9a933f0e5729071eb2b64748",
+      "csv_sha256": "9d4cc54ddde72026f84352341786081ca8bb9882eecbc7f9a3b29f81d3773511",
+      "bytes": 300112,
+      "first_open_utc": "2022-01-02T22:15:00+00:00",
+      "last_open_utc": "2022-12-30T21:30:00+00:00"
+    },
+    {
+      "path": "datasets/eurusd/EURUSD_M15_UTC_2023.zip",
+      "rows": 20836,
+      "sha256": "ca69858ca66e2c7063695e1bac93300acf465e8505b097ca96227c919ce958db",
+      "csv_sha256": "10529066877e0ff5a56067f22cb68573232511b0eb4caacb49d4e9665c575326",
+      "bytes": 252124,
+      "first_open_utc": "2023-01-01T23:30:00+00:00",
+      "last_open_utc": "2023-12-29T21:30:00+00:00"
+    },
+    {
+      "path": "datasets/eurusd/EURUSD_M15_UTC_2024.zip",
+      "rows": 23799,
+      "sha256": "d334e480589126acd20793304c22024a8e862d31a6c73fada9d0c383f04b2e7b",
+      "csv_sha256": "5e3489a2c8c5dc8c5e1148dfe9867541ae0a587fc7cc46e78b1a582fb8cb8144",
+      "bytes": 276704,
+      "first_open_utc": "2024-01-01T22:00:00+00:00",
+      "last_open_utc": "2024-12-31T21:30:00+00:00"
+    },
+    {
+      "path": "datasets/eurusd/EURUSD_M15_UTC_2025.zip",
+      "rows": 24160,
+      "sha256": "b138be7937acc95c96a47c1f415c9bd45e49dc757d594655191824eacef0e3d0",
+      "csv_sha256": "2875e873a45d0abc596c7bf2b3b9964070b6ffc4fde61488c2b4cde505d55449",
+      "bytes": 292765,
+      "first_open_utc": "2025-01-01T22:15:00+00:00",
+      "last_open_utc": "2025-12-31T21:00:00+00:00"
+    },
+    {
+      "path": "datasets/eurusd/EURUSD_M15_UTC_2026.zip",
+      "rows": 19830,
+      "sha256": "a4142ba13b96d6af08de87ef04395af6d51c34d11ab82b74e64028c17921ea71",
+      "csv_sha256": "d6f6b8330a532f7f9398ccc294f2e930aa9caca0c05fa53d4735c17de575fd5d",
+      "bytes": 234053,
+      "first_open_utc": "2026-01-01T22:15:00+00:00",
+      "last_open_utc": "2026-10-30T20:30:00+00:00"
+    }
+  ]
+}

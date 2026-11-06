@@ -10,7 +10,7 @@ Incluye los archivos completos modificados, los dos tests nuevos y este manual.
 2. En GitHub, Settings > Secrets and variables > Actions, crear secretos de
    repositorio TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID. No escribirlos en código,
    YAML, logs o issues. El bot debe poder publicar en el chat/canal configurado.
-3. Subir históricos reales a datasets/eurusd/ según [la guía](static_ingestion.md).
+3. El snapshot HistData de 2021–octubre de 2026 ya está incluido en datasets/eurusd/, con su manifiesto y exclusiones; no requiere carga manual.
 4. Ejecutar el workflow manual con mode=train. Esto vuelve a generar features,
    entrena, ejecuta el holdout y publica el artefacto forex-alert-bundle.
 5. Tras una ejecución exitosa, ejecutar manualmente mode=alerts o dejar el cron.

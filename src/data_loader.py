@@ -64,14 +64,21 @@ def expected_grid(start,end,closures=()):
     """Convención Forex domingo 17–viernes 17 Nueva York, con DST.
 
     Este calendario es independiente de EST fijo utilizado en los archivos.
-    Festivos y pausas adicionales requieren cierres explícitos.
+    Festivos y exclusiones del proveedor requieren intervalos documentados.
+    Una exclusión por falta de datos no implica que el mercado estuviera cerrado.
     """
     grid = pd.date_range(utc(start).ceil('15min'),utc(end),freq='15min',inclusive='left')
     ny = grid.tz_convert('America/New_York')
     day,hour = ny.dayofweek,ny.hour
     active = (day<4)|((day==4)&(hour<17))|((day==6)&(hour>=17))
-    for item in closures:
-        active &= ~((grid>=utc(item['start']))&(grid<utc(item['end'])))
+    if closures:
+        # O(n + k log n), incluso con miles de exclusiones del feed.
+        starts = pd.DatetimeIndex([utc(item['start']) for item in closures])
+        ends = pd.DatetimeIndex([utc(item['end']) for item in closures])
+        changes = np.zeros(len(grid)+1,dtype=np.int64)
+        np.add.at(changes,grid.searchsorted(starts,side='left'),1)
+        np.add.at(changes,grid.searchsorted(ends,side='left'),-1)
+        active &= np.cumsum(changes[:-1])==0
     return grid[active]
 
 
@@ -413,7 +420,7 @@ def main():
     parser.add_argument('--epoch-unit',choices=['s','ms','us','ns'])
     parser.add_argument('--encoding',default='utf-8-sig')
     parser.add_argument('--start');parser.add_argument('--end')
-    parser.add_argument('--closures',type=Path)
+    parser.add_argument('--closures',type=Path,default=ROOT/'config/closures.json' if (ROOT/'config/closures.json').exists() else None)
     parser.add_argument('--force',action='store_true')
     parser.add_argument('--max-bytes',type=int,default=512*1024*1024)
     parser.add_argument('--max-members',type=int,default=2000)

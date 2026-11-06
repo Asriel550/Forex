@@ -1,10 +1,49 @@
 # Ingesta estática EUR/USD M15
 
-La ejecución no llama a Dukascopy, Yahoo, OANDA ni HistData. El operador aporta
-archivos reales previamente obtenidos con permiso de uso. No se incluyen datos
-inventados ni se cambia de proveedor automáticamente.
+El pipeline de entrenamiento lee el snapshot HistData ya incluido en el
+repositorio: no llama a Dukascopy, Yahoo, OANDA ni HistData y no requiere cargas
+manuales. Se adquirieron los años 2021–2025 y enero–octubre de 2026 directamente
+del sitio oficial, con su formulario normal de descarga. El sitio publica M1;
+se convirtieron a M15 UTC sin interpolación. Ver datasets/eurusd/manifest.json.
 
-## Desde Android y GitHub Actions
+## Snapshot ya instalado
+
+Hay seis ZIP anuales con 135,706 velas M15. config/closures.json documenta solo
+los intervalos ausentes comprobados en estas fuentes. Algunos corresponden a
+minutos incompletos o contradictorios y otros a ausencia total de cotizaciones.
+No se han clasificado como festivos ni como cierres del mercado. Son exclusiones
+del dataset y el entorno corta los episodios en los saltos temporales. El motor
+GARCH usa retornos entre observaciones disponibles, como en el contrato original;
+la ausencia de cotizaciones limita la representatividad de las métricas.
+
+El CLI usa config/closures.json por defecto si existe. Desde Python, pasar
+closures=read_closures("config/closures.json") explícitamente. Los huecos que no
+figuran en esa lista siguen fallando.
+
+## Reproducir la adquisición (opcional, fuera del pipeline)
+
+```bash
+python scripts/acquire_histdata.py --start-year 2021 --end-year 2025 --through-month 2026-10
+python scripts/build_histdata_dataset.py
+python -m src.data_loader --closures config/closures.json
+```
+
+El primer script descarga una vez los ZIP originales al directorio ignorado
+data/histdata_raw; valida formato ZIP/CRC y registra SHA256. Usa el formulario
+público normal de HistData, con sesión y referer, de forma secuencial. No sortea
+CAPTCHAs ni bloqueos y falla si el proveedor no publica el archivo.
+El segundo comprueba esos hashes, elimina duplicados exactos, excluye todos los
+minutos contradictorios y conserva solo grupos de 15 minutos completos. Produce
+los ZIP deterministas, el manifiesto y las exclusiones. Los originales permanecen
+fuera de Git; los archivos compactos M15 necesarios para Actions quedan en Git.
+
+Los scripts son para renovar el snapshot de forma controlada; no se ejecutan
+en cron ni en cada entrenamiento y no implican disponibilidad futura del sitio.
+
+## Añadir o sustituir archivos desde Android (opcional)
+
+Estos pasos son solo para renovar o ampliar el snapshot; el histórico requerido
+ya está incluido.
 
 1. En GitHub web abrir datasets/eurusd y elegir Add file → Upload files. Subir
    CSV o ZIP; no es necesario descomprimirlos en Android. Si los controles no
@@ -68,7 +107,8 @@ Festivos o pausas verificadas se pueden documentar en config/closures.json:
 [{"start":"2024-12-25T00:00:00Z","end":"2024-12-26T00:00:00Z","reason":"Ejemplo: sustituir por cierre comprobado del proveedor"}]
 ```
 
-No declarar cierres ficticios para ocultar datos que faltan. La ingesta sin
+No declarar cierres ficticios. Las exclusiones incluidas identifican observaciones
+ausentes/descartadas verificadas del feed, sin afirmar un cierre de mercado. La ingesta sin
 start/end carga todo el rango cerrado disponible; no exige llegar a hoy.
 Se conserva el último Parquet válido si la actualización falla. La caché
 compara SHA256 del contenido y parámetros, y se publica con reemplazo atómico
@@ -91,7 +131,8 @@ from src.data_loader import load_data
 from src.quant_engine import enrich_features
 from src.environment import prepare_market_data
 
-raw = load_data(input_dir="datasets/eurusd")
+from src.data_loader import read_closures
+raw = load_data(input_dir="datasets/eurusd", closures=read_closures("config/closures.json"))
 features = enrich_features(raw)
 prepared = prepare_market_data(features)
 ```
