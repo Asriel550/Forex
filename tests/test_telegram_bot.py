@@ -76,6 +76,19 @@ def test_credentials_error_is_redacted():
     assert 'SECRET' not in str(error.value)
 
 
+@pytest.mark.parametrize('status',[500,502,503,504])
+def test_5xx_with_ok_false_remains_uncertain_without_retry(status):
+    client=Mock()
+    response=api_response(status,{'ok':False,'error_code':status,'description':'SECRET'})
+    client.post.return_value=response
+    with pytest.raises(tb.AlertError) as error:
+        tb.send_telegram('SECRET','1','hi',session=client)
+    assert not isinstance(error.value,tb.TelegramRejected)
+    assert 'SECRET' not in str(error.value)
+    assert client.post.call_count==1
+    response.close.assert_called_once()
+
+
 @pytest.fixture(scope='module')
 def bundle(tmp_path_factory):
     root=tmp_path_factory.mktemp('telegram-bundle')
@@ -114,6 +127,23 @@ def test_uncertain_delivery_remains_pending_and_does_not_repeat(bundle,tmp_path,
     assert json.loads((tmp_path/'state.json').read_text())['status']=='pending'
     with pytest.raises(tb.SignalSkipped):tb.run_signal(**kwargs)
     assert sender.call_count==1
+
+
+def test_server_error_body_cannot_reopen_outbox_for_duplicate_delivery(bundle,tmp_path,monkeypatch):
+    root,path,raw=bundle;clock=raw.timestamp.iloc[-1]+pd.Timedelta(minutes=16)
+    monkeypatch.setattr(tb,'load_data',lambda **kwargs:raw.iloc[799:].copy())
+    monkeypatch.setattr(tb,'current_utc',lambda:clock)
+    monkeypatch.setenv('TELEGRAM_BOT_TOKEN','TEST_SECRET');monkeypatch.setenv('TELEGRAM_CHAT_ID','-1')
+    client=Mock();client.post.return_value=api_response(500,{'ok':False,'error_code':500})
+    original_send=tb.send_telegram
+    monkeypatch.setattr(tb,'send_telegram',lambda *a,**kw:original_send(*a,session=client,**kw))
+    state=tmp_path/'server-error-state.json'
+    kwargs=dict(model_dir=root/'models',history_path=path,state_path=state,now=clock)
+    with pytest.raises(tb.AlertError) as error:tb.run_signal(**kwargs)
+    assert not isinstance(error.value,tb.TelegramRejected)
+    assert json.loads(state.read_text())['status']=='pending'
+    with pytest.raises(tb.SignalSkipped):tb.run_signal(**kwargs)
+    assert client.post.call_count==1
 
 
 
