@@ -1,0 +1,4 @@
+Integración completa: 110 passed, 1 skipped in 9.74s.
+Prueba omitida: acceso real a Dukascopy.
+HTTP y Telegram simulados; PPO/GARCH/holdout probados con históricos sintéticos.
+Los tests no acreditan rentabilidad ni envío real a Telegram.

@@ -1,0 +1,11 @@
+# Inference-only CPU stack; torch CPU is preinstalled by the workflow.
+numpy>=1.26.4,<3
+pandas>=2.2.3,<3
+pyarrow>=18,<27
+requests>=2.32,<3
+filelock>=3.16,<5
+arch>=7.2,<9
+scipy>=1.13,<2
+gymnasium==1.1.1
+stable-baselines3==2.7.1
+torch==2.6.0
