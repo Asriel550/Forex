@@ -216,6 +216,12 @@ def send_telegram(token, chat_id, text, *, session=None, max_attempts=3, max_wai
             except (ValueError,TypeError):
                 payload = {}
             status = response.status_code
+            if status >= 500:
+                # Un fallo del servidor no confirma que sendMessage no se
+                # procesó, aun si el cuerpo incluye ok:false. La outbox debe
+                # seguir pending para impedir un segundo envío incierto.
+                response.close()
+                raise AlertError('Telegram: entrega no confirmada por fallo del servidor; no se reintenta automáticamente')
             if status == 429 or payload.get('error_code') == 429:
                 delay = max(retry_after_seconds(response.headers.get('Retry-After')),
                             retry_after_seconds(payload.get('parameters',{}).get('retry_after')),1.)
