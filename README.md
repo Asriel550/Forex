@@ -57,7 +57,7 @@ inferencia separados. Las PR solo ejecutan pruebas sin secretos. La investigaci�
 lee los archivos estáticos de datasets/eurusd, calcula features, entrena, evalúa
 el holdout y publica el artefacto forex-alert-bundle. No descarga cotizaciones.
 
-1. Subir los archivos reales CSV/ZIP de EUR/USD a datasets/eurusd/ ([guía](docs/static_ingestion.md)).
+1. Los archivos HistData de 2021–2025 y enero–octubre de 2026 ya están incluidos en datasets/eurusd/. No hace falta subirlos manualmente ([procedencia](datasets/eurusd/manifest.json)).
 2. Añadir los secretos de repositorio TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID.
 3. Dar al bot permiso para publicar en el chat/canal configurado.
 4. Ejecutar manualmente el workflow con mode=train y esperar a que termine bien.
@@ -77,6 +77,13 @@ EST fijo (UTC-5), sin horario de verano. Los M1 con nombre oficial se agregan a
 M15 con 15 minutos completos; para M1 renombrados usar --input-timeframe M1.
 Los CSV ya convertidos a UTC deben incluir Z/offset o usar --timezone UTC.
 No se interpolan huecos. Cierres comprobados se declaran en config/closures.json.
+
+El snapshot incluido contiene 135,706 velas M15 UTC. Se descargaron 15 ZIP
+oficiales de HistData y se agregaron únicamente grupos de 15 minutos completos.
+Se excluyeron minutos contradictorios y grupos incompletos; config/closures.json
+registra los huecos observados del feed, sin afirmar que fueran cierres de
+mercado y sin rellenarlos. La validación sigue rechazando huecos no documentados.
+El entorno separa los segmentos y no expira contratos atravesando un hueco.
 
 Un histórico estático sirve para investigar y entrenar. Para señales vigentes
 hay que actualizar los archivos con la última vela cerrada; el cron no obtiene
