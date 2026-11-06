@@ -24,6 +24,8 @@ env:
   MKL_NUM_THREADS: '1'
   MPLBACKEND: Agg
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  FOREX_INPUT_TIMEFRAME: ${{ vars.FOREX_INPUT_TIMEFRAME || 'auto' }}
+  FOREX_SOURCE_TIMEZONE: ${{ vars.FOREX_SOURCE_TIMEZONE || 'EST' }}
 
 jobs:
   unit-tests:
@@ -73,22 +75,13 @@ jobs:
         run: |
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements.txt
-      - id: historical-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            data/chunks
-            data/eurusd_m15.parquet
-          key: dukascopy-daily-v3-${{ hashFiles('src/data_loader.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            dukascopy-daily-v3-${{ hashFiles('src/data_loader.py') }}-
-      - name: Ingest five years with paced daily blocks
-        timeout-minutes: 120
+      - name: Read static EURUSD CSV or ZIP files
+        timeout-minutes: 20
         run: |
           if [ -f config/closures.json ]; then
-            python -m src.data_loader --years 5 --closures config/closures.json
+            python -m src.data_loader --input-dir datasets/eurusd --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE" --closures config/closures.json
           else
-            python -m src.data_loader --years 5
+            python -m src.data_loader --input-dir datasets/eurusd --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE"
           fi
       - name: Causal quant features and continuation state
         timeout-minutes: 45
@@ -110,14 +103,6 @@ jobs:
             data/eurusd_m15_features.parquet
           if-no-files-found: error
           retention-days: 30
-      - name: Save completed and partial historical checkpoints
-        if: always() && steps.historical-cache.outcome == 'success'
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            data/chunks
-            data/eurusd_m15.parquet
-          key: ${{ steps.historical-cache.outputs.cache-primary-key }}
       - name: Upload research reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -189,19 +174,18 @@ jobs:
         with:
           path: |
             data/live_m15.parquet
-            data/chunks
             data/telegram_state.json
-          key: telegram-live-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: telegram-live-v1-
+          key: telegram-static-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: telegram-static-v2-
       - name: Infer closed candle and send Telegram alert
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -f config/closures.json ]; then
-            python -m src.telegram_bot --closures config/closures.json
+            python -m src.telegram_bot --input-dir datasets/eurusd --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE" --closures config/closures.json
           else
-            python -m src.telegram_bot
+            python -m src.telegram_bot --input-dir datasets/eurusd --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE"
           fi
       - name: Persist sent or uncertain delivery state
         if: always() && steps.live-cache.outcome == 'success'
@@ -209,6 +193,6 @@ jobs:
         with:
           path: |
             data/live_m15.parquet
-            data/chunks
             data/telegram_state.json
           key: ${{ steps.live-cache.outputs.cache-primary-key }}
+

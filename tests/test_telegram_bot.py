@@ -125,3 +125,17 @@ def test_truncated_warmup_cannot_silently_shorten_refit_window():
     # más retornos de los que quedaron después de quitar el warmup.
     with pytest.raises(tb.AlertError,match='Contexto histórico insuficiente'):
         tb.extend_quant_history(baseline,raw.iloc[699:])
+
+
+
+def test_static_history_cannot_emit_stale_alert(bundle,tmp_path,monkeypatch):
+    root,path,raw=bundle
+    clock=raw.timestamp.iloc[-1]+pd.Timedelta(minutes=16)
+    monkeypatch.setattr(tb,'load_data',lambda **kwargs:raw.iloc[:800].copy())
+    sender=Mock();monkeypatch.setattr(tb,'send_telegram',sender)
+    model=Mock();monkeypatch.setattr(tb,'load_agent',model)
+    with pytest.raises(tb.SignalSkipped):
+        tb.run_signal(model_dir=root/'models',history_path=path,now=clock,
+                      state_path=tmp_path/'state.json',input_dir=tmp_path/'files')
+    sender.assert_not_called();model.assert_not_called()
+    assert not (tmp_path/'state.json').exists()

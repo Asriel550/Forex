@@ -23,8 +23,8 @@ import pandas as pd
 import requests
 
 from .agent import load_agent
-from .data_loader import (STEP, expected_grid, load_data, read_closures,
-                          retry_after_seconds, utc, wait_seconds)
+from .data_loader import STEP, DEFAULT_INPUT_DIR, expected_grid, load_data, read_closures, utc
+from .http_utils import retry_after_seconds, wait_seconds
 from .environment import AccountConfig, market_feature_names, prepare_market_data
 from .quant_engine import QuantConfig, MonteCarloGBM, SCALE, _fit_garch
 
@@ -239,7 +239,8 @@ def send_telegram(token, chat_id, text, *, session=None, max_attempts=3, max_wai
 
 def run_signal(*, model_dir=ROOT/'models', history_path=ROOT/'data/eurusd_m15_features.parquet',
                state_path=ROOT/'data/telegram_state.json', live_path=ROOT/'data/live_m15.parquet',
-               closures=(), dry_run=False, max_delay_seconds=180, max_model_age_days=14, now=None):
+               closures=(), dry_run=False, max_delay_seconds=180, max_model_age_days=14, now=None,
+               input_dir=DEFAULT_INPUT_DIR, input_timeframe='auto', timezone='EST'):
     clock = utc(now if now is not None else current_utc())
     boundary = clock.floor('15min')
     if not len(expected_grid(boundary,boundary+STEP,closures)):
@@ -249,12 +250,13 @@ def run_signal(*, model_dir=ROOT/'models', history_path=ROOT/'data/eurusd_m15_fe
     baseline,normalizer,manifest = load_bundle(model_dir,history_path)
     if clock-(utc(baseline.timestamp.iloc[-1])+STEP)>pd.Timedelta(days=max_model_age_days):
         raise AlertError('Bundle demasiado antiguo; volver a ejecutar pipeline de entrenamiento')
-    recent = load_data(start=utc(baseline.timestamp.iloc[-1])-pd.Timedelta(days=1),end=boundary,
-                       output=live_path,publication_delay=0,closures=closures,now=clock)
+    recent = load_data(input_dir=input_dir,input_timeframe=input_timeframe,timezone=timezone,
+                       output=live_path,closures=closures,now=clock)
+    assert_fresh(recent.timestamp.iloc[-1],clock,max_delay_seconds)
     anchor = recent.loc[recent.timestamp==baseline.timestamp.iloc[-1]]
     if anchor.empty or not np.allclose(anchor[['open','high','low','close']].iloc[-1].to_numpy(dtype=float),
                                        baseline[['open','high','low','close']].iloc[-1].to_numpy(dtype=float),rtol=0,atol=1e-10):
-        raise AlertError('Dukascopy revisó o no entregó la vela de anclaje; regenerar bundle')
+        raise AlertError('El archivo estático cambió o no contiene la vela de anclaje; regenerar bundle')
     enriched = extend_quant_history(baseline,recent)
     prepared = prepare_market_data(enriched,manifest['lookback'],manifest['indicator_period'])
     row = prepared.iloc[-1]
@@ -303,6 +305,9 @@ def main():
     parser.add_argument('--state',type=Path,default=ROOT/'data/telegram_state.json')
     parser.add_argument('--live-data',type=Path,default=ROOT/'data/live_m15.parquet')
     parser.add_argument('--closures',type=Path)
+    parser.add_argument('--input-dir',type=Path,default=DEFAULT_INPUT_DIR)
+    parser.add_argument('--input-timeframe',choices=['auto','M1','M15'],default='auto')
+    parser.add_argument('--timezone',default='EST')
     parser.add_argument('--dry-run',action='store_true')
     parser.add_argument('--max-delay-seconds',type=int,default=180)
     args = parser.parse_args()
@@ -312,7 +317,8 @@ def main():
     try:
         result = run_signal(model_dir=args.model_dir,history_path=args.history,state_path=args.state,
                             live_path=args.live_data,closures=read_closures(args.closures),
-                            dry_run=args.dry_run,max_delay_seconds=args.max_delay_seconds)
+                            dry_run=args.dry_run,max_delay_seconds=args.max_delay_seconds,
+                            input_dir=args.input_dir,input_timeframe=args.input_timeframe,timezone=args.timezone)
     except SignalSkipped as exc:
         LOG.info('%s',exc)
         return
@@ -327,3 +333,4 @@ def main():
 
 if __name__=='__main__':
     main()
+

@@ -1,4 +1,4 @@
-# Actualización: Dukascopy e inferencia Telegram
+# Inferencia Telegram con archivos estáticos
 
 Este ZIP es una ACTUALIZACIÓN para aplicar en la raíz del proyecto completo
 anterior. No elimina ni reemplaza backtest.py/metrics.py ni el resto de módulos.
@@ -10,9 +10,10 @@ Incluye los archivos completos modificados, los dos tests nuevos y este manual.
 2. En GitHub, Settings > Secrets and variables > Actions, crear secretos de
    repositorio TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID. No escribirlos en código,
    YAML, logs o issues. El bot debe poder publicar en el chat/canal configurado.
-3. Ejecutar el workflow manual con mode=train. Esto vuelve a generar features,
+3. Subir históricos reales a datasets/eurusd/ según [la guía](static_ingestion.md).
+4. Ejecutar el workflow manual con mode=train. Esto vuelve a generar features,
    entrena, ejecuta el holdout y publica el artefacto forex-alert-bundle.
-4. Tras una ejecución exitosa, ejecutar manualmente mode=alerts o dejar el cron.
+5. Tras una ejecución exitosa, ejecutar manualmente mode=alerts o dejar el cron.
 
 El bundle contiene models/best_ppo_agent.zip, normalizer.json,
 training_manifest.json y data/eurusd_m15_features.parquet. Los runners no
@@ -24,25 +25,20 @@ train.py registra hashes de datos, pesos y normalizador. quant_engine.py añade
 source_rows/origin_timestamp para continuar la fase exacta de sus refits.
 Los bundles antiguos sin estos campos deben regenerarse una vez; no se añade
 un origen supuesto a modelos previos. Después el cron no vuelve a entrenar
-cada quince minutos: solo descarga datos recientes y hace inferencia.
+cada quince minutos: solo lee archivos estáticos y hace inferencia. No obtiene nuevas cotizaciones.
 
-## HTTP 429 de Dukascopy
+## Ingesta sin API pública
 
-- GET secuenciales, con una pausa mínima de un segundo por petición.
-- Páginas de hasta 96 velas y checkpoints diarios, en lugar de rangos masivos.
-- Hasta seis intentos por petición, backoff 2/4/8/16/32 segundos más jitter,
-  tope configurable de backoff de 120 segundos y presupuesto de espera de 300.
-- Respeta Retry-After tanto en segundos como en fecha HTTP. Si la espera del
-  servidor supera el presupuesto, aborta sin intentar antes de lo permitido.
-- Reintenta 429 y 500/502/503/504, además de fallos de transporte. No reintenta
-  401/403. El adaptador no añade reintentos ocultos ni hay otra capa que vuelva
-  a multiplicar seis intentos por tres descargas completas.
-- Conserva los checkpoints ya validados. No inventa velas ni cambia de feed.
+Se eliminó el cliente Dukascopy: no hay GET, paginación, pacing ni reintentos
+para datos de mercado. La investigación y el bot leen datasets/eurusd/ con la
+misma resolución y zona configuradas en el workflow. Ver [ingesta estática](static_ingestion.md).
+Los archivos deben conservar la vela de anclaje del bundle y la continuidad
+hasta el último cierre disponible. Si cambian los precios del anclaje se exige
+regenerar el bundle; no se mezclan silenciosamente fuentes distintas.
 
-DownloadPolicy permite ajustar pausas y presupuesto desde Python. La caché
-Parquet final y los controles de cobertura UTC/M15 se conservan. Los cambios
-mitigan rate limiting, pero no eliminan cuotas ni bloqueos del proveedor.
-Esta entrega no afirma haber confirmado disponibilidad real de Dukascopy.
+La actualización de históricos no es un feed en tiempo real. Mientras no se
+aporten archivos recientes, no se enviarán alertas vigentes. No se relajó el
+control de frescura para convertir un histórico viejo en una señal actual.
 
 ## Qué significa una señal
 
@@ -125,15 +121,16 @@ python -m src.telegram_bot
 python -m pytest -q tests/test_rate_limits.py tests/test_telegram_bot.py
 ```
 
---history, --model-dir, --state y --live-data permiten rutas distintas.
+--input-dir, --history, --model-dir, --state y --live-data permiten rutas distintas.
+--input-timeframe y --timezone tienen la misma semántica que data_loader.
 --closures admite los mismos cierres documentados del proveedor que la ingesta.
 --max-delay-seconds puede cambiar el umbral entre 1 y 899, pero no permite
-usar una vela de otro cuarto de hora. No configurar 30 minutos de publicación
-para estas señales: la ruta live usa publication_delay=0 y exige cobertura.
+usar una vela de otro cuarto de hora. Los archivos tienen que incluir
+la última vela cerrada; no hay espera de publicación ni descarga automática.
 
 Las pruebas simulan HTTP y Telegram: no envían mensajes reales. Incluyen
-429 con Retry-After, fechas HTTP, 403 sin retry, presupuesto finito, páginas
-pequeñas, igualdad GARCH incremental/completo, última observación, caducidad,
+429 de Telegram con retry_after, fechas HTTP, igualdad GARCH incremental/completo,
+última observación, caducidad,
 formato, redacción de secretos y deduplicación/outbox. No se probaron secretos
 reales ni se ejecutó el workflow remoto en esta sesión.
 
@@ -145,3 +142,4 @@ además del mínimo de observaciones. Un bundle corto que haya eliminado su
 warmup y ya no conserve esa ventana se rechaza: no se ajusta silenciosamente
 un modelo con menos historia que el utilizado en la referencia completa.
 Los bundles multianuales del pipeline conservan suficiente contexto.
+
