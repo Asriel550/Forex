@@ -22,7 +22,7 @@ def test_incremental_garch_matches_full_engine_across_refits():
     base=enrich_features(raw.iloc[:700],config)
     incremental=tb.extend_quant_history(base,raw.iloc[699:])
     full=enrich_features(raw,config)
-    names=['cond_volatility','dist_p95','dist_p05','mc_p05','mc_p95','mc_prob_up','mc_prob_down','mc_prob_tie']
+    names=['cond_volatility','dist_p95','dist_p05','mc_p05','mc_p95','mc_prob_up','mc_prob_down','mc_prob_tie','mc_drift','mc_log_drift','momentum_mean','momentum_se','momentum_z']
     np.testing.assert_allclose(incremental[names],full[names],rtol=1e-12,atol=1e-14,equal_nan=True)
     assert incremental.attrs['source_rows']==900
 

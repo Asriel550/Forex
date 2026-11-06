@@ -29,7 +29,7 @@ def market(n=700):
 
 @pytest.fixture
 def config():
-    return qe.QuantConfig(window=384, min_observations=128, refit_every=96)
+    return qe.QuantConfig(window=384, min_observations=128, refit_every=96,drift_mode="constant")
 
 
 def test_full_matrix_shape_determinism_and_positive_prices():
@@ -192,3 +192,4 @@ def test_garch_retries_deterministic_starting_values(monkeypatch):
     assert model.fit.call_count == 2
     assert model.fit.call_args.kwargs['starting_values'] is not None
     assert omega > 0 and h > 0 and alpha + beta < 1
+

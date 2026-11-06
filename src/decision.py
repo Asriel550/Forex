@@ -5,7 +5,7 @@ Los valores por defecto son una política previa, no una optimización del test.
 """
 from dataclasses import dataclass
 import numpy as np
-from .quant_engine import MonteCarloGBM, PROBABILITY_FEATURES
+from .quant_engine import MonteCarloGBM, PROBABILITY_FEATURES, QuantConfig
 
 
 @dataclass(frozen=True)
@@ -48,11 +48,18 @@ def ensure_probabilities(frame):
     present=[c in out for c in PROBABILITY_FEATURES]
     if any(present) and not all(present):raise ValueError('Probabilidades MC incompletas')
     if not any(present):
-        cfg=out.attrs.get('quant_config',{})
-        mc=MonteCarloGBM(cfg.get('n_paths',10000),cfg.get('horizon',32),cfg.get('seed',42))
+        cfg=QuantConfig.from_metadata(out.attrs.get('quant_config',{}))
+        mc=MonteCarloGBM(cfg.n_paths,cfg.horizon,cfg.seed)
         sigma=out.cond_volatility.to_numpy(dtype=float)
         ready=np.isfinite(sigma)
-        probs=mc.direction_probabilities(sigma[ready],cfg.get('drift_per_bar',0.))
+        if cfg.drift_mode=='momentum':
+            if 'mc_drift' not in out:
+                raise ValueError('Falta drift causal archivado; regenerar quant_engine')
+            mu=out.mc_drift.to_numpy(dtype=float)
+            if not np.isfinite(mu[ready]).all():raise ValueError('Drift momentum incompleto')
+            mu=mu[ready]
+        else:mu=cfg.drift_per_bar
+        probs=mc.direction_probabilities(sigma[ready],mu)
         for name,values in zip(PROBABILITY_FEATURES,probs):
             out[name]=np.nan;out.loc[ready,name]=values
     matrix=out[PROBABILITY_FEATURES].to_numpy(dtype=float)
