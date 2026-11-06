@@ -1,5 +1,7 @@
 # Forex EUR/USD M15 — research and Telegram signals
 
+Escala/umbral controlados: [sensibilidad 58–65% y payout](docs/drift_threshold_sensitivity.md). Nuevos defaults: escala 1.5, umbral 60%.
+
 Drift de momentum causal: [fórmula, parámetros, compatibilidad y límites](docs/dynamic_drift.md).
 
 Cambios v3 de inacción/riesgo: [diseño, uso y límites](docs/risk_filter.md). Los bundles v2 requieren regenerar features y reentrenar.

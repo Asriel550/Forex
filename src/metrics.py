@@ -11,6 +11,7 @@ from pathlib import Path
 import tempfile
 import numpy as np
 import pandas as pd
+from .decision import mc_probability_lower
 
 
 def calculate_metrics(trades, equity, *, initial_balance, periods_per_year=252*96,
@@ -104,7 +105,10 @@ def plot_reports(report_dir,equity,signals):
 
 
 
-def decision_metrics(signals, *, thresholds=(.60,.70,.80)):
+CONFIDENCE_THRESHOLDS=(.58,.60,.62,.65,.70,.80)
+
+
+def decision_metrics(signals, *, thresholds=CONFIDENCE_THRESHOLDS,payout=.8):
     """Desglose por decisión ejecutada y propuesta; NEUTRO no es un contrato.
 
     Para CALL/PUT, confianza=probabilidad de ganar según MC en UNA vela.
@@ -112,6 +116,7 @@ def decision_metrics(signals, *, thresholds=(.60,.70,.80)):
     NEUTRO'. El corte retrospectivo no reejecuta la política y no selecciona
     umbrales con test; solo describe contratos que realmente se ejecutaron.
     """
+    if not np.isfinite(payout) or not 0<payout<=1:raise ValueError('Payout inválido')
     required={'mc_confidence','action','requested_action','mc_prob_up','mc_prob_down','profit','blocked'}
     if not required.issubset(signals):raise ValueError('Se requieren señales auditables con probabilidades MC')
     if not signals.action.isin([0,1,2]).all() or not signals.requested_action.isin([0,1,2]).all():
@@ -135,11 +140,16 @@ def decision_metrics(signals, *, thresholds=(.60,.70,.80)):
         profits=part.profit.to_numpy(dtype=float)
         if not np.isfinite(profits).all():raise ValueError('PnL inválido')
         gain=float(profits[profits>0].sum());loss=float(-profits[profits<0].sum())
-        segmented.append(dict(threshold=float(threshold),comparison='strictly_greater',trades=len(part),
+        wins=int((profits>0).sum());losses=int((profits<0).sum());resolved=wins+losses
+        empirical_lower=float(mc_probability_lower(wins/resolved,resolved,1.96)) if resolved>=2 else None
+        segmented.append(dict(empirical_win_rate_lower_95=empirical_lower,lower_bound_exceeds_break_even=bool(empirical_lower is not None and empirical_lower>1/(1+payout)),break_even_win_rate=1/(1+payout),
+            empirical_win_rate_excluding_refunds=wins/resolved if resolved else None,
+            empirical_edge_per_resolved_stake=(payout*wins-losses)/resolved if resolved else None,
+            mean_mc_confidence=float(part.mc_confidence.mean()) if len(part) else None,threshold=float(threshold),comparison='strictly_greater',trades=len(part),
             net_profit=float(profits.sum()),wins=int((profits>0).sum()),losses=int((profits<0).sum()),
             profit_factor=gain/loss if loss else None,
             profit_factor_status='finite' if loss else 'infinite_no_losses' if gain else 'no_trades' if not len(part) else 'undefined_no_profit_or_loss'))
-    return dict(total_decisions=n,blocked_attempts=int(signals.blocked.sum()),decisions=out,
+    return dict(payout=payout,break_even_win_rate_excluding_refunds=1/(1+payout),total_decisions=n,blocked_attempts=int(signals.blocked.sum()),decisions=out,
                 confidence_segments=segmented,
                 confidence_scope='uncalibrated GBM model probability at one M15 step; not PPO confidence',
                 segment_scope='post-hoc subset of executed contracts, no policy rerun or threshold selection')
@@ -154,13 +164,14 @@ def markdown_report(metrics):
     for name,row in audit.get('decisions',{}).get('executed',{}).items():
         p=row['mean_mc_confidence'];value=f'{p:.4f}' if p is not None else 'N/D'
         text.append(f"| {name} | {row['count']} | {row['percentage']:.2f}% | {value} |")
-    text += ['', 'NEUTRO usa max(P_up,P_down); no es probabilidad de acierto de una operación neutra.',
+    text += ['', (f"Payout: {audit['payout']:.2f}; acierto de equilibrio (sin reembolsos): {100*audit['break_even_win_rate_excluding_refunds']:.2f}%." if 'payout' in audit else ''), '', 'NEUTRO usa max(P_up,P_down); no es probabilidad de acierto de una operación neutra.',
              'Las probabilidades son del GBM a una vela, no certezas calibradas.', '',
              '## Subconjuntos por confianza (solo contratos ejecutados)', '',
-             '| Umbral estricto | Contratos | PnL USD | Profit Factor |', '| --- | ---: | ---: | ---: |']
+             '| Umbral estricto | Contratos | PnL USD | Profit Factor | Acierto sin reembolsos |', '| --- | ---: | ---: | ---: | ---: |']
     for row in audit.get('confidence_segments',[]):
         pf=row['profit_factor'];value=f'{pf:.4f}' if pf is not None else row['profit_factor_status']
-        text.append(f"| > {row['threshold']:.0%} | {row['trades']} | {row['net_profit']:.2f} | {value} |")
+        rate=row.get('empirical_win_rate_excluding_refunds');wr=f'{100*rate:.2f}%' if rate is not None else 'N/D'
+        text.append(f"| > {row['threshold']:.0%} | {row['trades']} | {row['net_profit']:.2f} | {value} | {wr} |")
     text += ['', 'Cortes descriptivos posteriores: no equivalen a reejecutar la política.',
              'El holdout histórico ya se examinó: esta comparación es investigación, no una nueva prueba independiente.', '']
     return '\n'.join(text)

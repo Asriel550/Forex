@@ -1,5 +1,7 @@
 # Filtro causal de inacción y recompensa de riesgo (v3)
 
+Actualización de umbral: [rango operativo 58–65%](drift_threshold_sensitivity.md), con default de entrenamiento 60%. Los ejemplos de 70% de esta referencia corresponden a PR #5.
+
 Actualización de drift: [momentum causal](dynamic_drift.md). Los resultados y el ejemplo de drift cero de esta página corresponden a la referencia de PR #5; el filtro y sus límites se mantienen.
 
 El resultado anterior (PF 0,88) no demuestra por sí solo sobreoperativa: ya hubo

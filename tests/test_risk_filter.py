@@ -52,7 +52,7 @@ def test_causal_probabilities_ignore_future_close_and_use_expiry_not_32_bars():
 
 
 def test_strict_threshold_direction_and_wilson_guard():
-    kwargs=dict(payout=.8,tie_policy='refund',risk=RiskConfig())
+    kwargs=dict(payout=.8,tie_policy='refund',risk=RiskConfig(min_confidence=.70))
     assert resolve_action(2,.70,.30,0.,**kwargs)['action']==1
     assert resolve_action(2,.71,.29,0.,**kwargs)['action']==2
     assert resolve_action(0,.71,.29,0.,**kwargs)['action']==1
@@ -125,7 +125,7 @@ def test_backtest_executes_filtered_action_and_keeps_rejected_requests():
 def test_train_freezes_risk_contract_and_never_uses_holdout_for_normalization(tmp_path):
     path=tmp_path/'source.parquet';frame=raw();frame.to_parquet(path,index=False)
     m=train(path,output_dir=tmp_path/'models',total_timesteps=16,n_steps=16,batch_size=8,n_epochs=1,eval_freq=16,lookback=1,indicator_period=1,verbose=0)
-    assert m['manifest_version']==3 and m['risk']['min_confidence']==.70
+    assert m['manifest_version']==3 and m['risk']['min_confidence']==.60
     assert m['holdout_test_evaluated'] is False and m['reward_version']=='risk_adjusted_v1'
     normal=json.loads((tmp_path/'models/normalizer.json').read_text())
     expected=fit_normalizer(chronological_split(prepare_market_data(frame,1,1))['train'],1)

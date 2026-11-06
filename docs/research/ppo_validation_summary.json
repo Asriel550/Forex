@@ -1,0 +1,91 @@
+{
+  "scope": "local research PPO: train and validation only; no new holdout evaluation",
+  "published_production_model": false,
+  "actual_timesteps": 100352,
+  "source_features_sha256": "b9a251d34563d92f82939e95e6066d8c853dc563c5b856bdb946be6693557360",
+  "quant_config": {
+    "window": 2016,
+    "min_observations": 512,
+    "refit_every": 96,
+    "n_paths": 10000,
+    "horizon": 32,
+    "seed": 42,
+    "drift_per_bar": 0.0,
+    "max_iterations": 500,
+    "drift_mode": "momentum",
+    "drift_window": 8,
+    "drift_shrinkage": 0.75,
+    "drift_scale": 1.5,
+    "drift_noise_z": 1.96,
+    "drift_cap_sigma": 0.75,
+    "drift_clip_sigma": 3.0
+  },
+  "risk": {
+    "enabled": true,
+    "min_confidence": 0.6,
+    "min_expected_edge": 0.02,
+    "mc_z": 1.96,
+    "trade_penalty": 0.05,
+    "blocked_penalty": 0.25,
+    "overtrade_penalty": 2.0,
+    "activity_decay": 0.95,
+    "target_activity": 0.1,
+    "drawdown_penalty": 10.0,
+    "drawdown_limit": 0.2,
+    "stop_penalty": 5.0,
+    "risk_std_floor": 0.1
+  },
+  "best_validation": {
+    "timesteps": 25000,
+    "net_profit": 8.0,
+    "trades": 1,
+    "wins": 1,
+    "losses": 0,
+    "ties": 0,
+    "signals": {
+      "put": 0,
+      "neutral": 26394,
+      "call": 1
+    },
+    "selection_score": 0.0057060049251752305
+  },
+  "validation_history": [
+    {
+      "timesteps": 0,
+      "net_profit": 0.0,
+      "trades": 0,
+      "selection_score": -0.13671149838984656
+    },
+    {
+      "timesteps": 25000,
+      "net_profit": 8.0,
+      "trades": 1,
+      "selection_score": 0.0057060049251752305
+    },
+    {
+      "timesteps": 50000,
+      "net_profit": 0.0,
+      "trades": 0,
+      "selection_score": 0.0
+    },
+    {
+      "timesteps": 75000,
+      "net_profit": 0.0,
+      "trades": 0,
+      "selection_score": -3.7885963250615644e-05
+    },
+    {
+      "timesteps": 100000,
+      "net_profit": 0.0,
+      "trades": 0,
+      "selection_score": 0.0
+    },
+    {
+      "timesteps": 100352,
+      "net_profit": 0.0,
+      "trades": 0,
+      "selection_score": 0.0
+    }
+  ],
+  "caveat": "A single winning contract cannot estimate Profit Factor or establish an edge."
+}

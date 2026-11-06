@@ -23,7 +23,7 @@ def frame(n=700):
 
 @pytest.mark.parametrize('mean,lower,upper',[(.00018,.54,.60),(.00024,.62,.68),(.00029,.70,.76)])
 def test_clear_momentum_can_yield_55_to_75_percent_under_model(mean,lower,upper):
-    cfg=QuantConfig();sigma=np.full(40,.0002);mc=MonteCarloGBM()
+    cfg=QuantConfig(drift_scale=1.);sigma=np.full(40,.0002);mc=MonteCarloGBM()
     pos=causal_drift(prices(mean),sigma,cfg)
     neg=causal_drift(prices(-mean),sigma,cfg)
     up,_,_=mc.direction_probabilities(sigma[-1],pos['mc_drift'][-1])
@@ -34,7 +34,7 @@ def test_clear_momentum_can_yield_55_to_75_percent_under_model(mean,lower,upper)
 
 
 def test_arithmetic_mu_conversion_and_bands_share_same_drift_and_paths():
-    cfg=QuantConfig();sigma=np.full(40,.0002);mc=MonteCarloGBM()
+    cfg=QuantConfig(drift_scale=1.);sigma=np.full(40,.0002);mc=MonteCarloGBM()
     for mean in (.00029,-.00029):
         result=causal_drift(prices(mean),sigma,cfg)
         mu=result['mc_drift'][-1];log_mu=result['mc_log_drift'][-1]
@@ -54,7 +54,7 @@ def test_arithmetic_mu_conversion_and_bands_share_same_drift_and_paths():
 
 
 def test_noise_alternation_and_single_outlier_do_not_inject_direction():
-    cfg=QuantConfig();sigma=np.full(40,.0002)
+    cfg=QuantConfig(drift_scale=1.);sigma=np.full(40,.0002)
     alternating=1.1*np.exp(np.cumsum(np.tile([.0002,-.0002],20)))
     out=causal_drift(alternating,sigma,cfg)
     assert np.abs(out['mc_log_drift']).max()<1e-14
@@ -64,7 +64,7 @@ def test_noise_alternation_and_single_outlier_do_not_inject_direction():
 
 
 def test_drift_is_shrunk_and_bounded_without_forcing_minimum_confidence():
-    cfg=QuantConfig();sigma=np.full(40,.0002)
+    cfg=QuantConfig(drift_scale=1.);sigma=np.full(40,.0002)
     a=causal_drift(prices(.002),sigma,cfg)
     assert np.max(np.abs(a['mc_log_drift']))<=cfg.drift_cap_sigma*.0002+1e-15
     none=causal_drift(prices(.002),sigma,replace(cfg,drift_shrinkage=0.))
@@ -85,7 +85,7 @@ def test_causal_prefix_and_future_mutations_are_bit_identical():
 
 
 def test_gap_resets_momentum_and_requires_eight_contiguous_returns():
-    cfg=QuantConfig();close=prices(.00029,50);sigma=np.full(50,.0002)
+    cfg=QuantConfig(drift_scale=1.);close=prices(.00029,50);sigma=np.full(50,.0002)
     times=pd.Series(pd.date_range('2024-01-08',periods=50,freq='15min',tz='UTC'))
     times.iloc[20:]+=pd.Timedelta(days=2)
     close[20:]*=1.03
@@ -127,7 +127,7 @@ def test_legacy_metadata_remains_constant_and_is_not_reinterpreted_as_momentum()
 
 
 def test_drift_warmup_and_zero_volatility_are_explicit():
-    cfg=QuantConfig();close=prices(.0003);sigma=np.full(40,.0002);sigma[:10]=np.nan
+    cfg=QuantConfig(drift_scale=1.);close=prices(.0003);sigma=np.full(40,.0002);sigma[:10]=np.nan
     out=causal_drift(close,sigma,cfg)
     assert np.isnan(out['mc_drift'][:10]).all()
     zero=causal_drift(close,np.zeros(40),cfg)

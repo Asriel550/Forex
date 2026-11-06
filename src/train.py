@@ -120,7 +120,7 @@ def evaluate_policy(model, env: BinaryOptionsEnv):
                 break
         if stopped:
             break
-    analysis = decision_metrics(pd.DataFrame(decisions))
+    analysis = decision_metrics(pd.DataFrame(decisions),payout=env.account.payout)
     score = (balance/env.account.initial_balance-1-env.risk.drawdown_penalty*max_drawdown
              -env.risk.trade_penalty*trades/max(steps,1)
              -env.risk.blocked_penalty*analysis["blocked_attempts"]/max(steps,1))
@@ -267,7 +267,7 @@ def main():
     parser.add_argument("--n-epochs", type=int, default=10)
     parser.add_argument("--eval-freq", type=int, default=25_000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument('--min-confidence',type=float,default=.70)
+    parser.add_argument('--min-confidence',type=float,default=RiskConfig().min_confidence)
     parser.add_argument('--min-expected-edge',type=float,default=.02)
     parser.add_argument('--risk-drawdown-limit',type=float,default=.20)
     parser.add_argument('--trade-penalty',type=float,default=.05)

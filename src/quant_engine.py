@@ -22,7 +22,7 @@ No sustituye Monte Carlo por percentiles analíticos de una lognormal.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import logging
 import os
 from pathlib import Path
@@ -59,6 +59,7 @@ class QuantConfig:
     drift_mode: str = 'momentum'
     drift_window: int = 8
     drift_shrinkage: float = .75
+    drift_scale: float = 1.5
     drift_noise_z: float = 1.96
     drift_cap_sigma: float = .75
     drift_clip_sigma: float = 3.
@@ -69,6 +70,7 @@ class QuantConfig:
         # Nunca reinterpretar pesos viejos con los nuevos defaults de momentum.
         values = dict(metadata)
         values.setdefault('drift_mode','constant')
+        values.setdefault('drift_scale',1.)
         return cls(**values)
 
     def __post_init__(self):
@@ -85,9 +87,10 @@ class QuantConfig:
             raise QuantError("Requiere n_paths >= 100 y drift finito")
         if self.drift_mode not in ('constant','momentum') or self.drift_window<4:
             raise QuantError('drift_mode constant/momentum; drift_window >= 4')
-        params=[self.drift_shrinkage,self.drift_noise_z,self.drift_cap_sigma,self.drift_clip_sigma]
+        params=[self.drift_shrinkage,self.drift_noise_z,self.drift_cap_sigma,self.drift_clip_sigma,self.drift_scale]
         if (not np.isfinite(params).all() or not 0<=self.drift_shrinkage<=1
-                or self.drift_noise_z<0 or self.drift_cap_sigma<=0 or self.drift_clip_sigma<=0):
+                or self.drift_noise_z<0 or self.drift_cap_sigma<=0 or self.drift_clip_sigma<=0
+                or not 0<self.drift_scale<=3):
             raise QuantError('Parámetros de momentum inválidos')
         if self.drift_mode=='momentum' and self.drift_per_bar!=0:
             raise QuantError('drift_per_bar no nulo requiere drift_mode=constant')
@@ -253,13 +256,42 @@ def causal_garch_volatility(close, config: QuantConfig):
 
 
 
+def momentum_log_drift(mean,se,sigma,config):
+    excess=np.sign(mean)*np.maximum(np.abs(mean)-config.drift_noise_z*se,0.)
+    return np.clip(config.drift_scale*config.drift_shrinkage*excess,
+                   -config.drift_cap_sigma*sigma,config.drift_cap_sigma*sigma)
+
+
+def reproject_drift_scale(frame,scale):
+    """Reproyecta mu/MC con estadísticas causales archivadas; no reajusta GARCH.
+
+    Es fila a fila: no lee retornos futuros ni cambia el origen de ventanas.
+    Permite evaluar subconjuntos train/validation sin tocar el holdout.
+    """
+    cfg=replace(QuantConfig.from_metadata(frame.attrs.get('quant_config',{})),drift_scale=scale)
+    if cfg.drift_mode!='momentum' or not {'momentum_mean','momentum_se','cond_volatility','close'}.issubset(frame):
+        raise QuantError('La sensibilidad requiere features de momentum archivadas')
+    out=frame.copy();sigma=out.cond_volatility.to_numpy(dtype=float);ready=np.isfinite(sigma)
+    mean=out.momentum_mean.to_numpy(dtype=float)[ready];se=out.momentum_se.to_numpy(dtype=float)[ready]
+    if not np.isfinite(mean).all() or not np.isfinite(se).all() or (se<0).any():
+        raise QuantError('Estadísticas de momentum inválidas')
+    log_mu=momentum_log_drift(mean,se,sigma[ready],cfg);mu=log_mu+.5*sigma[ready]**2
+    out['mc_log_drift']=np.nan;out.loc[ready,'mc_log_drift']=log_mu
+    out['mc_drift']=np.nan;out.loc[ready,'mc_drift']=mu
+    mc=MonteCarloGBM(cfg.n_paths,cfg.horizon,cfg.seed)
+    for name,values in project_monte_carlo(mc,out.close.to_numpy()[ready],sigma[ready],mu).items():
+        out[name]=np.nan;out.loc[ready,name]=values
+    out.attrs=dict(frame.attrs,quant_config=asdict(cfg))
+    return out
+
+
 def causal_drift(close, volatility, config: QuantConfig, timestamps=None):
     """mu[t] GBM a partir de L retornos conocidos al CIERRE t.
 
     En momentum se estima la MEDIA LOGARÍTMICA (no el drift aritmético GBM):
       r = clip(log(P[j]/P[j-1]), +/- clip_sigma*sigma[t])
       se = max(std(r,ddof=1),sigma[t])/sqrt(L)
-      log_mu = clip(shrink*sign(mean)*max(abs(mean)-z*se,0), +/- cap*sigma[t])
+      log_mu = clip(scale*shrink*sign(mean)*max(abs(mean)-z*se,0), +/- cap*sigma[t])
       mu = log_mu + sigma[t]**2/2
     Así el exponente GBM es log_mu, sin confundir retornos log y aritméticos.
     La banda de ruido es una heurística de contracción, NO calibración predictiva.
@@ -303,7 +335,7 @@ def causal_drift(close, volatility, config: QuantConfig, timestamps=None):
     se=np.maximum(clipped.std(axis=1,ddof=1),scales)/np.sqrt(length)
     z=np.divide(mean,se,out=np.zeros_like(mean),where=se>0)
     excess=np.sign(mean)*np.maximum(np.abs(mean)-config.drift_noise_z*se,0.)
-    log_mu=np.clip(config.drift_shrinkage*excess,-config.drift_cap_sigma*scales,config.drift_cap_sigma*scales)
+    log_mu=momentum_log_drift(mean,se,scales,config)
     out['momentum_mean'][candidates]=mean;out['momentum_se'][candidates]=se
     out['momentum_z'][candidates]=z;out['mc_log_drift'][candidates]=log_mu
     out['mc_drift'][candidates]=log_mu+.5*scales**2
@@ -360,7 +392,7 @@ def main():
                             default=getattr(QuantConfig(), name))
     parser.add_argument('--drift-mode',choices=['constant','momentum'],default=QuantConfig().drift_mode)
     parser.add_argument('--drift-window',type=int,default=QuantConfig().drift_window)
-    for name in ('drift_shrinkage','drift_noise_z','drift_cap_sigma','drift_clip_sigma'):
+    for name in ('drift_scale','drift_shrinkage','drift_noise_z','drift_cap_sigma','drift_clip_sigma'):
         parser.add_argument('--'+name.replace('_','-'),type=float,default=getattr(QuantConfig(),name))
     parser.add_argument("--drift-per-bar", type=float, default=0.0)
     parser.add_argument("--drop-warmup", action="store_true")
