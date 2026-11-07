@@ -19,11 +19,18 @@ from .decision import RiskConfig
 from .environment import BinaryOptionsEnv, fit_normalizer, prepare_market_data
 from .market import MarketConfig, PROTECTED_HOLDOUT_START
 from .metrics import _atomic_write, calculate_metrics
+from .resampling import aggregate
 from .trading_profiles import SCALPING_TARGET_PER_HOUR, resolve_profile
 from .train import chronological_market_split, write_json
 
 LOG = logging.getLogger(__name__)
 MARKET = MarketConfig('M5', 'binary', 1)
+HOUR = MarketConfig('H1').step
+H1_FAST_SPAN, H1_SLOW_SPAN, H1_RANGE_SPAN = 8, 24, 14
+H1_NEUTRAL_RANGE_FRACTION = .10
+SEARCH_BLOCKS = 4
+WORST_BLOCK_WEIGHT = .5
+COMPLEXITY_WEIGHT = .10
 ELITE_FRACTION = .20
 MIN_WIN_RATE = .56
 WIN_RATE_SHORTFALL_WEIGHT = .5
@@ -49,6 +56,30 @@ class EvolutionConfig:
                 raise ValueError(f'{name} debe ser un entero de {lower} a {upper}')
 
 
+def closed_h1_direction(frame):
+    """Tendencia H1 en cada decisión M5, usando solo horas completas y vigentes."""
+    timestamp = frame.timestamp
+    result = np.full(len(frame), np.nan)
+    if not timestamp.dt.floor('h').value_counts().eq(HOUR / MARKET.step).any():
+        return result
+    decisions = pd.DatetimeIndex(timestamp + MARKET.step)
+    ohlc = frame[['timestamp', 'open', 'high', 'low', 'close']].assign(volume=0.)
+    hourly = aggregate(ohlc, 5, 'H1', now=decisions[-1])
+    fast = hourly.close.ewm(span=H1_FAST_SPAN, adjust=False, min_periods=H1_FAST_SPAN).mean()
+    slow = hourly.close.ewm(span=H1_SLOW_SPAN, adjust=False, min_periods=H1_SLOW_SPAN).mean()
+    band = H1_NEUTRAL_RANGE_FRACTION * (hourly.high - hourly.low).ewm(
+        span=H1_RANGE_SPAN, adjust=False, min_periods=H1_RANGE_SPAN,
+    ).mean()
+    gap = fast - slow
+    direction = np.select([gap > band, gap < -band], [1., -1.], default=0.)
+    direction[gap.isna() | band.isna()] = np.nan
+    closes = pd.DatetimeIndex(hourly.timestamp + HOUR)
+    last = closes.get_indexer(decisions, method='pad', tolerance=HOUR - MARKET.step)
+    available = last >= 0
+    result[available] = direction[last[available]]
+    return result
+
+
 class M5Simulation:
     """Simulación vectorizada, con la misma caja y ventanas del entorno M5.
 
@@ -56,13 +87,34 @@ class M5Simulation:
     se guardan por separado para liquidar las entradas seleccionadas.
     """
 
-    def __init__(self, env: BinaryOptionsEnv):
+    def __init__(self, env: BinaryOptionsEnv, h1_direction=None):
         if env.market != MARKET or not env.risk.enabled:
             raise ValueError('La evolución requiere M5 binario, una vela y filtro activo')
-        self.entries = env._eligible[env._setup_mask[env._eligible]]
-        self.features = env._market[self.entries]
-        up, down, _ = env._probabilities[self.entries].T
-        self.actions = np.where(up > down, 2, 0)
+        entries = env._eligible[env._setup_mask[env._eligible]]
+        up, down, _ = env._probabilities[entries].T
+        actions = np.where(up > down, 2, 0)
+        self.observed_hours = sum(end - start for start, end in env.segments) / 12
+        self.h1_audit = None
+        if h1_direction is not None:
+            direction = np.asarray(h1_direction)
+            if direction.shape != (len(env._times),):
+                raise ValueError('Se requiere una tendencia H1 por vela M5')
+            trend = direction[entries]
+            signal = np.where(actions == 2, 1, -1)
+            aligned = trend == signal
+            all_trends = direction[env._eligible]
+            self.h1_audit = dict(
+                observed_hours=self.observed_hours, before=len(entries), after=int(aligned.sum()),
+                capacity_per_hour=float(aligned.sum() / self.observed_hours),
+                opposite=int((trend == -signal).sum()), lateral=int((trend == 0).sum()),
+                unavailable=int(np.isnan(trend).sum()),
+                regimes=dict(up=int((all_trends == 1).sum()), down=int((all_trends == -1).sum()),
+                             lateral=int((all_trends == 0).sum()), unavailable=int(np.isnan(all_trends).sum())),
+            )
+            entries, actions = entries[aligned], actions[aligned]
+        self.entries = entries
+        self.features = env._market[entries]
+        self.actions = actions
         change = env._close[self.entries + 1] - env._close[self.entries]
         won = np.where(self.actions == 2, change > 0, change < 0)
         tied = change == 0
@@ -72,7 +124,6 @@ class M5Simulation:
             won, self.account.payout, np.where(tied & (self.account.tie_policy == 'refund'), 0., -1.),
         )
         self.timestamps = env._times + env.bar_step
-        self.observed_hours = sum(end - start for start, end in env.segments) / 12
         self.stop_limit = min(self.account.max_drawdown, env.risk.drawdown_limit)
 
     def evaluate(self, genome):
@@ -122,18 +173,47 @@ def assess_fitness(metrics):
     return dict(checks=checks, passed=all(checks.values()), score=score)
 
 
+def effective_features(genome):
+    """Número efectivo de pesos. Es invariante a reescalar el genoma."""
+    weights = np.abs(genome[:-1])
+    scale = weights.max()
+    if scale == 0.:
+        return 0.
+    normalized = weights / scale
+    return float(normalized.sum() ** 2 / np.dot(normalized, normalized))
+
+
+def assess_search_fitness(metrics, blocks, genome):
+    """Exige rentabilidad y drawdown controlado en cada bloque para ser élite."""
+    fitness = assess_fitness(metrics)
+    scores = [assess_fitness(block)['score'] for block in blocks]
+    complexity = effective_features(genome)
+    penalty = COMPLEXITY_WEIGHT * complexity / (len(genome) - 1)
+    score = (1 - WORST_BLOCK_WEIGHT) * float(np.mean(scores)) + WORST_BLOCK_WEIGHT * min(scores) - penalty
+    fitness['checks']['block_consistency'] = all(
+        block['net_profit'] > 0 and block['max_drawdown_pct'] < MAX_DRAWDOWN_PCT for block in blocks
+    )
+    return dict(fitness, score=score, passed=all(fitness['checks'].values()), block_scores=scores,
+                effective_features=complexity, complexity_penalty=penalty)
+
+
+def selection_rank(fitness):
+    return fitness['checks']['block_consistency'], fitness['score']
+
+
 def initial_population(rng, count, genes):
     return rng.normal(0., 1. / math.sqrt(genes), size=(count, genes))
 
 
-def breed(rng, population, elite_indices, sigma):
+def breed(rng, population, elite_indices, parent_indices, sigma):
     """Copia las élites y rellena la población por cruce uniforme y mutación."""
     elites = population[elite_indices]
+    parents = population[parent_indices]
     count = len(population) - len(elites)
-    left = rng.integers(len(elites), size=count)
-    right = (left + rng.integers(1, len(elites), size=count)) % len(elites) if len(elites) > 1 else left
+    left = rng.integers(len(parents), size=count)
+    right = (left + rng.integers(1, len(parents), size=count)) % len(parents) if len(parents) > 1 else left
     shape = (count, population.shape[1])
-    children = np.where(rng.random(shape) < .5, elites[left], elites[right])
+    children = np.where(rng.random(shape) < .5, parents[left], parents[right])
     children += rng.normal(0., sigma, size=shape)
     return np.vstack((elites, children))
 
@@ -159,7 +239,7 @@ def save_candidate(path, genome, normalizer, manifest):
 def write_summary(path, report):
     lines = [
         '# Evolución Scalping M5 binario', '',
-        'Las élites se eligen por aptitud continua. Solo el campeón preseleccionado pasa por confirmación.',
+        'Las élites cumplen consistencia en todos los bloques. Solo el campeón pasa por confirmación.',
         'Holdout histórico reservado.', '',
         '| Fase | Generación | Aptitud | Contratos | Acierto sin reembolsos | PF | Contratos/h | DD | Cumple límites |',
         '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
@@ -173,12 +253,28 @@ def write_summary(path, report):
             '∞' if m['profit_factor_status'] == 'infinite_no_losses' else 'N/D'
         )
         gate = 'Sí' if row['fitness']['passed'] else 'No'
-        lines.append(f"| {row['phase']} | {row['generation']} | {row['fitness']['score']:.4f} | "
+        score = f"{row['fitness']['score']:.4f}" if row['phase'] == 'Búsqueda' else '—'
+        lines.append(f"| {row['phase']} | {row['generation']} | {score} | "
                      f"{m['total_trades']} | {wr} | {pf} | "
                      f"{m['trades_per_observed_hour']:.3f} | {m['max_drawdown_pct']:.2f}% | {gate} |")
     status = 'cumplido' if report['qualified'] else 'rechazado'
     lines.extend(['', f"Gate de la corrida **{status}**. Campeón preseleccionado en generación "
-                      f"{report['champion']['generation']}.", ''])
+                      f"{report['champion']['generation']}.", '',
+                  '## Filtro causal H1', '',
+                  '| Tramo | Setups MC | Alineados | Opuestos | Laterales | H1 ausente | Máximo/h |',
+                  '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'])
+    for label, audit in report['h1_audit'].items():
+        lines.append(f"| {label} | {audit['before']} | {audit['after']} | {audit['opposite']} | "
+                     f"{audit['lateral']} | {audit['unavailable']} | {audit['capacity_per_hour']:.3f} |")
+    lines.extend(['', '## Bloques del campeón', '',
+                  '| Bloque | H1 alcista / bajista / lateral / ausente (velas M5) | Contratos | PnL USD | DD |',
+                  '| --- | ---: | ---: | ---: | ---: |'])
+    for block, metrics in zip(report['search_blocks'], report['champion']['blocks']):
+        regimes = block['h1_audit']['regimes']
+        counts = ' / '.join(str(regimes[key]) for key in ('up', 'down', 'lateral', 'unavailable'))
+        lines.append(f"| {block['block']} | {counts} | {metrics['total_trades']} | "
+                     f"{metrics['net_profit']:.2f} | {metrics['max_drawdown_pct']:.2f}% |")
+    lines.append('')
     _atomic_write(path, lambda p: Path(p).write_text('\n'.join(lines), encoding='utf-8'))
 
 
@@ -197,32 +293,52 @@ def run_evolution(input_path, output_dir, config=None):
     ):
         raise ValueError('Regenerar las features de scalping M5 con drift adaptativo 1.4 a 2.0')
 
-    splits = chronological_market_split(prepare_market_data(raw, market=MARKET), MARKET)
+    prepared = prepare_market_data(raw, market=MARKET)
+    splits = chronological_market_split(prepared, MARKET)
     validation = splits['validation']
     cut = 3 * len(validation) // 4
     search, confirmation = validation.iloc[:cut], validation.iloc[cut + 1:]
+    if len(search) < 2 * SEARCH_BLOCKS or len(confirmation) < 2:
+        raise ValueError('Datos insuficientes para bloques de búsqueda y confirmación')
+    bounds = np.linspace(0, len(search), SEARCH_BLOCKS + 1, dtype=int)
+    blocks = [search.iloc[start:end] for start, end in zip(bounds, bounds[1:])]
+    h1_source = prepared.loc[prepared.timestamp <= validation.timestamp.iloc[-1]]
+    h1 = pd.Series(closed_h1_direction(h1_source), index=h1_source.timestamp)
     normalizer = fit_normalizer(splits['train'])
     risk = RiskConfig(min_confidence=preset['FOREX_MIN_CONFIDENCE'],
                       min_expected_edge=preset['FOREX_MIN_EXPECTED_EDGE'], mc_z=preset['FOREX_MC_Z'])
     env_options = dict(market=MARKET, prepared=True, risk=risk, normalizer=normalizer)
     search_env = BinaryOptionsEnv(search, **env_options)
-    simulation = M5Simulation(search_env)
-    if len(confirmation) < 2:
-        raise ValueError('Datos insuficientes para el tramo de confirmación')
+    simulation = M5Simulation(search_env, h1.reindex(search.timestamp).to_numpy())
+    block_sims = [M5Simulation(BinaryOptionsEnv(block, **env_options),
+                               h1.reindex(block.timestamp).to_numpy()) for block in blocks]
+
+    def evaluate(genome):
+        metrics = simulation.evaluate(genome)
+        by_block = [sim.evaluate(genome) for sim in block_sims]
+        return metrics, by_block, assess_search_fitness(metrics, by_block, genome)
+
     root.mkdir(parents=True, exist_ok=True)
     if any(root.iterdir()):
         raise ValueError('La evolución requiere un directorio de salida vacío')
 
     metadata = dict(
-        format='forex_m5_evolution_candidate_v1', profile='scalping', market=asdict(MARKET),
-        policy='accept MC direction when normalized_features @ weights + bias > 0',
+        format='forex_m5_evolution_candidate_v2', profile='scalping', market=asdict(MARKET),
+        policy='accept MC direction when H1 agrees and normalized_features @ weights + bias > 0',
         input_sha256=source_hash, quant_config=quant, account=asdict(search_env.account),
         risk=asdict(risk), config=asdict(config), holdout_test_evaluated=False,
         protected_holdout_start=PROTECTED_HOLDOUT_START.isoformat(), normalizer_fit='train only',
         fitness_limits=dict(min_win_rate=MIN_WIN_RATE, exclusive_min_profit_factor=MIN_PROFIT_FACTOR,
                             trades_per_hour=[MIN_TRADES_HOUR, MAX_TRADES_HOUR],
                             exclusive_max_drawdown_pct=MAX_DRAWDOWN_PCT),
-        fitness_selection=dict(method='soft_v1', win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT),
+        fitness_selection=dict(method='chronological_blocks_v2', blocks=SEARCH_BLOCKS,
+                               worst_block_weight=WORST_BLOCK_WEIGHT, complexity_weight=COMPLEXITY_WEIGHT,
+                               win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT),
+        h1_filter=dict(fast_span=H1_FAST_SPAN, slow_span=H1_SLOW_SPAN, range_span=H1_RANGE_SPAN,
+                       neutral_range_fraction=H1_NEUTRAL_RANGE_FRACTION, max_age_minutes_exclusive=60),
+        search_blocks=[dict(block=i, rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
+                            end=frame.timestamp.iloc[-1].isoformat(), h1_audit=sim.h1_audit)
+                       for i, (frame, sim) in enumerate(zip(blocks, block_sims), start=1)],
         elite_fraction=ELITE_FRACTION, confirmation_purge_bars=1,
         splits={name: dict(rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
                            end=frame.timestamp.iloc[-1].isoformat())
@@ -237,15 +353,17 @@ def run_evolution(input_path, output_dir, config=None):
     sigma = .12
     with ThreadPoolExecutor(max_workers=config.workers) as executor:
         for generation in range(config.generations + 1):
-            metrics = list(executor.map(simulation.evaluate, population))
-            fitness = [assess_fitness(m) for m in metrics]
-            elites = sorted(range(len(population)), key=lambda i: fitness[i]['score'], reverse=True)[:elite_count]
-            best = elites[0]
+            metrics, by_block, fitness = zip(*executor.map(evaluate, population))
+            parents = sorted(range(len(population)), key=lambda i: selection_rank(fitness[i]),
+                             reverse=True)[:elite_count]
+            elites = [i for i in parents if fitness[i]['checks']['block_consistency']]
+            best = parents[0]
             name = f'bundle_scalping_gen_{generation}.zip'
             record = dict(phase='Búsqueda', generation=generation, candidate=best, bundle=name,
-                          metrics=metrics[best], fitness=fitness[best], elites=len(elites),
+                          metrics=metrics[best], blocks=by_block[best], fitness=fitness[best],
+                          elites=len(elites), parents=len(parents),
                           qualified_candidates=sum(f['passed'] for f in fitness))
-            improved = champion is None or fitness[best]['score'] > champion['fitness']['score']
+            improved = champion is None or selection_rank(fitness[best]) > selection_rank(champion['fitness'])
             if generation:
                 sigma = max(.025, sigma * .85) if improved else min(.35, sigma * 1.25)
             record['mutation_sigma'] = sigma if generation < config.generations else None
@@ -257,21 +375,26 @@ def run_evolution(input_path, output_dir, config=None):
                 champion, champion_genome = record, population[best].copy()
             candidate_rows.extend(dict(
                 generation=generation, candidate=i, fitness=f['score'], elite=i in elites,
+                parent=i in parents, effective_features=f['effective_features'], complexity_penalty=f['complexity_penalty'],
                 passed=f['passed'], **{f'pass_{k}': v for k, v in f['checks'].items()},
                 **{k: m[k] for k in ('total_trades', 'win_rate_excluding_refunds', 'profit_factor',
                                      'profit_factor_status', 'trades_per_observed_hour', 'max_drawdown_pct',
                                      'net_profit', 'risk_stop')},
-            ) for i, (m, f) in enumerate(zip(metrics, fitness)))
-            LOG.info('Generación %d. Aptitud %.4f, élites %d, candidatos dentro de límites %d',
-                     generation, fitness[best]['score'], len(elites), record['qualified_candidates'])
+                **{f'block_{j}_{key}': block[key] for j, block in enumerate(candidate_blocks, start=1)
+                   for key in ('net_profit', 'max_drawdown_pct', 'total_trades')},
+            ) for i, (m, f, candidate_blocks) in enumerate(zip(metrics, fitness, by_block)))
+            LOG.info('Generación %d. Aptitud %.4f, élites %d, padres %d, candidatos dentro de límites %d',
+                     generation, fitness[best]['score'], len(elites), len(parents), record['qualified_candidates'])
             if generation < config.generations:
-                population = breed(rng, population, elites, sigma)
+                population = breed(rng, population, elites, parents, sigma)
 
     # El genoma queda congelado antes de construir el evaluador de confirmación.
-    confirmed = M5Simulation(BinaryOptionsEnv(confirmation, **env_options)).evaluate(champion_genome)
+    confirm_sim = M5Simulation(BinaryOptionsEnv(confirmation, **env_options), h1.reindex(confirmation.timestamp).to_numpy())
+    confirmed = confirm_sim.evaluate(champion_genome)
     final = dict(phase='Confirmación', generation=champion['generation'],
                  metrics=confirmed, fitness=assess_fitness(confirmed))
     report = dict(metadata, generations=history, champion=champion, confirmation=final,
+                  h1_audit={'Búsqueda': simulation.h1_audit, 'Confirmación': confirm_sim.h1_audit},
                   qualified=champion['fitness']['passed'] and final['fitness']['passed'])
     write_json(root/'evolution.json', report)
     _atomic_write(root/'evolution.csv', lambda p: pd.DataFrame(candidate_rows).to_csv(p, index=False))

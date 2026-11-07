@@ -15,7 +15,8 @@ from src.artifacts import file_sha256
 from src.decision import RiskConfig
 from src.environment import AccountConfig, BinaryOptionsEnv, market_feature_names
 from src.evolution_engine import (
-    MARKET, EvolutionConfig, M5Simulation, assess_fitness, breed, run_evolution,
+    MARKET, SEARCH_BLOCKS, EvolutionConfig, M5Simulation, assess_fitness, assess_search_fitness,
+    breed, closed_h1_direction, effective_features, run_evolution,
 )
 from src.market_evaluation import evaluate_market_policy
 
@@ -85,18 +86,71 @@ def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
     assert not empty['passed'] and np.isfinite(empty['score'])
 
 
+def test_h1_trend_is_available_only_after_complete_hour_and_expires_at_next_close():
+    frame = candles(1.1 + np.arange(12 * 30) * .00001)
+    trend = closed_h1_direction(frame)
+    first = 12 * 24 - 1
+    assert np.isnan(trend[:first]).all() and trend[first] == 1.
+    prefix = frame.iloc[:first + 4]
+    np.testing.assert_allclose(closed_h1_direction(prefix), trend[:len(prefix)])
+
+    with_gap = frame.drop(index=12 * 24 + 2)
+    aligned = pd.Series(closed_h1_direction(with_gap), index=with_gap.index)
+    assert aligned.loc[12 * 25 - 2] == 1.
+    assert np.isnan(aligned.loc[12 * 25 - 1])
+    assert aligned.loc[12 * 26 - 1] == 1.
+    down = candles(1.2 - np.arange(len(frame)) * .00001)
+    lateral = candles(np.full(len(frame), 1.1))
+    assert closed_h1_direction(down)[-1] == -1.
+    assert closed_h1_direction(lateral)[-1] == 0.
+    assert np.isnan(closed_h1_direction(frame.iloc[:6])).all()
+
+
+def test_h1_filter_only_allows_agreement_with_mc_direction():
+    frame = candles(1.1 + np.arange(8) * .00001, [.8, .8, .2, .8, .8, .2, .5, .8])
+    env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1)
+    trend = [1., -1., -1., 0., np.nan, 1., 1.]
+    sim = M5Simulation(env, trend)
+    np.testing.assert_array_equal(sim.entries, [0, 1])
+    np.testing.assert_array_equal(sim.actions, [2, 0])
+    assert {k: sim.h1_audit[k] for k in ('before', 'after', 'opposite', 'lateral', 'unavailable')} == {
+        'before': 5, 'after': 2, 'opposite': 1, 'lateral': 1, 'unavailable': 1,
+    }
+
+
+def test_block_fitness_rejects_one_bad_block_and_penalizes_scale_invariant_complexity():
+    overall = dict(win_rate_excluding_refunds=.61, profit_factor=1.25, profit_factor_status='finite',
+                   trades_per_observed_hour=1.7, max_drawdown_pct=12., net_profit=10.)
+    dense = np.array([1., -1., 1., 0.])
+    sparse = np.array([1., 0., 0., 5.])
+    assert effective_features(dense) == pytest.approx(3.)
+    assert effective_features(dense) == effective_features(dense * .01)
+    assert effective_features(np.array([0., 0., 0., 1.])) == 0.
+    blocks = [overall] * SEARCH_BLOCKS
+    robust = assess_search_fitness(overall, blocks, sparse)
+    assert robust['passed']
+    assert robust['score'] > assess_search_fitness(overall, blocks, dense)['score']
+    bad = overall | dict(max_drawdown_pct=15.)
+    candidate = assess_search_fitness(overall, [*blocks[:-1], bad], sparse)
+    assert not candidate['checks']['block_consistency'] and not candidate['passed']
+    assert candidate['score'] < robust['score']
+    flat = assess_search_fitness(overall, [*blocks[:-1], overall | dict(net_profit=0.)], sparse)
+    assert not flat['checks']['block_consistency']
+
+
 def test_breeding_retains_elites_and_uses_only_their_genes_before_mutation():
     population = np.arange(40, dtype=float).reshape(8, 5)
     elites = [3, 5]
-    crossed = breed(np.random.default_rng(5), population, elites, 0.)
-    mutated = breed(np.random.default_rng(5), population, elites, .12)
+    crossed = breed(np.random.default_rng(5), population, elites, elites, 0.)
+    mutated = breed(np.random.default_rng(5), population, elites, elites, .12)
     np.testing.assert_array_equal(crossed[:2], population[elites])
     np.testing.assert_array_equal(mutated[:2], population[elites])
     assert np.logical_or(crossed[2:] == population[3], crossed[2:] == population[5]).all()
     assert not np.array_equal(mutated[2:], crossed[2:])
 
 
-def test_evolution_breeds_relative_elites_even_when_every_candidate_fails_gate(tmp_path, monkeypatch):
+@pytest.mark.parametrize('profitable', [True, False])
+def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path, monkeypatch, profitable):
     source = tmp_path/'m5.parquet'
     candles(1.1 + np.arange(816) * .00001).to_parquet(source)
     calls = []
@@ -104,23 +158,31 @@ def test_evolution_breeds_relative_elites_even_when_every_candidate_fails_gate(t
     def evaluate(self, genome):
         calls.append(genome.copy())
         return dict(total_trades=100, win_rate_excluding_refunds=.52 + .03 * float(np.tanh(genome[-1])),
-                    profit_factor=.9, profit_factor_status='finite', trades_per_observed_hour=1.5,
-                    max_drawdown_pct=10., net_profit=-5., risk_stop=False)
+                    profit_factor=1.1 if profitable else .9, profit_factor_status='finite',
+                    trades_per_observed_hour=1.5, max_drawdown_pct=10.,
+                    net_profit=5. if profitable else -5., risk_stop=False)
 
     monkeypatch.setattr(M5Simulation, 'evaluate', evaluate)
     output = tmp_path/'run'
     report = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1))
     assert not report['qualified']
-    assert all(g['elites'] == 2 and g['qualified_candidates'] == 0 for g in report['generations'])
-    assert len(calls) == 6 * 3 + 1
-    generations = np.asarray(calls[:-1]).reshape(3, 6, -1)
-    for before, after in zip(generations, generations[1:]):
-        order = np.argsort(-before[:, -1], kind='stable')
-        np.testing.assert_array_equal(after[:2], before[order[:2]])
-        assert not np.array_equal(after[2:], before[order[2:]])
-    assert calls[-1][-1] == max(g[-1] for g in calls[:-1])
     scores = pd.read_csv(output/'evolution.csv')
-    assert scores.fitness.notna().all() and scores.groupby('generation').elite.sum().eq(2).all()
+    assert scores.fitness.notna().all()
+    assert scores.groupby('generation').parent.sum().eq(2).all()
+    assert scores.groupby('generation').elite.sum().eq(2 if profitable else 0).all()
+    assert all(g['qualified_candidates'] == 0 for g in report['generations'])
+    assert len(calls) == 6 * 3 * (1 + SEARCH_BLOCKS) + 1
+    generations = np.asarray(calls[:-1:1 + SEARCH_BLOCKS]).reshape(3, 6, -1)
+    for generation, (before, after) in enumerate(zip(generations, generations[1:])):
+        parents = scores.loc[(scores.generation == generation) & scores.parent]
+        selected = parents.sort_values('fitness', ascending=False, kind='stable').candidate.to_numpy()
+        if profitable:
+            np.testing.assert_array_equal(after[:2], before[selected])
+        else:
+            assert not any(np.array_equal(child, parent) for child in after for parent in before)
+    winner = report['champion']
+    np.testing.assert_array_equal(calls[-1], generations[winner['generation'], winner['candidate']])
+    assert winner['fitness']['score'] == pytest.approx(scores.fitness.max())
 
 
 def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_holdout(tmp_path):
@@ -131,6 +193,11 @@ def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_
     first = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1))
     assert len(first['generations']) == 3
     assert first['normalizer_fit'] == 'train only' and first['holdout_test_evaluated'] is False
+    assert len(first['search_blocks']) == SEARCH_BLOCKS
+    for previous, following in zip(first['search_blocks'], first['search_blocks'][1:]):
+        assert pd.Timestamp(previous['end']) < pd.Timestamp(following['start'])
+    fold_setups = sum(b['h1_audit']['before'] for b in first['search_blocks'])
+    assert fold_setups == first['h1_audit']['Búsqueda']['before'] - (SEARCH_BLOCKS - 1)
     start = pd.Timestamp(first['splits']['confirmation']['start'])
     assert start > pd.Timestamp(first['splits']['search']['end']) + MARKET.step
     future = frame.timestamp >= start
