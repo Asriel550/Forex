@@ -1,4 +1,4 @@
-"""Filtros causales de entrada para la evolución de binarias M5."""
+"""Observaciones causales de contexto para la política evolutiva M5."""
 
 import numpy as np
 import pandas as pd
@@ -9,17 +9,28 @@ from .resampling import aggregate
 M5_STEP = MarketConfig('M5').step
 TREND_TIMEFRAMES = ('H1', 'H4')
 FAST_SPAN, SLOW_SPAN, RANGE_SPAN = 8, 24, 14
-NEUTRAL_RANGE_FRACTION = .10
-SESSION_BLACKOUTS = (
-    ('America/New_York', 16 * 60 + 30, 18 * 60),
-    ('Asia/Tokyo', 8 * 60, 10 * 60),
+SESSION_WINDOWS = (
+    ('ny_rollover', 'America/New_York', 16 * 60 + 30, 18 * 60),
+    ('tokyo_early', 'Asia/Tokyo', 8 * 60, 10 * 60),
 )
 VOLATILITY_WINDOW = 12
-VOLATILITY_QUANTILE = .20
+CONTEXT_FEATURES = (
+    'h1_bias', 'h1_available', 'h4_bias', 'h4_available',
+    'm5_realized_volatility', 'm5_volatility_available', 'm5_range_fraction',
+    'ny_rollover', 'tokyo_early',
+)
+CONTEXT_SETTINGS = dict(
+    trend=dict(fast_span=FAST_SPAN, slow_span=SLOW_SPAN, range_span=RANGE_SPAN,
+               max_age_minutes_exclusive={'H1': 60, 'H4': 240}),
+    realized_volatility_window_m5=VOLATILITY_WINDOW,
+    session_windows=[dict(feature=name, timezone=zone, start_local=f'{start // 60:02d}:{start % 60:02d}',
+                          end_local=f'{end // 60:02d}:{end % 60:02d}')
+                     for name, zone, start, end in SESSION_WINDOWS],
+)
 
 
-def closed_trend_direction(frame, timeframe):
-    """Tendencia al cierre M5 a partir de velas completas H1 o H4."""
+def closed_trend_bias(frame, timeframe):
+    """Diferencia de EMA en unidades del rango de una vela completa H1/H4."""
     market = MarketConfig(timeframe)
     timestamp = frame.timestamp
     result = np.full(len(frame), np.nan)
@@ -30,30 +41,33 @@ def closed_trend_direction(frame, timeframe):
     candles = aggregate(ohlc, 5, timeframe, now=decisions[-1])
     fast = candles.close.ewm(span=FAST_SPAN, adjust=False, min_periods=FAST_SPAN).mean()
     slow = candles.close.ewm(span=SLOW_SPAN, adjust=False, min_periods=SLOW_SPAN).mean()
-    band = NEUTRAL_RANGE_FRACTION * (candles.high - candles.low).ewm(
+    average_range = (candles.high - candles.low).ewm(
         span=RANGE_SPAN, adjust=False, min_periods=RANGE_SPAN,
     ).mean()
     gap = fast - slow
-    direction = np.select([gap > band, gap < -band], [1., -1.], default=0.)
-    direction[gap.isna() | band.isna()] = np.nan
+    scale = average_range.to_numpy()
+    bias = np.divide(gap.to_numpy(), scale, out=np.zeros(len(scale)), where=scale > 0.)
+    bias[gap.isna() | average_range.isna()] = np.nan
     closes = pd.DatetimeIndex(candles.timestamp + market.step)
     last = closes.get_indexer(decisions, method='pad', tolerance=market.step - M5_STEP)
     available = last >= 0
-    result[available] = direction[last[available]]
+    result[available] = bias[last[available]]
     return result
 
 
-def session_allowed(bar_opens):
-    """Comprueba entrada y vencimiento contra ventanas locales [inicio, fin)."""
+def session_observations(bar_opens):
+    """Marca si la entrada o el vencimiento tocan una de las ventanas locales."""
     entry = pd.DatetimeIndex(bar_opens) + M5_STEP
     expiry = entry + M5_STEP
-    allowed = np.ones(len(entry), dtype=bool)
-    for zone, start, end in SESSION_BLACKOUTS:
+    observations = {}
+    for name, zone, start, end in SESSION_WINDOWS:
+        inside = np.zeros(len(entry), dtype=bool)
         for instant in (entry, expiry):
             local = instant.tz_convert(zone)
             minutes = local.hour * 60 + local.minute
-            allowed &= ~((minutes >= start) & (minutes < end))
-    return allowed
+            inside |= (minutes >= start) & (minutes < end)
+        observations[name] = inside.astype(float)
+    return observations
 
 
 def realized_volatility(frame):
@@ -63,52 +77,17 @@ def realized_volatility(frame):
     return np.sqrt(squares.rolling(VOLATILITY_WINDOW, min_periods=VOLATILITY_WINDOW).sum()).to_numpy()
 
 
-def build_entry_context(frame, train_end):
-    """Fija el piso de volatilidad con velas de train en sesiones permitidas."""
-    timestamps = pd.DatetimeIndex(frame.timestamp).as_unit('ns')
-    sessions = session_allowed(timestamps)
-    volatility = realized_volatility(frame)
-    fit = (timestamps <= train_end) & sessions & np.isfinite(volatility)
-    if not fit.any():
-        raise ValueError('Train carece de ventanas M5 para ajustar el piso de volatilidad')
-    floor = float(np.quantile(volatility[fit], VOLATILITY_QUANTILE))
-    context = pd.DataFrame({
-        **{tf: closed_trend_direction(frame, tf) for tf in TREND_TIMEFRAMES},
-        'session_allowed': sessions, 'realized_volatility': volatility,
-        'volatility_allowed': (volatility > 0.) & (volatility >= floor),
-    }, index=timestamps)
-    settings = dict(
-        trend=dict(timeframes=list(TREND_TIMEFRAMES), fast_span=FAST_SPAN, slow_span=SLOW_SPAN,
-                   range_span=RANGE_SPAN, neutral_range_fraction=NEUTRAL_RANGE_FRACTION,
-                   max_age_minutes_exclusive={'H1': 60, 'H4': 240}),
-        session_blackouts=[dict(timezone=zone, start_local=f'{start // 60:02d}:{start % 60:02d}',
-                                end_local=f'{end // 60:02d}:{end % 60:02d}')
-                           for zone, start, end in SESSION_BLACKOUTS],
-        realized_volatility=dict(window_m5=VOLATILITY_WINDOW, train_quantile=VOLATILITY_QUANTILE,
-                                 floor=floor, fit_rows=int(fit.sum()), fit_end=train_end.isoformat()),
-    )
-    return context, settings
-
-
-def filter_setups(context, entries, actions, eligible):
-    """Devuelve máscara y conteos secuenciales sobre entradas ya válidas para MC."""
-    side = np.where(actions == 2, 1, -1)
-    allowed = np.ones(len(entries), dtype=bool)
-    stages, rejected, regimes = {'MC': len(entries)}, {}, {}
+def build_observations(frame):
+    """Conserva todas las filas y distingue ausencia de una observación neutral."""
+    columns = {}
     for timeframe in TREND_TIMEFRAMES:
-        directions = context[timeframe].to_numpy(dtype=float)
-        trend = directions[entries]
-        rejected[timeframe] = dict(opposite=int((allowed & (trend == -side)).sum()),
-                                   lateral=int((allowed & (trend == 0)).sum()),
-                                   unavailable=int((allowed & np.isnan(trend)).sum()))
-        allowed &= trend == side
-        stages[timeframe] = int(allowed.sum())
-        observed = directions[eligible]
-        regimes[timeframe] = dict(up=int((observed == 1).sum()), down=int((observed == -1).sum()),
-                                  lateral=int((observed == 0).sum()), unavailable=int(np.isnan(observed).sum()))
-    for stage in ('session', 'volatility'):
-        passes = context[f'{stage}_allowed'].to_numpy(dtype=bool)[entries]
-        rejected[stage] = int((allowed & ~passes).sum())
-        allowed &= passes
-        stages[stage] = int(allowed.sum())
-    return allowed, dict(stages=stages, rejected=rejected, regimes=regimes)
+        bias = closed_trend_bias(frame, timeframe)
+        columns[f'{timeframe.lower()}_bias'] = np.nan_to_num(bias, nan=0.)
+        columns[f'{timeframe.lower()}_available'] = np.isfinite(bias).astype(float)
+    volatility = realized_volatility(frame)
+    columns['m5_realized_volatility'] = np.nan_to_num(volatility, nan=0.)
+    columns['m5_volatility_available'] = np.isfinite(volatility).astype(float)
+    columns['m5_range_fraction'] = ((frame.high - frame.low) / frame.close).to_numpy()
+    columns.update(session_observations(frame.timestamp))
+    return pd.DataFrame(columns, columns=CONTEXT_FEATURES,
+                        index=pd.DatetimeIndex(frame.timestamp).as_unit('ns'))

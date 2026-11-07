@@ -269,15 +269,60 @@ jobs:
             data/eurusd_market_features.parquet
           if-no-files-found: error
           retention-days: 30
+      - name: Find previous M5 research lineage
+        if: inputs.mode == 'evolution'
+        id: evolution-parent
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const branch = context.payload.repository.default_branch;
+            const candidates = await github.paginate(github.rest.actions.listArtifactsForRepo,
+              {owner, repo, name: 'forex-evolution-lineage-v4', per_page: 100});
+            // El checkpoint se publica al completar la evolución, antes del gate.
+            // Ordenar por artefacto mantiene el linaje si se reintenta una corrida anterior.
+            const previous = candidates.filter(a => !a.expired && a.workflow_run?.head_branch === branch)
+              .sort((a, b) => b.id - a.id);
+            for (const artifact of previous) {
+              const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id: artifact.workflow_run.id});
+              if (run.event !== 'workflow_dispatch' || run.head_repository?.full_name !== `${owner}/${repo}` ||
+                  run.path.split('@')[0] !== '.github/workflows/pipeline.yml') continue;
+              core.setOutput('artifact_id', artifact.id);
+              core.setOutput('run_id', run.id);
+              return;
+            }
+      - name: Download previous M5 research lineage
+        if: inputs.mode == 'evolution' && steps.evolution-parent.outputs.artifact_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.evolution-parent.outputs.artifact_id }}
+          run-id: ${{ steps.evolution-parent.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: .evolution-parent
+          merge-multiple: true
       - name: Evolve isolated M5 population
         if: inputs.mode == 'evolution'
         timeout-minutes: 20
         env:
           EVOLUTION_POPULATION_SIZE: ${{ inputs.population_size }}
           EVOLUTION_GENERATIONS: ${{ inputs.generations }}
+          EVOLUTION_PARENT_RUN_ID: ${{ steps.evolution-parent.outputs.run_id }}
         run: |
-          python -m src.evolution_engine --input data/eurusd_market_features.parquet --population-size "$EVOLUTION_POPULATION_SIZE" --generations "$EVOLUTION_GENERATIONS"
+          seed_args=()
+          if [ -n "$EVOLUTION_PARENT_RUN_ID" ]; then
+            seed_args=(--seed-bundle .evolution-parent/lineage.zip)
+          fi
+          python -m src.evolution_engine --input data/eurusd_market_features.parquet --population-size "$EVOLUTION_POPULATION_SIZE" --generations "$EVOLUTION_GENERATIONS" "${seed_args[@]}"
           cat reports/evolution/evolution.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Save M5 research lineage
+        if: inputs.mode == 'evolution'
+        uses: actions/upload-artifact@v7
+        with:
+          name: forex-evolution-lineage-v4
+          path: reports/evolution/lineage.zip
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
       - name: Enforce evolutionary validation gate
         if: inputs.mode == 'evolution'
         run: |
