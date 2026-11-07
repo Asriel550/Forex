@@ -219,14 +219,30 @@ valores por defecto son 24 individuos y 10 ciclos posteriores a la
 generación inicial, para un total de 11 generaciones evaluadas.
 
 Cada individuo tiene un vector de pesos y un sesgo sobre features de
-mercado normalizadas. Una puntuación positiva acepta la dirección de
-Monte Carlo si supera confianza, Wilson y payout, y coincide con la
-dirección H1. Cada H1 se forma con 12 velas M5 completas. La dirección es
-el signo de EMA8 menos EMA24 del cierre H1 fuera de una banda neutral del
-10% de la media exponencial de 14 rangos H1. Las horas incompletas se
-descartan. El filtro requiere el warmup completo y un último cierre H1
-de menos de 60 minutos. El sistema solo ejecuta CALL con H1 alcista y
-PUT con H1 bajista.
+mercado normalizadas. El motor limita las entradas antes de puntuarlas
+con el genoma, tanto en búsqueda y sus cuatro bloques como en confirmación.
+
+1. Monte Carlo debe superar confianza, Wilson y payout.
+2. CALL exige H1 y H4 alcistas. PUT exige H1 y H4 bajistas. Cada
+   H1/H4 se forma con 12/48 velas M5 completas alineadas a UTC. La
+   dirección es el signo de EMA8 menos EMA24 del cierre de cada
+   temporalidad fuera de una banda neutral del 10% de la media
+   exponencial de 14 rangos. Se exige warmup completo y un último cierre
+   de menos de 60 minutos para H1 y 240 para H4.
+3. La entrada y el vencimiento deben quedar fuera de las ventanas de
+   investigación 16:30–18:00 en `America/New_York` y 08:00–10:00 en
+   `Asia/Tokyo`. Se incluye el inicio y se excluye el fin de cada
+   ventana. La conversión local aplica el horario de verano de NY.
+4. La volatilidad realizada es la raíz de la suma de los cuadrados de
+   12 retornos log M5 consecutivos. Debe ser positiva y alcanzar el
+   percentil 20 de las ventanas válidas de entrenamiento en sesiones
+   permitidas. El piso queda fijo para toda la búsqueda y confirmación.
+   Un hueco invalida la ventana hasta volver a acumular 12 retornos.
+
+El histórico permite medir movimiento de precio. El filtro horario es
+una hipótesis de investigación sobre liquidez y el piso de volatilidad
+usa cierres M5. El reporte muestra el máximo de contratos por hora
+después de los filtros y señala cuándo queda por debajo del gate.
 
 Los cierres posteriores se usan para liquidar, con las mismas reglas de
 caja, huecos y reembolsos del entorno M5. El stop del 20% se aplica al
@@ -245,8 +261,8 @@ es indefinido. Un acierto indefinido aporta cero al cálculo.
 El normalizador se ajusta en train. El primer 75% de validación
 cronológica se divide en cuatro bloques consecutivos de tamaño similar.
 Cada bloque empieza con saldo propio y liquida sus contratos dentro de
-sus límites. El reporte muestra la distribución H1 observada en cada
-bloque, con estados alcista, bajista, lateral y sin cotización vigente.
+sus límites. El JSON muestra la distribución H1/H4 de cada bloque
+con estados alcista, bajista, lateral y sin señal vigente.
 La aptitud combina 50% del puntaje medio y 50% del peor bloque. Resta
 0,10 veces la proporción de pesos efectivos, medida como
 `(sum(abs(w))**2 / sum(w**2)) / número_de_pesos`. El cálculo excluye el
@@ -275,26 +291,32 @@ El gate puede marcar la corrida como fallida y conservar los reportes y
 candidatos. Los artefactos de evolución quedan separados de Intradía M15
 y del flujo de Telegram.
 
-### Evaluación de consistencia y tendencia H1
+### Evaluación del contexto H1/H4
 
-La prueba local conservó los 40 individuos, 10 ciclos, semilla 42 e
-histórico M5 de 2025 de la PR #16. Hubo ocho padres en cada generación y
-cero élites. El campeón de la generación 10 perdió en los cuatro bloques
-(−US$170, −US$200, −US$188 y −US$90). Su genoma usó 14,68 pesos efectivos
-de 25. El filtro H1 dejó 1.543 de 3.311 setups en búsqueda y 491 de 1.118
-en confirmación. Sus tasas máximas fueron 1,706 y 1,630 contratos por hora.
+La prueba local usó 64 individuos, 20 ciclos, semilla 42 y el histórico
+M5 de 2025 de la PR #17. El embudo contó los setups de forma secuencial.
+
+| Tramo | MC | H1 | H4 | Sesión | Volatilidad | Máximo/h |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Búsqueda | 3.311 | 1.543 | 679 | 649 | 476 | 0,526 |
+| Confirmación | 1.118 | 491 | 228 | 226 | 153 | 0,508 |
+
+El máximo queda por debajo del mínimo del gate de 1,5 contratos por hora
+en ambos tramos. El campeón de la generación 20 perdió en los cuatro
+bloques de búsqueda y el gate lo rechazó.
 
 | Métrica del campeón | Búsqueda | Confirmación |
 | --- | ---: | ---: |
-| Contratos ejecutados | 303 | 239 |
-| Acierto sin reembolsos | 52,36% | 50,87% |
-| Profit Factor | 0,879 | 0,828 |
-| Contratos por hora | 0,335 | 0,794 |
-| Drawdown máximo | 20,80% | 20,51% |
-| PnL simulado | −US$170 | −US$194 |
+| Contratos ejecutados | 197 | 107 |
+| Acierto sin reembolsos | 50,26% | 52,34% |
+| Profit Factor | 0,808 | 0,878 |
+| Contratos por hora | 0,218 | 0,355 |
+| Drawdown máximo | 20,16% | 9,75% |
+| PnL simulado | −US$184 | −US$62 |
 
-En una comparación posterior con el genoma fijo, el filtro elevó el
-PF en confirmación de 0,500 a 0,828 y el drawdown pasó de 20,00% a
-20,51%. Ambas variantes activaron el stop. El gate rechazó al campeón.
-Se reutilizó la confirmación histórica para el diagnóstico.
-[Corrida de referencia de la PR #16](https://github.com/Asriel550/Forex/actions/runs/42409133378)
+Al reproducir el campeón fijo de la PR #17, el acierto pasó de 51,67%
+a 48,09% en búsqueda y de 51,74% a 54,64% en confirmación. En
+confirmación el PF pasó de 0,858 a 0,964 y el PnL de −US$198 a −US$16
+con 97 contratos frente a 297. Se reutilizó la confirmación histórica
+para el diagnóstico. El holdout quedó reservado.
+[Corrida de referencia de la PR #17](https://github.com/Asriel550/Forex/actions/runs/42413754772)
