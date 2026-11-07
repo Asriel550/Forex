@@ -7,10 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'train: investigación v4; diagnostics: protocolo PR8; telegram_test: prueba'
+        description: 'train para PPO, evolution para genética Scalping M5, diagnostics para protocolo PR8'
         type: choice
-        options: [alerts, train, diagnostics, telegram_test]
+        options: [alerts, train, evolution, diagnostics, telegram_test]
         default: alerts
+      population_size:
+        description: 'evolution: individuos por generación (entero de 4 a 64)'
+        type: number
+        default: 24
+      generations:
+        description: 'evolution: ciclos después de la población inicial (entero de 1 a 20)'
+        type: number
+        default: 10
       confidence_threshold:
         description: 'Umbral nominal; auto aplica el perfil'
         type: choice
@@ -90,7 +98,7 @@ jobs:
   unit-tests:
     if: >-
       github.event_name == 'push' || github.event_name == 'pull_request' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'train' || inputs.mode == 'diagnostics')) ||
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["train","diagnostics","evolution"]'), inputs.mode)) ||
       (github.event_name == 'schedule' && github.event.schedule == '15 6 * * 1')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -118,7 +126,7 @@ jobs:
     needs: unit-tests
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      (inputs.mode == 'train' || inputs.mode == 'diagnostics') &&
+      contains(fromJSON('["train","diagnostics","evolution"]'), inputs.mode) &&
       github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 330
@@ -146,7 +154,7 @@ jobs:
         run: python -m src.trading_profiles
       - name: Cache verified HistData M1 archive
         if: >-
-          inputs.mode == 'train' && env.FOREX_TRADING_PROFILE == 'scalping' &&
+          (inputs.mode == 'train' || inputs.mode == 'evolution') && env.FOREX_TRADING_PROFILE == 'scalping' &&
           ((env.FOREX_TIMEFRAME == 'M1' && vars.FOREX_M1_DATA_DIR == '') ||
           (env.FOREX_TIMEFRAME == 'M5' && vars.FOREX_M5_DATA_DIR == ''))
         uses: actions/cache@v6
@@ -261,6 +269,34 @@ jobs:
             data/eurusd_market_features.parquet
           if-no-files-found: error
           retention-days: 30
+      - name: Evolve isolated M5 population
+        if: inputs.mode == 'evolution'
+        timeout-minutes: 20
+        env:
+          EVOLUTION_POPULATION_SIZE: ${{ inputs.population_size }}
+          EVOLUTION_GENERATIONS: ${{ inputs.generations }}
+        run: |
+          python -m src.evolution_engine --input data/eurusd_market_features.parquet --population-size "$EVOLUTION_POPULATION_SIZE" --generations "$EVOLUTION_GENERATIONS"
+          cat reports/evolution/evolution.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce evolutionary validation gate
+        if: inputs.mode == 'evolution'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path('reports/evolution/evolution.json').read_text())
+          if report.get('qualified') is not True:
+              raise SystemExit('El campeón evolutivo no cumplió el gate de búsqueda y confirmación.')
+          PY
+      - name: Upload generational research candidates
+        if: always() && inputs.mode == 'evolution'
+        uses: actions/upload-artifact@v7
+        with:
+          name: forex-evolution-candidates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/evolution/candidates/bundle_scalping_gen_*.zip
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload research reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -274,6 +310,7 @@ jobs:
             reports/diagnostics/**/*.json
             reports/diagnostics/**/*.csv
             reports/diagnostics/**/*.md
+            reports/evolution/evolution.*
             models/*.json
             models/research_v4/**/*.json
             models/research_v4/**/*.csv

@@ -208,3 +208,63 @@ coincidió en 219 de 275 setups, se abstuvo en 56 y pidió cero direcciones
 contrarias. Sobre la fase completa fueron 0,182 contratos por hora y
 4,94% de conversión sobre 4.429 setups. El gate quedó rechazado y el
 holdout reservado.
+
+## Evolución genética de Scalping M5
+
+En **Run workflow**, seleccioná `main` y `mode=evolution`. Los valores
+`trading_profile=auto`, `timeframe=auto`, `trading_mode=binary` y
+`expiry_candles=0` resuelven Scalping M5 binario con una vela de vencimiento.
+Elegí `population_size` entre 4 y 64 y `generations` entre 1 y 20. Los
+valores por defecto son 24 individuos y 10 ciclos posteriores a la
+generación inicial, para un total de 11 generaciones evaluadas.
+
+Cada individuo tiene un vector de pesos y un sesgo sobre features de
+mercado normalizadas. Una puntuación positiva acepta la dirección de
+Monte Carlo si supera confianza, Wilson y payout. Los cierres posteriores
+se usan para liquidar, con las mismas reglas de caja, huecos y reembolsos
+del entorno M5. El stop del 20% se aplica al liquidar y el gate exige un
+drawdown menor al 15%. Las horas incluyen el tramo observable completo.
+
+El gate exige acierto sin reembolsos ≥56%, PF >1,20, 1,5–3,0 contratos por
+hora y drawdown <15%. Los candidatos que cumplen los cuatro criterios
+tienen prioridad. El orden dentro de cada grupo usa
+`acierto + PF/(1+PF) − distancia(frecuencia, [1,5; 3,0])/1,5 − drawdown`,
+con acierto y drawdown como fracciones. El término de PF vale uno si hay
+ganancias sin pérdidas y cero cuando el ratio es indefinido. Un candidato
+por debajo de 56% o sin contratos resueltos queda fuera de la reproducción.
+
+Hasta el 20% superior de la población, redondeado hacia arriba, pasa como
+élite. Los descendientes combinan pesos de dos padres y reciben una
+perturbación gaussiana. La amplitud de la mutación baja cuando mejora el
+mejor candidato acumulado y sube si se estanca. Si queda una sola élite,
+los hijos son mutaciones de ella. Si no queda ninguna, la siguiente
+generación parte de una población nueva.
+
+El normalizador se ajusta en train. La búsqueda usa el primer 75% de la
+validación cronológica. Tras una vela de purga, el tramo restante evalúa
+una sola vez al genoma preseleccionado. El gate de la corrida exige
+aprobar búsqueda y confirmación. El holdout histórico queda reservado.
+
+Actions publica el JSON, el CSV por individuo y el Markdown bajo
+`forex-reports-*`. El artefacto `forex-evolution-candidates-*` contiene
+un ZIP independiente por generación, desde `bundle_scalping_gen_0.zip`.
+Cada ZIP contiene pesos, normalizador y manifiesto con SHA256. Se publica
+también el representante de diagnóstico de una generación rechazada.
+El gate puede marcar la corrida como fallida y conservar los reportes y
+candidatos. Los artefactos de evolución quedan separados de Intradía M15
+y del flujo de Telegram.
+
+Con 24 individuos, 20 ciclos y semilla 42 sobre el histórico M5 de 2025,
+se evaluaron 504 candidatos. El mayor acierto en búsqueda fue 53,72%.
+Las 20 transiciones reiniciaron la población por falta de padres que
+superaran el corte. El representante mejor clasificado fue el de la
+generación 16.
+
+| Validación de la prueba local | Búsqueda | Confirmación |
+| --- | ---: | ---: |
+| Contratos ejecutados | 460 | 99 |
+| Acierto sin reembolsos | 53,36% | 44,33% |
+| Profit Factor | 0,915 | 0,637 |
+| Contratos por hora | 0,509 | 0,329 |
+| Drawdown máximo | 20,46% | 20,24% |
+| PnL simulado | −US$176 | −US$196 |
