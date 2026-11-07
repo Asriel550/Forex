@@ -1,3 +1,5 @@
+PR #10: [temporalidad, binarias/Forex spot y expiración; contrato v4](docs/market_contract_v4.md). Los nuevos pesos son investigación y no sustituyen al bot v3. M5 requiere fuente M1.
+
 Holdout congelado: [diagnóstico MC/PPO, barrido de semillas y prueba Telegram](docs/train_validation_diagnostics.md). Investigación solo manual; `mode=diagnostics` no publica pesos. [Resultados MC/PPO y tres semillas](docs/research/pr8_filter_policy_diagnosis.md).
 
 Exploración PPO configurable: [entropía, incentivos y auditoría](docs/ppo_exploration.md). Default `ent_coef=0.02`; [comparación local con resultados y límites](docs/research/ppo_exploration_comparison.md).

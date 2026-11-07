@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'diagnostics: seeds sin holdout; telegram_test: mensaje técnico; train: bundle'
+        description: 'train: investigación v4; diagnostics: protocolo PR8; telegram_test: prueba'
         type: choice
         options: [alerts, train, diagnostics, telegram_test]
         default: alerts
@@ -34,8 +34,22 @@ on:
       neutral_opportunity_penalty:
         description: 'Coste por esperar SOLO si existe setup que pasa filtros'
         type: choice
-        options: ['0', '0.005', '0.01']
-        default: '0.005'
+        options: ['0', '0.005', '0.01', '0.05', '0.10']
+        default: '0.05'
+      timeframe:
+        description: 'Temporalidad para train v4; M5 requiere fuente estática M1'
+        type: choice
+        options: [M5, M15, H1, H4]
+        default: M15
+      trading_mode:
+        description: 'Entorno para train v4; alerts conserva el contrato de su bundle'
+        type: choice
+        options: [binary, forex_spot]
+        default: binary
+      expiry_candles:
+        description: 'Vencimiento binario entero 1..32; spot requiere 1 (sin vencimiento)'
+        type: number
+        default: 1
       telegram_test_id:
         description: 'ID estable de prueba: repetirlo NO reenvía sent/pending (1..64 ASCII)'
         type: string
@@ -55,10 +69,14 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
   FOREX_ENT_COEF: ${{ inputs.ent_coef || vars.FOREX_ENT_COEF || '0.02' }}
   FOREX_BLOCKED_PENALTY: ${{ inputs.blocked_penalty || vars.FOREX_BLOCKED_PENALTY || '0.05' }}
-  FOREX_NEUTRAL_OPPORTUNITY_PENALTY: ${{ inputs.neutral_opportunity_penalty || vars.FOREX_NEUTRAL_OPPORTUNITY_PENALTY || '0.005' }}
+  FOREX_NEUTRAL_OPPORTUNITY_PENALTY: ${{ inputs.neutral_opportunity_penalty || vars.FOREX_NEUTRAL_OPPORTUNITY_PENALTY || '0.05' }}
   FOREX_TRADE_PENALTY: ${{ vars.FOREX_TRADE_PENALTY || '0.025' }}
   FOREX_MIN_CONFIDENCE: ${{ inputs.confidence_threshold || vars.FOREX_MIN_CONFIDENCE || '0.60' }}
   FOREX_DRIFT_SCALE: ${{ inputs.drift_scale || vars.FOREX_DRIFT_SCALE || '1.5' }}
+  FOREX_TIMEFRAME: ${{ inputs.timeframe || 'M15' }}
+  FOREX_TRADING_MODE: ${{ inputs.trading_mode || 'binary' }}
+  FOREX_EXPIRY_CANDLES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.expiry_candles) || '1' }}
+  FOREX_MARKET_DATA_DIR: ${{ vars.FOREX_MARKET_DATA_DIR || 'datasets/eurusd' }}
   FOREX_INPUT_TIMEFRAME: ${{ vars.FOREX_INPUT_TIMEFRAME || 'auto' }}
   FOREX_SOURCE_TIMEZONE: ${{ vars.FOREX_SOURCE_TIMEZONE || 'EST' }}
 
@@ -116,24 +134,38 @@ jobs:
         run: |
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements.txt
+      - name: Validate research contract before ingestion
+        env:
+          RESEARCH_MODE: ${{ inputs.mode }}
+        run: |
+          python - <<'PYCODE'
+          import os
+          from src.market import MarketConfig
+          m=MarketConfig(os.environ['FOREX_TIMEFRAME'],os.environ['FOREX_TRADING_MODE'],int(os.environ['FOREX_EXPIRY_CANDLES']))
+          if os.environ['RESEARCH_MODE']=='diagnostics' and m!=MarketConfig():
+              raise ValueError('diagnostics conserva el protocolo PR8 M15/binary/1; usar mode=train para otro contrato')
+          print(m)
+          PYCODE
       - name: Read static EURUSD CSV or ZIP files
         timeout-minutes: 20
+        env:
+          RESEARCH_MODE: ${{ inputs.mode }}
         run: |
-          if [ -f config/closures.json ]; then
+          if [ "$RESEARCH_MODE" = diagnostics ]; then
             python -m src.data_loader --input-dir datasets/eurusd --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE" --closures config/closures.json
           else
-            python -m src.data_loader --input-dir datasets/eurusd --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE"
+            python -m src.data_loader --input-dir "$FOREX_MARKET_DATA_DIR" --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE" --closures config/closures.json --timeframe "$FOREX_TIMEFRAME" --output data/eurusd_market.parquet
           fi
       - name: Causal quant features and continuation state
         timeout-minutes: 45
+        env:
+          RESEARCH_MODE: ${{ inputs.mode }}
         run: |
           if [ "$RESEARCH_MODE" = diagnostics ]; then
             python -m src.quant_engine --drop-warmup --seed 42 --drift-scale 1.5
           else
-            python -m src.quant_engine --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE"
+            python -m src.quant_engine --input data/eurusd_market.parquet --output data/eurusd_market_features.parquet --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE" --timeframe "$FOREX_TIMEFRAME" --expiry-candles "$FOREX_EXPIRY_CANDLES"
           fi
-        env:
-          RESEARCH_MODE: ${{ inputs.mode }}
       - name: Find archived production bundle for train/validation diagnosis
         if: inputs.mode == 'diagnostics'
         id: diagnostic-bundle
@@ -155,7 +187,7 @@ jobs:
               core.setOutput('run_id',run.id);
               return;
             }
-            core.setFailed('No hay bundle válido: ejecutar primero workflow_dispatch con mode=train.');
+            core.setFailed('No hay bundle v3 compatible. Train publica investigación v4; restaurar v3 auditado o revisar promoción v4.');
       - uses: actions/download-artifact@v8
         if: inputs.mode == 'diagnostics'
         with:
@@ -172,24 +204,20 @@ jobs:
         if: inputs.mode == 'diagnostics'
         timeout-minutes: 240
         run: python -m src.diagnostics --seeds 42 43 44 --total-timesteps 100000
-      - name: Sensitivity on train and validation only (MC baseline, not PPO)
-        if: inputs.mode == 'train'
-        timeout-minutes: 10
-        run: python -m src.sensitivity
       - name: Train with frozen holdout (NO backtest)
         if: inputs.mode == 'train'
         timeout-minutes: 120
-        run: python -m src.train --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
-      - name: Publish manually requested train bundle (validation selected; holdout frozen)
+        run: python -m src.train --input data/eurusd_market_features.parquet --output-dir models/research_v4 --timeframe "$FOREX_TIMEFRAME" --trading-mode "$FOREX_TRADING_MODE" --expiry-candles "$FOREX_EXPIRY_CANDLES" --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
+      - name: Publish isolated v4 research bundle (no automatic production promotion)
         if: inputs.mode == 'train'
         uses: actions/upload-artifact@v7
         with:
-          name: forex-alert-bundle
+          name: forex-research-bundle-v4
           path: |
-            models/best_ppo_agent.zip
-            models/normalizer.json
-            models/training_manifest.json
-            data/eurusd_m15_features.parquet
+            models/research_v4/best_ppo_agent.zip
+            models/research_v4/normalizer.json
+            models/research_v4/training_manifest.json
+            data/eurusd_market_features.parquet
           if-no-files-found: error
           retention-days: 30
       - name: Upload research reports
@@ -206,6 +234,9 @@ jobs:
             reports/diagnostics/**/*.csv
             reports/diagnostics/**/*.md
             models/*.json
+            models/research_v4/**/*.json
+            models/research_v4/**/*.csv
+            models/research_v4/**/*.md
           if-no-files-found: warn
           retention-days: 30
 
@@ -254,7 +285,7 @@ jobs:
               core.setOutput('run_id',run.id);
               return;
             }
-            core.setFailed('No hay bundle válido: ejecutar primero workflow_dispatch con mode=train.');
+            core.setFailed('No hay bundle v3 compatible. Train publica investigación v4; restaurar v3 auditado o revisar promoción v4.');
       - uses: actions/download-artifact@v8
         if: inputs.mode != 'telegram_test'
         with:

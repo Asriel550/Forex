@@ -22,6 +22,7 @@ No sustituye Monte Carlo por percentiles analíticos de una lognormal.
 from __future__ import annotations
 
 import argparse
+from .market import MarketConfig
 from dataclasses import asdict, dataclass, replace
 import logging
 import os
@@ -113,18 +114,21 @@ class MonteCarloGBM:
         self._terminal = np.sort(self._brownian[:, -1])
         self._one_step = np.sort(self._brownian[:, 0])
 
-    def direction_probabilities(self, sigma, drift=0.0):
-        """Fracciones empíricas de las mismas rutas en el PASO 1 (expiración).
+    def direction_probabilities(self, sigma, drift=0.0, expiry_candles=1):
+        """Fracciones empíricas de las mismas rutas en expiry_candles (default 1).
 
         P05/P95 siguen siendo a 32 pasos. Estas probabilidades no son una
         confianza PPO ni probabilidades calibradas contra resultados reales.
         searchsorted evita una matriz n_velas x 10,000; no usa cierres futuros.
         """
+        if isinstance(expiry_candles,bool) or not isinstance(expiry_candles,int) or not 1<=expiry_candles<=self.horizon:
+            raise QuantError('Expiración fuera de las rutas Monte Carlo')
+        samples = self._one_step if expiry_candles==1 else np.sort(self._brownian[:,expiry_candles-1])
         _, sigma, drift = self._inputs(1., sigma, drift)
         threshold = np.divide(.5*sigma**2-drift, sigma,
-                              out=np.zeros_like(sigma), where=sigma>0)
-        down = np.searchsorted(self._one_step, threshold, side='left')/self.n_paths
-        up = 1.-np.searchsorted(self._one_step, threshold, side='right')/self.n_paths
+                              out=np.zeros_like(sigma), where=sigma>0)*expiry_candles
+        down = np.searchsorted(samples, threshold, side='left')/self.n_paths
+        up = 1.-np.searchsorted(samples, threshold, side='right')/self.n_paths
         up = np.where(sigma>0, up, (drift>0).astype(float))
         down = np.where(sigma>0, down, (drift<0).astype(float))
         return up, down, np.maximum(0., 1.-up-down)
@@ -169,17 +173,17 @@ class MonteCarloGBM:
 
 
 
-def project_monte_carlo(mc, spot, sigma, drift):
-    """Una misma mu alimenta bandas H y probabilidad al paso 1.
+def project_monte_carlo(mc, spot, sigma, drift, expiry_candles=1):
+    """Una misma mu alimenta bandas H y probabilidad a expiry_candles.
 
     Las distancias conservan el signo: ambas bandas pueden quedar arriba o
     abajo del spot. Posición sin clip=(spot-p05)/(p95-p05); bias=+1 si spot
     está debajo de p05, -1 si supera p95. Son geometría a H, no probabilidades
-    binarias: el filtro de 70% sigue usando SOLO mc_prob_up/down del paso 1.
+    binarias: el filtro de 70% sigue usando mc_prob_up/down del horizonte de expiración.
     """
     spot=np.asarray(spot,dtype=float)
     p05,p95=mc.terminal_quantiles(spot,sigma,drift)
-    up,down,tie=mc.direction_probabilities(sigma,drift)
+    up,down,tie=mc.direction_probabilities(sigma,drift,expiry_candles)
     width=p95-p05
     fallback=np.where(spot<p05,0.,np.where(spot>p95,1.,.5))
     position=np.divide(spot-p05,width,out=np.broadcast_to(fallback,np.shape(width)).copy(),where=width>0)
@@ -279,13 +283,13 @@ def reproject_drift_scale(frame,scale):
     out['mc_log_drift']=np.nan;out.loc[ready,'mc_log_drift']=log_mu
     out['mc_drift']=np.nan;out.loc[ready,'mc_drift']=mu
     mc=MonteCarloGBM(cfg.n_paths,cfg.horizon,cfg.seed)
-    for name,values in project_monte_carlo(mc,out.close.to_numpy()[ready],sigma[ready],mu).items():
+    for name,values in project_monte_carlo(mc,out.close.to_numpy()[ready],sigma[ready],mu,int(frame.attrs.get("direction_probability_horizon",1))).items():
         out[name]=np.nan;out.loc[ready,name]=values
     out.attrs=dict(frame.attrs,quant_config=asdict(cfg))
     return out
 
 
-def causal_drift(close, volatility, config: QuantConfig, timestamps=None):
+def causal_drift(close, volatility, config: QuantConfig, timestamps=None, bar_minutes=15):
     """mu[t] GBM a partir de L retornos conocidos al CIERRE t.
 
     En momentum se estima la MEDIA LOGARÍTMICA (no el drift aritmético GBM):
@@ -295,7 +299,7 @@ def causal_drift(close, volatility, config: QuantConfig, timestamps=None):
       mu = log_mu + sigma[t]**2/2
     Así el exponente GBM es log_mu, sin confundir retornos log y aritméticos.
     La banda de ruido es una heurística de contracción, NO calibración predictiva.
-    Sin L retornos M15 contiguos, log_mu=0; sigma NaN conserva warmup NaN.
+    Sin L retornos contiguos del timeframe, log_mu=0; sigma NaN conserva warmup NaN.
     Si timestamps se omite, se asume que cada fila representa una vela contigua.
     """
     prices=np.asarray(close,dtype=float)
@@ -322,7 +326,7 @@ def causal_drift(close, volatility, config: QuantConfig, timestamps=None):
     candidates=np.arange(length,n)
     valid=ready[candidates]
     if ts is not None:
-        bad=np.r_[0,np.diff(ts.asi8)!=pd.Timedelta(minutes=15).value]
+        bad=np.r_[0,np.diff(ts.asi8)!=pd.Timedelta(minutes=bar_minutes).value]
         cumulative=np.r_[0,np.cumsum(bad)]
         valid &= (cumulative[candidates+1]-cumulative[candidates-length+1])==0
     candidates=candidates[valid]
@@ -342,7 +346,7 @@ def causal_drift(close, volatility, config: QuantConfig, timestamps=None):
     return out
 
 
-def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None) -> pd.DataFrame:
+def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None, *, timeframe=None, expiry_candles=1) -> pd.DataFrame:
     """Copia enriquecida: conserva orden, índice, OHLCV y warmup sin rellenar.
 
     dist_p95=(p95-close)/close; dist_p05=(p05-close)/close. Son fracciones,
@@ -352,33 +356,37 @@ def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None) -> pd.D
     atrás con información futura.
     """
     config = config or QuantConfig()
+    market = MarketConfig(timeframe or df.attrs.get("timeframe","M15"),expiry_candles=expiry_candles)
+    if df.attrs.get("timeframe",market.timeframe)!=market.timeframe:
+        raise QuantError("Temporalidad solicitada distinta a la archivada en los datos")
     if not df.columns.is_unique or "timestamp" not in df or "close" not in df:
         raise QuantError("Se requieren columnas únicas timestamp y close")
     timestamps = pd.to_datetime(df.timestamp, errors="raise", utc=True)
     if (timestamps.isna().any() or timestamps.duplicated().any()
             or not timestamps.is_monotonic_increasing
-            or (timestamps != timestamps.dt.floor("15min")).any()):
+            or (timestamps != timestamps.dt.floor(market.frequency)).any()):
         raise QuantError("timestamp debe estar ordenado, ser único y estar alineado a M15")
     # Los huecos de mercado se verifican en data_loader; aquí las barras son tiempo de trading.
     out = df.copy()
     out["timestamp"] = timestamps
     volatility, fits = causal_garch_volatility(out.close, config)
     out["cond_volatility"] = volatility
-    drift = causal_drift(out.close,volatility,config,timestamps)
+    drift = causal_drift(out.close,volatility,config,timestamps,int(market.step.total_seconds()/60))
     for name,values in drift.items():out[name]=values
     ready = np.isfinite(volatility)
     mc = MonteCarloGBM(config.n_paths, config.horizon, config.seed)
-    projected = project_monte_carlo(mc,out.close.to_numpy()[ready],volatility[ready],out.mc_drift.to_numpy()[ready])
+    projected = project_monte_carlo(mc,out.close.to_numpy()[ready],volatility[ready],out.mc_drift.to_numpy()[ready],expiry_candles)
     for name,values in projected.items():
         out[name] = np.nan
         out.loc[ready,name] = values
     out.attrs = {"quant_config": asdict(config), "garch_fits": fits,
                  "source_rows": len(df), "origin_timestamp": timestamps.iloc[0].isoformat(),
-                 "volatility_units": "decimal per M15 bar, forecast sigma[t+1|t]",
+                 "volatility_units": f"decimal per {market.timeframe} bar, forecast sigma[t+1|t]",
                  "available_at": "candle close; execute no earlier than next bar",
                  "monte_carlo": "terminal empirical quantiles; common random numbers"}
     out.attrs['drift_contract'] = 'causal_momentum_v1' if config.drift_mode=='momentum' else 'constant_v1'
-    out.attrs['direction_probability_horizon'] = 1
+    out.attrs['direction_probability_horizon'] = expiry_candles
+    out.attrs['timeframe'] = market.timeframe
     out.attrs['probability_interpretation'] = 'GBM empirical model probability, not calibrated certainty'
     return out
 
@@ -396,12 +404,15 @@ def main():
         parser.add_argument('--'+name.replace('_','-'),type=float,default=getattr(QuantConfig(),name))
     parser.add_argument("--drift-per-bar", type=float, default=0.0)
     parser.add_argument("--drop-warmup", action="store_true")
+    parser.add_argument("--timeframe",choices=["M5","M15","H1","H4"],default="M15")
+    parser.add_argument("--expiry-candles",type=int,default=1)
     args = vars(parser.parse_args())
     source, output, drop = args.pop("input"), args.pop("output"), args.pop("drop_warmup")
     if source.resolve() == output.resolve():
         parser.error("input y output deben ser diferentes")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    result = enrich_features(pd.read_parquet(source), QuantConfig(**args))
+    timeframe,expiry=args.pop("timeframe"),args.pop("expiry_candles")
+    result = enrich_features(pd.read_parquet(source), QuantConfig(**args),timeframe=timeframe,expiry_candles=expiry)
     if drop:
         result = result.dropna(subset=FEATURES).reset_index(drop=True)
     output.parent.mkdir(parents=True, exist_ok=True)
