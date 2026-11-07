@@ -47,6 +47,10 @@ class QuantError(ValueError):
     """Entrada inválida o ajuste GARCH no fiable."""
 
 
+class GarchConvergenceError(QuantError):
+    """El optimizador no encontró un ajuste convergente."""
+
+
 @dataclass(frozen=True)
 class QuantConfig:
     window: int = 2016
@@ -217,7 +221,7 @@ def _fit_garch(sample: np.ndarray, max_iterations: int):
             result = candidate
             break
     if result is None:
-        raise QuantError("El ajuste GARCH no convergió tras 3 inicios deterministas")
+        raise GarchConvergenceError("El ajuste GARCH no convergió tras 3 inicios deterministas")
     omega, alpha, beta = (float(result.params[k]) for k in ("omega", "alpha[1]", "beta[1]"))
     omega *= rms**2
     if (not np.isfinite([omega, alpha, beta]).all() or omega <= 0
@@ -227,12 +231,13 @@ def _fit_garch(sample: np.ndarray, max_iterations: int):
     return omega, alpha, beta, h_t
 
 
-def causal_garch_volatility(close, config: QuantConfig):
+def causal_garch_volatility(close, config: QuantConfig, *, retain_on_nonconvergence=False):
     """sigma[t+1|t], historial de ajustes. NaN explícito durante warmup.
 
     El primer ajuste utiliza min_observations retornos, por lo que necesita
-    min_observations+1 cierres. Un fallo aborta: no se oculta con EWMA ni
-    parámetros obtenidos usando la muestra futura.
+    min_observations+1 cierres. Solo con retención explícita se permite un
+    refit fallido aislado usando los últimos parámetros causales y su estado.
+    El primer fallo sin ajuste previo o dos consecutivos abortan.
     """
     prices = np.asarray(close, dtype=np.float64)
     if prices.ndim != 1 or not np.isfinite(prices).all() or (prices <= 0).any():
@@ -243,13 +248,23 @@ def causal_garch_volatility(close, config: QuantConfig):
     volatility = np.full(len(prices), np.nan)
     fits = []
     next_h = None
+    retained_last_refit = False
     for t in range(config.min_observations, len(prices)):
         if (t - config.min_observations) % config.refit_every == 0:
             begin = max(0, t - config.window)
             # returns[t-1] es el retorno de la vela t: límite derecho exclusivo t.
-            omega, alpha, beta, h_t = _fit_garch(returns[begin:t], config.max_iterations)
-            fits.append(dict(row=t, first_return=begin, omega=omega,
-                             alpha=alpha, beta=beta))
+            try:
+                omega, alpha, beta, h_t = _fit_garch(returns[begin:t], config.max_iterations)
+            except GarchConvergenceError:
+                if not retain_on_nonconvergence or next_h is None or retained_last_refit:
+                    raise
+                retained_last_refit = True
+                h_t = next_h
+                fits.append(dict(row=t, retained_from_row=fits[-1]['row']))
+                LOG.warning('GARCH sin convergencia en fila %d; se conserva el último ajuste por un intervalo', t)
+            else:
+                retained_last_refit = False
+                fits.append(dict(row=t, first_return=begin, omega=omega, alpha=alpha, beta=beta))
         else:
             h_t = next_h
         next_h = omega + alpha * returns[t - 1]**2 + beta * h_t
@@ -369,7 +384,9 @@ def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None, *, time
     # Los huecos de mercado se verifican en data_loader; aquí las barras son tiempo de trading.
     out = df.copy()
     out["timestamp"] = timestamps
-    volatility, fits = causal_garch_volatility(out.close, config)
+    volatility, fits = causal_garch_volatility(
+        out.close, config, retain_on_nonconvergence=market.timeframe in ('M1', 'M5'),
+    )
     out["cond_volatility"] = volatility
     drift = causal_drift(out.close,volatility,config,timestamps,int(market.step.total_seconds()/60))
     for name,values in drift.items():out[name]=values
@@ -379,7 +396,7 @@ def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None, *, time
     for name,values in projected.items():
         out[name] = np.nan
         out.loc[ready,name] = values
-    out.attrs = {"quant_config": asdict(config), "garch_fits": fits,
+    out.attrs = {"quant_config": asdict(config), "garch_fits": [fit for fit in fits if "omega" in fit],
                  "source_rows": len(df), "origin_timestamp": timestamps.iloc[0].isoformat(),
                  "volatility_units": f"decimal per {market.timeframe} bar, forecast sigma[t+1|t]",
                  "available_at": "candle close; execute no earlier than next bar",
@@ -387,6 +404,10 @@ def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None, *, time
     out.attrs['drift_contract'] = 'causal_momentum_v1' if config.drift_mode=='momentum' else 'constant_v1'
     out.attrs['direction_probability_horizon'] = expiry_candles
     out.attrs['timeframe'] = market.timeframe
+    if market.timeframe in ('M1', 'M5'):
+        out.attrs['garch_retained_refits'] = [fit for fit in fits if 'retained_from_row' in fit]
+    if 'source_provenance' in df.attrs:
+        out.attrs['source_provenance'] = df.attrs['source_provenance']
     out.attrs['probability_interpretation'] = 'GBM empirical model probability, not calibrated certainty'
     return out
 
@@ -404,7 +425,7 @@ def main():
         parser.add_argument('--'+name.replace('_','-'),type=float,default=getattr(QuantConfig(),name))
     parser.add_argument("--drift-per-bar", type=float, default=0.0)
     parser.add_argument("--drop-warmup", action="store_true")
-    parser.add_argument("--timeframe",choices=["M5","M15","H1","H4"],default="M15")
+    parser.add_argument("--timeframe",choices=["M1","M5","M15","H1","H4"],default="M15")
     parser.add_argument("--expiry-candles",type=int,default=1)
     args = vars(parser.parse_args())
     source, output, drop = args.pop("input"), args.pop("output"), args.pop("drop_warmup")

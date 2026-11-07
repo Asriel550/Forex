@@ -6,7 +6,7 @@ from .decision import mc_probability_lower
 from .metrics import calculate_metrics,decision_metrics
 
 
-def evaluate_market_policy(model,env,report_dir=None):
+def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
     balance=peak=env.account.initial_balance;activity=0.;rows=[];trades=[]
     equity=np.full(len(env._close),balance,dtype=float);filled=0
     total_reward=0.;max_dd=0.;stopped=False
@@ -61,6 +61,22 @@ def evaluate_market_policy(model,env,report_dir=None):
         eligible_setups_on_exposure=eligible,missed_opportunities=missed,
         signals={name:int((signals.action==i).sum()) for i,name in enumerate(tuple(x.lower() for x in labels))},
         evaluation='chronological full phase; no opportunity wrapper')
+    # Cuenta el tiempo de todos los segmentos evaluables, incluso si el stop
+    # impide operar su tramo final. Los huecos de mercado quedan fuera.
+    observed_hours = sum(end - start for start, end in env.segments) * env.bar_step.total_seconds() / 3600
+    result.update(observed_hours=observed_hours, trades_per_observed_hour=len(trades)/observed_hours)
+    if trading_profile is not None:
+        result['trading_profile'] = trading_profile
+    if trading_profile == 'scalping' and env.market.trading_mode == 'binary':
+        from .trading_profiles import SCALPING_TARGET_PER_HOUR
+        minimum, maximum = SCALPING_TARGET_PER_HOUR
+        expiry = env.market.expiry_candles
+        setups = int(env._setup_mask[env._eligible].sum()) if env.risk.enabled else len(env._eligible)
+        slots = sum((end - start) // expiry for start, end in env.segments)
+        result['eligible_setups_before_policy'] = setups
+        result['trades_per_hour_upper_bound'] = min(setups, slots) / observed_hours
+        result['frequency_target_per_hour'] = list(SCALPING_TARGET_PER_HOUR)
+        result['frequency_target_met'] = minimum <= result['trades_per_observed_hour'] <= maximum
     if report_dir is not None:
         from .train import write_json
         root=Path(report_dir);root.mkdir(parents=True,exist_ok=True)
@@ -70,5 +86,6 @@ def evaluate_market_policy(model,env,report_dir=None):
         (root/'validation.md').write_text(f"# Validación {env.market.trading_mode} {env.market.timeframe}\n\n"
             f"Contratos cerrados: {len(trades)}; PnL simulado: {result['net_profit']:.2f} USD; "
             f"PF: {result['profit_factor']} ({result['profit_factor_status']}); "
-            f"DD: {100*max_dd:.2f}%.\n\nHoldout congelado. Sin prueba de ventaja fuera de muestra.\n")
+            f"DD: {100*max_dd:.2f}%.\n\n"
+            f"Frecuencia media {result['trades_per_observed_hour']:.3f} operaciones por hora observable.\n\nHoldout congelado. Sin prueba de ventaja fuera de muestra.\n")
     return result

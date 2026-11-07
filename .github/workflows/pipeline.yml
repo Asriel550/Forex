@@ -12,10 +12,10 @@ on:
         options: [alerts, train, diagnostics, telegram_test]
         default: alerts
       confidence_threshold:
-        description: 'Umbral de entrenamiento; alerts conserva el del bundle'
+        description: 'Umbral nominal; auto aplica el perfil'
         type: choice
-        options: ['0.58', '0.60', '0.62', '0.65']
-        default: '0.60'
+        options: [auto, '0.53', '0.54', '0.55', '0.58', '0.60', '0.62', '0.63', '0.65']
+        default: auto
       drift_scale:
         description: 'Escala de momentum para un nuevo entrenamiento'
         type: choice
@@ -24,8 +24,8 @@ on:
       ent_coef:
         description: 'Regularización de entropía PPO para nuevo entrenamiento'
         type: choice
-        options: ['0.01', '0.02', '0.03']
-        default: '0.02'
+        options: [auto, '0.01', '0.02', '0.03']
+        default: auto
       blocked_penalty:
         description: 'Coste de reward por intento bloqueado'
         type: choice
@@ -34,22 +34,27 @@ on:
       neutral_opportunity_penalty:
         description: 'Coste por esperar SOLO si existe setup que pasa filtros'
         type: choice
-        options: ['0', '0.005', '0.01', '0.05', '0.10']
-        default: '0.05'
-      timeframe:
-        description: 'Temporalidad para train v4; M5 requiere fuente estática M1'
+        options: [auto, '0', '0.005', '0.01', '0.05', '0.10', '0.20']
+        default: auto
+      trading_profile:
+        description: 'Preset de investigación; auto infiere el perfil por timeframe'
         type: choice
-        options: [M5, M15, H1, H4]
-        default: M15
+        options: [auto, scalping, intraday, daily, swing]
+        default: auto
+      timeframe:
+        description: 'auto aplica el perfil; M1/M5 usan un histórico independiente'
+        type: choice
+        options: [auto, M1, M5, M15, H1, H4]
+        default: auto
       trading_mode:
         description: 'Entorno para train v4; alerts conserva el contrato de su bundle'
         type: choice
         options: [binary, forex_spot]
         default: binary
       expiry_candles:
-        description: 'Vencimiento binario entero 1..32; spot requiere 1 (sin vencimiento)'
+        description: '0 aplica el perfil; entero 1..32 (scalping 1..3, spot 1)'
         type: number
-        default: 1
+        default: 0
       telegram_test_id:
         description: 'ID estable de prueba: repetirlo NO reenvía sent/pending (1..64 ASCII)'
         type: string
@@ -67,15 +72,16 @@ env:
   MKL_NUM_THREADS: '1'
   MPLBACKEND: Agg
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
-  FOREX_ENT_COEF: ${{ inputs.ent_coef || vars.FOREX_ENT_COEF || '0.02' }}
+  FOREX_ENT_COEF: ${{ inputs.ent_coef || vars.FOREX_ENT_COEF || 'auto' }}
   FOREX_BLOCKED_PENALTY: ${{ inputs.blocked_penalty || vars.FOREX_BLOCKED_PENALTY || '0.05' }}
-  FOREX_NEUTRAL_OPPORTUNITY_PENALTY: ${{ inputs.neutral_opportunity_penalty || vars.FOREX_NEUTRAL_OPPORTUNITY_PENALTY || '0.05' }}
+  FOREX_NEUTRAL_OPPORTUNITY_PENALTY: ${{ inputs.neutral_opportunity_penalty || vars.FOREX_NEUTRAL_OPPORTUNITY_PENALTY || 'auto' }}
   FOREX_TRADE_PENALTY: ${{ vars.FOREX_TRADE_PENALTY || '0.025' }}
-  FOREX_MIN_CONFIDENCE: ${{ inputs.confidence_threshold || vars.FOREX_MIN_CONFIDENCE || '0.60' }}
+  FOREX_MIN_CONFIDENCE: ${{ inputs.confidence_threshold || vars.FOREX_MIN_CONFIDENCE || 'auto' }}
   FOREX_DRIFT_SCALE: ${{ inputs.drift_scale || vars.FOREX_DRIFT_SCALE || '1.5' }}
-  FOREX_TIMEFRAME: ${{ inputs.timeframe || 'M15' }}
+  FOREX_TRADING_PROFILE: ${{ inputs.trading_profile || 'auto' }}
+  FOREX_TIMEFRAME: ${{ inputs.timeframe || 'auto' }}
   FOREX_TRADING_MODE: ${{ inputs.trading_mode || 'binary' }}
-  FOREX_EXPIRY_CANDLES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.expiry_candles) || '1' }}
+  FOREX_EXPIRY_CANDLES: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.expiry_candles) || '0' }}
   FOREX_MARKET_DATA_DIR: ${{ vars.FOREX_MARKET_DATA_DIR || 'datasets/eurusd' }}
   FOREX_INPUT_TIMEFRAME: ${{ vars.FOREX_INPUT_TIMEFRAME || 'auto' }}
   FOREX_SOURCE_TIMEZONE: ${{ vars.FOREX_SOURCE_TIMEZONE || 'EST' }}
@@ -134,25 +140,45 @@ jobs:
         run: |
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements.txt
-      - name: Validate research contract before ingestion
+      - name: Resolve and validate research profile
         env:
           RESEARCH_MODE: ${{ inputs.mode }}
-        run: |
-          python - <<'PYCODE'
-          import os
-          from src.market import MarketConfig
-          m=MarketConfig(os.environ['FOREX_TIMEFRAME'],os.environ['FOREX_TRADING_MODE'],int(os.environ['FOREX_EXPIRY_CANDLES']))
-          if os.environ['RESEARCH_MODE']=='diagnostics' and m!=MarketConfig():
-              raise ValueError('diagnostics conserva el protocolo PR8 M15/binary/1; usar mode=train para otro contrato')
-          print(m)
-          PYCODE
+        run: python -m src.trading_profiles
+      - name: Cache verified HistData M1 archive
+        if: >-
+          inputs.mode == 'train' && env.FOREX_TRADING_PROFILE == 'scalping' &&
+          ((env.FOREX_TIMEFRAME == 'M1' && vars.FOREX_M1_DATA_DIR == '') ||
+          (env.FOREX_TIMEFRAME == 'M5' && vars.FOREX_M5_DATA_DIR == ''))
+        uses: actions/cache@v6
+        with:
+          path: data/histdata_scalping
+          key: histdata-scalping-2025-${{ hashFiles('datasets/eurusd/manifest.json') }}
       - name: Read static EURUSD CSV or ZIP files
         timeout-minutes: 20
         env:
           RESEARCH_MODE: ${{ inputs.mode }}
+          FOREX_M1_DATA_DIR: ${{ vars.FOREX_M1_DATA_DIR }}
+          FOREX_M5_DATA_DIR: ${{ vars.FOREX_M5_DATA_DIR }}
         run: |
           if [ "$RESEARCH_MODE" = diagnostics ]; then
             python -m src.data_loader --input-dir datasets/eurusd --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE" --closures config/closures.json
+          elif [ "$FOREX_TRADING_PROFILE" = scalping ]; then
+            if [ "$FOREX_TIMEFRAME" = M1 ]; then
+              native_dir="$FOREX_M1_DATA_DIR"
+              closures=config/closures_m1.json
+            else
+              native_dir="$FOREX_M5_DATA_DIR"
+              closures=config/closures_m5.json
+            fi
+            if [ -z "$native_dir" ]; then
+              native_dir="data/scalping/$FOREX_TIMEFRAME"
+              python scripts/prepare_scalping_data.py --timeframe "$FOREX_TIMEFRAME" --output-dir "$native_dir"
+              closures="$native_dir/observed_gaps.json"
+            elif [ ! -f "$closures" ]; then
+              closures="$RUNNER_TEMP/no-scalping-exclusions.json"
+              printf '[]\n' > "$closures"
+            fi
+            python -m src.data_loader --input-dir "$native_dir" --input-timeframe "$FOREX_TIMEFRAME" --timeframe "$FOREX_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE" --closures "$closures" --output data/eurusd_market.parquet
           else
             python -m src.data_loader --input-dir "$FOREX_MARKET_DATA_DIR" --input-timeframe "$FOREX_INPUT_TIMEFRAME" --timezone "$FOREX_SOURCE_TIMEZONE" --closures config/closures.json --timeframe "$FOREX_TIMEFRAME" --output data/eurusd_market.parquet
           fi
@@ -164,7 +190,7 @@ jobs:
           if [ "$RESEARCH_MODE" = diagnostics ]; then
             python -m src.quant_engine --drop-warmup --seed 42 --drift-scale 1.5
           else
-            python -m src.quant_engine --input data/eurusd_market.parquet --output data/eurusd_market_features.parquet --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE" --timeframe "$FOREX_TIMEFRAME" --expiry-candles "$FOREX_EXPIRY_CANDLES"
+            python -m src.quant_engine --input data/eurusd_market.parquet --output data/eurusd_market_features.parquet --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE" --drift-window "$FOREX_TREND_WINDOW" --window "$FOREX_GARCH_WINDOW" --refit-every "$FOREX_REFIT_EVERY" --timeframe "$FOREX_TIMEFRAME" --expiry-candles "$FOREX_EXPIRY_CANDLES"
           fi
       - name: Find archived production bundle for train/validation diagnosis
         if: inputs.mode == 'diagnostics'
@@ -207,12 +233,12 @@ jobs:
       - name: Train with frozen holdout (NO backtest)
         if: inputs.mode == 'train'
         timeout-minutes: 120
-        run: python -m src.train --input data/eurusd_market_features.parquet --output-dir models/research_v4 --timeframe "$FOREX_TIMEFRAME" --trading-mode "$FOREX_TRADING_MODE" --expiry-candles "$FOREX_EXPIRY_CANDLES" --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
+        run: python -m src.train --input data/eurusd_market_features.parquet --output-dir models/research_v4 --trading-profile "$FOREX_TRADING_PROFILE" --timeframe "$FOREX_TIMEFRAME" --trading-mode "$FOREX_TRADING_MODE" --expiry-candles "$FOREX_EXPIRY_CANDLES" --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
       - name: Publish isolated v4 research bundle (no automatic production promotion)
         if: inputs.mode == 'train'
         uses: actions/upload-artifact@v7
         with:
-          name: forex-research-bundle-v4
+          name: forex-research-bundle-v4-${{ env.FOREX_TRADING_PROFILE }}-${{ env.FOREX_TIMEFRAME }}-${{ env.FOREX_TRADING_MODE }}-e${{ env.FOREX_EXPIRY_CANDLES }}
           path: |
             models/research_v4/best_ppo_agent.zip
             models/research_v4/normalizer.json
@@ -237,6 +263,7 @@ jobs:
             models/research_v4/**/*.json
             models/research_v4/**/*.csv
             models/research_v4/**/*.md
+            data/scalping/**/*.json
           if-no-files-found: warn
           retention-days: 30
 

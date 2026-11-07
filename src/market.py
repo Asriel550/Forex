@@ -6,7 +6,7 @@ import pandas as pd
 # al reagrupar las velas o incorporar nuevos datos. Timestamp de apertura UTC.
 PROTECTED_HOLDOUT_START = pd.Timestamp('2026-04-07T15:15:00Z')
 
-MINUTES = {'M5': 5, 'M15': 15, 'H1': 60, 'H4': 240}
+MINUTES = {'M1': 1, 'M5': 5, 'M15': 15, 'H1': 60, 'H4': 240}
 
 @dataclass(frozen=True)
 class MarketConfig:
