@@ -34,11 +34,13 @@ def stochastic_proposal_frequency(env, observed_hours):
 
 
 def scalping_m5_quality(result, frequency_target):
-    """Evaluate the three M5 objectives on executed validation contracts."""
+    """Check realized outcomes and conversion over the full validation phase."""
     rate = result['win_rate_excluding_refunds']
     profit_factor = result['profit_factor']
     pf_status = result['profit_factor_status']
     frequency = result['trades_per_observed_hour']
+    setups = result['eligible_setups_before_policy']
+    conversion = result['total_trades'] / setups if setups else None
     minimum, maximum = frequency_target
     checks = {
         'win_rate_excluding_refunds': dict(
@@ -51,6 +53,9 @@ def scalping_m5_quality(result, frequency_target):
         'trades_per_observed_hour': dict(
             value=frequency, minimum=minimum, maximum=maximum,
             passed=minimum <= frequency <= maximum,
+        ),
+        'eligible_setup_conversion': dict(
+            value=conversion, minimum=.30, passed=conversion is not None and conversion >= .30,
         ),
     }
     return dict(passed=all(check['passed'] for check in checks.values()), checks=checks)
@@ -70,6 +75,8 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
             max_dd=max(max_dd,info['max_drawdown'])
             equity[filled:info['index']]=equity[entry];equity[info['index']]=balance;filled=info['index']+1
             record={k:info[k] for k in ('requested_action','action','blocked','missed_opportunity','mc_confidence','mc_lower_bound','expected_edge_lower','filter_reason','mc_prob_up','mc_prob_down','mc_prob_tie','profit','outcome','entry_index','expiry_time')}
+            if 'mc_setup_action' in info:
+                record['mc_setup_action'] = info['mc_setup_action']
             record['decision_time']=(env._times[entry]+env.bar_step).isoformat();rows.append(record)
             if env.market.trading_mode=='forex_spot': trades.extend(info['closed_trades'])
             elif info['action']!=1: trades.append(dict(action=info['action'],profit=info['profit'],outcome=info['outcome']))
@@ -117,6 +124,16 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
     result.update(observed_hours=observed_hours, trades_per_observed_hour=len(trades)/observed_hours)
     if env.market.trading_mode == 'binary':
         result['stochastic_proposals'] = stochastic_proposal_frequency(env, observed_hours)
+    if 'mc_setup_action' in signals:
+        evaluated = signals.loc[signals.mc_setup_action != 1]
+        aligned = int((evaluated.requested_action == evaluated.mc_setup_action).sum())
+        neutral = int((evaluated.requested_action == 1).sum())
+        opposite = len(evaluated) - aligned - neutral
+        result['mc_alignment'] = dict(
+            evaluated_setups=len(evaluated), aligned_requests=aligned,
+            opposite_requests=opposite, neutral_requests=neutral,
+            opposite_rate=opposite / len(evaluated) if len(evaluated) else None,
+        )
     if trading_profile is not None:
         result['trading_profile'] = trading_profile
     if trading_profile == 'scalping' and env.market.trading_mode == 'binary':
@@ -165,26 +182,37 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
             )
         else:
             summary += f"Frecuencia media {result['trades_per_observed_hour']:.3f} operaciones por hora observable.\n\n"
+        if 'mc_alignment' in result:
+            alignment = result['mc_alignment']
+            summary += (
+                f"PPO ante {alignment['evaluated_setups']} setups evaluados. "
+                f"Coincidencias {alignment['aligned_requests']}, "
+                f"solicitudes contrarias {alignment['opposite_requests']}, "
+                f"abstenciones {alignment['neutral_requests']}.\n\n"
+            )
         if 'validation_quality' in result:
             quality = result['validation_quality']
             checks = quality['checks']
             win = checks['win_rate_excluding_refunds']
             pf = checks['profit_factor']
             rate = checks['trades_per_observed_hour']
+            conversion = checks['eligible_setup_conversion']
             win_display = 'N/D' if win['value'] is None else f"{win['value']:.2%}"
             pf_display = '∞' if pf['status'] == 'infinite_no_losses' else (
                 'N/D' if pf['value'] is None else f"{pf['value']:.3f}"
             )
+            conversion_display = 'N/D' if conversion['value'] is None else f"{conversion['value']:.2%}"
             summary += (
                 "## Objetivos de scalping M5\n\n"
-                f"Resultado de los tres objetivos **{'Cumplidos' if quality['passed'] else 'Pendientes'}**.\n\n"
+                f"Gate de validación **{'Cumplido' if quality['passed'] else 'Rechazado'}**.\n\n"
                 "| Métrica | Objetivo | Validación | Estado |\n"
                 "| --- | --- | ---: | --- |\n"
             )
             for label, target, value, check in (
                 ('Acierto sin reembolsos', '≥ 56%', win_display, win),
                 ('Profit Factor', '> 1,2', pf_display, pf),
-                ('Contratos ejecutados por hora', '2 a 4', f"{rate['value']:.4f}", rate),
+                ('Contratos ejecutados por hora', f"{rate['minimum']:g} a {rate['maximum']:g}", f"{rate['value']:.4f}", rate),
+                ('Conversión sobre todos los setups', '≥ 30%', conversion_display, conversion),
             ):
                 status = 'Cumplido' if check['passed'] else 'Pendiente'
                 summary += f"| {label} | {target} | {value} | {status} |\n"

@@ -54,6 +54,19 @@ class AccountConfig:
             raise ValueError("inactivity_penalty >= 0; tie_policy=refund/loss")
 
 
+@dataclass(frozen=True)
+class AlignmentReward:
+    """Shaping de M5 binario, en unidades de reward y separado del saldo."""
+
+    opposite_penalty: float = 1.25
+    aligned_win_reward: float = 1.75
+
+    def __post_init__(self):
+        values = (self.opposite_penalty, self.aligned_win_reward)
+        if not np.isfinite(values).all() or min(values) <= 0:
+            raise ValueError("La penalización y el premio de alineación deben ser positivos y finitos")
+
+
 def market_feature_names(lookback=16):
     return ("rsi_scaled", "atr_fraction", "spread_scaled", *QUANT_FEATURES, *PROBABILITY_FEATURES,
             *(f"log_return_lag_{lag}" for lag in range(lookback)))
@@ -139,6 +152,7 @@ class BinaryOptionsEnv(gym.Env):
     NEUTRO sin setup elegible es gratis. Si el setup supera los filtros puede
     tener un coste pequeño y configurable; nunca depende de su resultado futuro.
     Intentos bloqueados tienen coste de reward reducido, sin cambiar el saldo.
+    M5 binario admite shaping adicional para la dirección de un setup válido.
     RiskConfig(enabled=False) conserva explícitamente la liquidación/reward v2.
     Al liquidar no queda ninguna posición abierta ni PnL flotante.
     Fin de datos/segmento o episode_length => truncated; insolvencia/DD => terminated.
@@ -148,7 +162,8 @@ class BinaryOptionsEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, df, *, account=None, lookback=16, indicator_period=14,
-                 prepared=False, normalizer=None, random_start=False, episode_length=None, risk=None, market=None):
+                 prepared=False, normalizer=None, random_start=False, episode_length=None,
+                 risk=None, market=None, alignment_reward=None):
         super().__init__()
         if market is not None and market.trading_mode != "binary" and type(self) is BinaryOptionsEnv:
             raise ValueError("Usar ForexSpotEnv para forex_spot")
@@ -159,6 +174,11 @@ class BinaryOptionsEnv(gym.Env):
         self.expiry_candles = self.market.expiry_candles
         self.account = account or AccountConfig()
         self.risk = risk if risk is not None else (replace(RiskConfig(),neutral_opportunity_penalty=.05) if self.modern_contract else RiskConfig())
+        if alignment_reward is not None and (
+            self.market.timeframe != "M5" or self.market.trading_mode != "binary" or not self.risk.enabled
+        ):
+            raise ValueError("La recompensa de alineación requiere M5 binario con filtro activo")
+        self.alignment_reward = alignment_reward
         self.lookback = lookback
         frame = ensure_probabilities(df,self.expiry_candles).reset_index(drop=True) if prepared else prepare_market_data(df, lookback, indicator_period,market=self.market)
         names = market_feature_names(lookback)
@@ -263,6 +283,10 @@ class BinaryOptionsEnv(gym.Env):
             and decision['expected_edge_lower']>self.risk.min_expected_edge)
         old_drawdown = 1-self.balance/self.peak_balance
         entry_index = self._index
+        setup_action = 1
+        if self.alignment_reward is not None and self._setup_mask[entry_index]:
+            setup_action = 2 if decision['mc_prob_up'] > decision['mc_prob_down'] else 0
+        opposed_setup = setup_action != 1 and requested_action == 2 - setup_action
         settlement_index = entry_index+self.expiry_candles
         entry, settlement = self._close[entry_index],self._close[settlement_index]
         profit, reward, outcome = 0., (0. if self.risk.enabled else -self.account.inactivity_penalty), "neutral"
@@ -294,10 +318,16 @@ class BinaryOptionsEnv(gym.Env):
                 if self.account.tie_policy=='loss':loss += decision['mc_prob_tie']
                 mean = self.account.payout*win-loss
                 scale = np.sqrt(max(self.account.payout**2*win+loss-mean**2,self.risk.risk_std_floor**2))
-                reward = (profit/self.account.stake)/scale-self.risk.trade_penalty
+                reward = (profit/self.account.stake)/scale
+                if self.alignment_reward is not None and action == setup_action and outcome == "win":
+                    reward = self.alignment_reward.aligned_win_reward
+                reward -= self.risk.trade_penalty
                 reward -= self.risk.overtrade_penalty*max(0.,self.trade_activity-self.risk.target_activity)
             elif decision['blocked']:
-                reward = -self.risk.blocked_penalty if not self.modern_contract or self._setup_mask[entry_index] else 0.
+                if opposed_setup:
+                    reward = -self.alignment_reward.opposite_penalty
+                elif not self.modern_contract or self._setup_mask[entry_index]:
+                    reward = -self.risk.blocked_penalty
             elif missed_opportunity:
                 reward = -self.risk.neutral_opportunity_penalty
             reward -= self.risk.drawdown_penalty*max(0.,1-self.balance/self.peak_balance-old_drawdown)
@@ -308,6 +338,8 @@ class BinaryOptionsEnv(gym.Env):
         self._done = bool(terminated or truncated)
         info = self._info()
         info.update(**decision)
+        if self.alignment_reward is not None:
+            info['mc_setup_action'] = setup_action
         info.update(action=action,missed_opportunity=missed_opportunity, entry_index=entry_index, entry_price=float(entry),
                     settlement_price=float(settlement), profit=float(profit), outcome=outcome,
                     expiry_time=(self._times[self._index]+self.bar_step).isoformat(),

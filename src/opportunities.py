@@ -28,7 +28,7 @@ class OpportunityTraining(gym.Wrapper):
 
     def step(self,action):
         obs,reward,terminated,truncated,first=self.env.step(action)
-        saved={k:v for k,v in first.items() if k in ('requested_action','action','blocked','missed_opportunity','mc_confidence','mc_lower_bound','expected_edge_lower','filter_reason','mc_prob_up','mc_prob_down','mc_prob_tie','entry_index','entry_price','settlement_price','profit','outcome','expiry_time')}
+        saved={k:v for k,v in first.items() if k in ('requested_action','action','blocked','missed_opportunity','mc_confidence','mc_lower_bound','expected_edge_lower','filter_reason','mc_prob_up','mc_prob_down','mc_prob_tie','mc_setup_action','entry_index','entry_price','settlement_price','profit','outcome','expiry_time')}
         skipped=0
         if not (terminated or truncated) and not self.allowed[self.env._index]:
             begin=self.env._index

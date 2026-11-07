@@ -1,5 +1,6 @@
 """Splits, normalización train-only y un entrenamiento PPO real mínimo."""
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,8 @@ from src.decision import RiskConfig
 
 from src.environment import (AccountConfig, BinaryOptionsEnv, fit_normalizer,
                              market_feature_names, prepare_market_data)
+from src.market import MarketConfig
+from src import train as training
 from src.train import chronological_split, evaluate_policy, train
 
 
@@ -76,4 +79,51 @@ def test_short_real_ppo_training_saves_loadable_best_and_metadata(tmp_path):
     action,_=model.predict(obs,deterministic=True)
     assert env.action_space.contains(action)
     assert model.observation_space == env.observation_space
+
+
+def test_m5_checkpoint_selection_prefers_trained_qualified_model(tmp_path, monkeypatch):
+    trials = iter([(True, 50.), (False, 10.), (True, 1.), (False, 20.)])
+    saves = []
+
+    def evaluate(*args, **kwargs):
+        passed, score = next(trials)
+        return dict(selection_score=score, validation_quality={'passed': passed},
+                    net_profit=0., trades=0, max_drawdown=0., decision_analysis={})
+
+    callback = training.BestValidationCallback(None, tmp_path, trading_profile='scalping')
+    callback.model = SimpleNamespace(logger=SimpleNamespace(record=lambda *args: None))
+    monkeypatch.setattr(training, 'evaluate_policy', evaluate)
+    monkeypatch.setattr(training, 'atomic_save_model', lambda *args: saves.append(callback.num_timesteps))
+    for timestep in (0, 25_000, 50_000, 75_000):
+        callback.num_timesteps = timestep
+        callback._evaluate()
+
+    assert saves == [0, 25_000, 50_000]
+    assert json.loads((tmp_path/'best_validation.json').read_text())['timesteps'] == 50_000
+
+
+def test_m5_training_rejects_old_features_and_reports_failed_gate(tmp_path):
+    frame = raw_data()
+    frame['timestamp'] = pd.date_range('2020-01-06', periods=len(frame), freq='5min', tz='UTC')
+    frame['mc_prob_up'], frame['mc_prob_down'], frame['mc_prob_tie'] = .8, .2, 0.
+    frame.attrs.update(timeframe='M5', quant_config={
+        'drift_mode': 'momentum', 'drift_scale_floor': 1.4, 'drift_scale': 2.2,
+    })
+    path = tmp_path/'features.parquet'
+    frame.to_parquet(path, index=False)
+    output = tmp_path/'scalping'
+    args = dict(output_dir=output, market=MarketConfig('M5'), trading_profile='scalping',
+                total_timesteps=16, n_steps=16, batch_size=8, n_epochs=1,
+                eval_freq=16, lookback=2, indicator_period=2, verbose=0)
+    with pytest.raises(ValueError, match='Regenerar las features'):
+        train(path, **args)
+
+    frame.attrs['quant_config']['drift_scale'] = 2.
+    frame.to_parquet(path, index=False)
+    manifest = train(path, **args)
+    assert manifest['reward_version'] == 'scalping_m5_alignment_v1'
+    assert manifest['risk']['min_confidence'] == .57 and manifest['ent_coef'] == .012
+    assert manifest['selected_checkpoint_trained']
+    assert not manifest['validation_gate_passed'] and not manifest['holdout_test_evaluated']
+    assert (output/'validation/validation_metrics.json').is_file()
 

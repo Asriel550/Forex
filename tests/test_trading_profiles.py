@@ -153,16 +153,31 @@ def test_scalping_microtrend_releases_direction_without_dropping_break_even_gate
     assert resolve_action(2, *new_probability, payout=.8, tie_policy='refund', risk=risk)['action'] == 2
 
 
-def test_m5_quality_profile_raises_the_directional_and_economic_gates():
+def test_m5_alignment_profile_preserves_wilson_and_isolates_other_markets():
     from src.decision import RiskConfig, resolve_action
 
     profile = resolve_profile('scalping', 'M5', confidence='.57')
-    assert resolve_profile('scalping', 'M5')['FOREX_MIN_CONFIDENCE'] == .58
+    assert resolve_profile('scalping', 'M5')['FOREX_MIN_CONFIDENCE'] == .57
     assert profile['FOREX_DRIFT_SCALE_FLOOR'] == 1.4
+    assert profile['FOREX_DRIFT_SCALE'] == 2.
+    assert profile['FOREX_ENT_COEF'] == .012
     assert profile['FOREX_MC_Z'] == 2.24
+    assert profile['FOREX_TARGET_ACTIVITY'] == .25
+    assert resolve_profile('scalping', 'M5', entropy='.01')['FOREX_ENT_COEF'] == .01
+    spot = resolve_profile('scalping', 'M5', trading_mode='forex_spot')
+    assert spot['FOREX_DRIFT_SCALE'] == 2.2 and spot['FOREX_DRIFT_SCALE_FLOOR'] == 0.
+    assert spot['FOREX_MIN_CONFIDENCE'] == .54 and spot['FOREX_ENT_COEF'] == .03
     risk = RiskConfig(min_confidence=profile['FOREX_MIN_CONFIDENCE'],
                       min_expected_edge=profile['FOREX_MIN_EXPECTED_EDGE'], mc_z=profile['FOREX_MC_Z'])
     for probability, expected in ((.5705, 'expected_edge'), (.585, 'accepted')):
         decision = resolve_action(2, probability, 1 - probability, 0.,
                                   payout=.8, tie_policy='refund', risk=risk)
         assert decision['filter_reason'] == expected
+
+
+@pytest.mark.parametrize('overrides', [
+    {'confidence': '.58'}, {'drift_scale': '2.2'}, {'entropy': '.02'},
+])
+def test_m5_binary_rejects_overrides_outside_alignment_preset(overrides):
+    with pytest.raises(ValueError, match='M5 binario'):
+        resolve_profile('scalping', 'M5', **overrides)

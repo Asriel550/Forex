@@ -11,7 +11,7 @@ from src.market import MarketConfig
 from src.resampling import aggregate
 from src import data_loader as dl
 from src.quant_engine import QuantConfig,enrich_features,MonteCarloGBM
-from src.environment import BinaryOptionsEnv,prepare_market_data,AccountConfig
+from src.environment import AlignmentReward,BinaryOptionsEnv,prepare_market_data,AccountConfig
 from src.forex_spot import ForexSpotEnv,SpotConfig
 from src.decision import RiskConfig
 from src.opportunities import OpportunityTraining
@@ -89,6 +89,52 @@ def test_effective_neutral_penalty_is_causal_and_never_changes_cash():
     f=prepared();f.mc_prob_up=.5;f.mc_prob_down=.5
     e=BinaryOptionsEnv(f,prepared=True,lookback=1,market=MarketConfig(),risk=risk)
     e.reset();assert e.step(1)[1]==0
+
+
+@pytest.mark.parametrize('setup,winning_close', [(0, 1.), (2, 1.2)])
+def test_m5_shaping_penalizes_conflict_causally_and_only_rewards_aligned_wins(setup, winning_close):
+    frame = prepared(timeframe='M5')
+    frame['mc_prob_up'] = .8 if setup == 2 else .2
+    frame['mc_prob_down'] = 1 - frame.mc_prob_up
+    frame.loc[0, 'close'] = 1.1
+    args = dict(prepared=True, lookback=1, market=MarketConfig('M5'),
+                risk=RiskConfig(min_confidence=.57, mc_z=2.24, min_expected_edge=.01))
+    losing_close = 2.2 - winning_close
+    for close, outcome, pnl in ((winning_close, 'win', 8.), (losing_close, 'loss', -10.), (1.1, 'tie', 0.)):
+        frame.loc[1, 'close'] = close
+        env = BinaryOptionsEnv(frame, alignment_reward=AlignmentReward(), **args)
+        env.reset()
+        _, reward, _, _, info = env.step(2 - setup)
+        assert reward == -1.25 and info['mc_setup_action'] == setup
+        assert info['action'] == 1 and info['blocked'] and info['index'] == 1
+        assert info['profit'] == 0. and info['balance'] == 1000. and info['trades'] == 0
+        env.reset()
+        _, reward, _, _, info = env.step(setup)
+        assert info['outcome'] == outcome and info['profit'] == pnl
+        assert info['balance'] == 1000. + pnl
+        if outcome == 'win':
+            assert reward == pytest.approx(1.75 - env.risk.trade_penalty)
+        else:
+            base = BinaryOptionsEnv(frame, **args)
+            base.reset()
+            assert reward == base.step(setup)[1]
+
+
+def test_m5_alignment_uses_economic_gate_and_cannot_enable_on_m15():
+    alignment = AlignmentReward()
+    frame = prepared(timeframe='M5')
+    frame['mc_prob_up'], frame['mc_prob_down'] = .5705, .4295
+    env = BinaryOptionsEnv(
+        frame, prepared=True, lookback=1, market=MarketConfig('M5'), alignment_reward=alignment,
+        risk=RiskConfig(min_confidence=.57, min_expected_edge=.01, mc_z=2.24),
+    )
+    for action in (0, 1, 2):
+        env.reset()
+        _, reward, _, _, info = env.step(action)
+        assert reward == 0. and info['mc_setup_action'] == 1
+    with pytest.raises(ValueError, match='requiere M5'):
+        BinaryOptionsEnv(prepared(), prepared=True, lookback=1,
+                         market=MarketConfig(), alignment_reward=alignment)
 
 
 def test_event_training_skips_only_free_wait_and_retains_eligible_neutral():
@@ -255,7 +301,7 @@ def test_frequency_report_counts_valid_entry_grid_and_separates_policy(tmp_path)
     frame['mc_prob_down'] = 1 - frame.mc_prob_up
     env = BinaryOptionsEnv(
         frame, prepared=True, lookback=1, market=MarketConfig('M5'),
-        risk=RiskConfig(min_confidence=.54, min_expected_edge=0.),
+        risk=RiskConfig(min_confidence=.54, min_expected_edge=0.), alignment_reward=AlignmentReward(),
     )
     result = evaluate_market_policy(Neutral(), env, tmp_path, trading_profile='scalping')
     proposals = result['stochastic_proposals']
@@ -265,6 +311,9 @@ def test_frequency_report_counts_valid_entry_grid_and_separates_policy(tmp_path)
     assert proposals['after_economic_filter']['count'] == 2
     assert proposals['after_economic_filter']['per_hour'] == pytest.approx(4.8)
     assert result['trades_per_observed_hour'] == 0
+    assert result['mc_alignment'] == dict(evaluated_setups=2, aligned_requests=0,
+        opposite_requests=0, neutral_requests=2, opposite_rate=0.)
+    assert result['validation_quality']['checks']['eligible_setup_conversion']['value'] == 0.
     assert json.loads((tmp_path/'validation_metrics.json').read_text())['stochastic_proposals'] == proposals
     assert 'Superan confianza, Wilson y payout' in (tmp_path/'validation.md').read_text()
 
@@ -274,16 +323,18 @@ def test_m5_quality_checks_actual_execution_and_strict_profit_factor():
 
     metrics = dict(
         win_rate_excluding_refunds=.56, profit_factor=1.2, profit_factor_status='finite',
-        trades_per_observed_hour=2., trades_per_hour_upper_bound=3.,
+        trades_per_observed_hour=1.5, trades_per_hour_upper_bound=3.,
+        total_trades=30, eligible_setups_before_policy=100,
     )
-    result = scalping_m5_quality(metrics, (2, 4))
+    result = scalping_m5_quality(metrics, (1.5, 3.))
     assert result['checks']['win_rate_excluding_refunds']['passed']
     assert not result['checks']['profit_factor']['passed']
     assert not result['passed']
     metrics['profit_factor'] = 1.21
-    assert scalping_m5_quality(metrics, (2, 4))['passed']
-    metrics['trades_per_observed_hour'] = .2
-    assert not scalping_m5_quality(metrics, (2, 4))['passed']
+    assert scalping_m5_quality(metrics, (1.5, 3.))['passed']
+    for change in (dict(trades_per_observed_hour=.2), dict(trades_per_observed_hour=3.01),
+                   dict(eligible_setups_before_policy=101), dict(eligible_setups_before_policy=0)):
+        assert not scalping_m5_quality(metrics | change, (1.5, 3.))['passed']
 
 
 def test_adaptive_drift_suppresses_weak_momentum_and_preserves_strong_momentum():
