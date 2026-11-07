@@ -220,10 +220,18 @@ generación inicial, para un total de 11 generaciones evaluadas.
 
 Cada individuo tiene un vector de pesos y un sesgo sobre features de
 mercado normalizadas. Una puntuación positiva acepta la dirección de
-Monte Carlo si supera confianza, Wilson y payout. Los cierres posteriores
-se usan para liquidar, con las mismas reglas de caja, huecos y reembolsos
-del entorno M5. El stop del 20% se aplica al liquidar y el gate exige un
-drawdown menor al 15%. Las horas incluyen el tramo observable completo.
+Monte Carlo si supera confianza, Wilson y payout, y coincide con la
+dirección H1. Cada H1 se forma con 12 velas M5 completas. La dirección es
+el signo de EMA8 menos EMA24 del cierre H1 fuera de una banda neutral del
+10% de la media exponencial de 14 rangos H1. Las horas incompletas se
+descartan. El filtro requiere el warmup completo y un último cierre H1
+de menos de 60 minutos. El sistema solo ejecuta CALL con H1 alcista y
+PUT con H1 bajista.
+
+Los cierres posteriores se usan para liquidar, con las mismas reglas de
+caja, huecos y reembolsos del entorno M5. El stop del 20% se aplica al
+liquidar y el gate exige un drawdown menor al 15%. Las horas incluyen
+el tramo observable completo.
 
 Cada individuo recibe un puntaje finito. Sean `w` el acierto sin
 reembolsos, `f` los contratos por hora y `d` el drawdown como fracción.
@@ -234,19 +242,29 @@ penalización suave `0.5 × max(0, 0.56 − w)`. El término de PF es
 `PF/(1+PF)`, vale uno si hay ganancias sin pérdidas y cero si el ratio
 es indefinido. Un acierto indefinido aporta cero al cálculo.
 
-El 20% superior por aptitud, redondeado hacia arriba, pasa como élite.
-Se conserva incluso cuando toda la población queda por debajo del 56%.
-Los descendientes combinan pesos de dos padres y reciben una perturbación
-gaussiana. La amplitud de la mutación baja cuando mejora el mejor
-candidato acumulado y sube si se estanca. El CSV marca las élites de
-cada generación.
+El normalizador se ajusta en train. El primer 75% de validación
+cronológica se divide en cuatro bloques consecutivos de tamaño similar.
+Cada bloque empieza con saldo propio y liquida sus contratos dentro de
+sus límites. El reporte muestra la distribución H1 observada en cada
+bloque, con estados alcista, bajista, lateral y sin cotización vigente.
+La aptitud combina 50% del puntaje medio y 50% del peor bloque. Resta
+0,10 veces la proporción de pesos efectivos, medida como
+`(sum(abs(w))**2 / sum(w**2)) / número_de_pesos`. El cálculo excluye el
+sesgo y reescalar todos los pesos mantiene la misma penalización.
 
-El normalizador se ajusta en train. La búsqueda usa el primer 75% de la
-validación cronológica. Tras una vela de purga, el tramo restante evalúa
-una sola vez al genoma con la mayor aptitud de búsqueda. El gate final
-exige en ambos tramos acierto sin reembolsos ≥56%, PF >1,20,
-1,5–3,0 contratos por hora y drawdown <15%. El holdout histórico queda
-reservado.
+El grupo de padres conserva el tamaño del 20% superior redondeado
+hacia arriba. Da prioridad a quienes terminan en positivo con drawdown
+menor al 15% en los cuatro bloques. Solo esos individuos pasan intactos
+como élites. Las plazas restantes permiten que candidatos con menor
+consistencia aporten genes a descendientes mutados. El CSV distingue
+padres, élites y resultados de cada bloque.
+
+La evaluación de búsqueda completa transporta el saldo entre bloques
+para medir el riesgo de todo el tramo. Tras una vela de purga, se evalúa
+una sola vez al campeón preseleccionado en confirmación. El gate final
+exige consistencia en los cuatro bloques y, en búsqueda completa y
+confirmación, acierto sin reembolsos ≥56%, PF >1,20, 1,5–3,0 contratos por
+hora y drawdown <15%. El holdout histórico queda reservado.
 
 Actions publica el JSON, el CSV por individuo y el Markdown bajo
 `forex-reports-*`. El artefacto `forex-evolution-candidates-*` contiene
@@ -257,23 +275,26 @@ El gate puede marcar la corrida como fallida y conservar los reportes y
 candidatos. Los artefactos de evolución quedan separados de Intradía M15
 y del flujo de Telegram.
 
-### Comparación de la selección relativa
+### Evaluación de consistencia y tendencia H1
 
-Con 24 individuos, 10 ciclos y semilla 42 sobre el mismo histórico M5 de
-2025, las 10 transiciones conservaron 5 élites y generaron 19
-descendientes cada una. El score del mejor individuo subió de −0,631 en
-la generación 0 a −0,534 en la generación 5. El mayor acierto de cualquier
-individuo fue 54,69%. Se reutilizó el tramo de confirmación de la PR #15
-para comparar el comportamiento histórico.
+La prueba local conservó los 40 individuos, 10 ciclos, semilla 42 e
+histórico M5 de 2025 de la PR #16. Hubo ocho padres en cada generación y
+cero élites. El campeón de la generación 10 perdió en los cuatro bloques
+(−US$170, −US$200, −US$188 y −US$90). Su genoma usó 14,68 pesos efectivos
+de 25. El filtro H1 dejó 1.543 de 3.311 setups en búsqueda y 491 de 1.118
+en confirmación. Sus tasas máximas fueron 1,706 y 1,630 contratos por hora.
 
-| Métrica del campeón | PR #15 búsqueda | Selección relativa búsqueda | Selección relativa confirmación |
-| --- | ---: | ---: | ---: |
-| Contratos ejecutados | 385 | 453 | 56 |
-| Acierto sin reembolsos | 53,72% | 54,42% | 34,55% |
-| Profit Factor | 0,929 | 0,955 | 0,422 |
-| Contratos por hora | 0,426 | 0,501 | 0,186 |
-| Drawdown máximo | 20,36% | 20,45% | 20,80% |
-| PnL simulado | −US$124 | −US$90 | −US$208 |
+| Métrica del campeón | Búsqueda | Confirmación |
+| --- | ---: | ---: |
+| Contratos ejecutados | 303 | 239 |
+| Acierto sin reembolsos | 52,36% | 50,87% |
+| Profit Factor | 0,879 | 0,828 |
+| Contratos por hora | 0,335 | 0,794 |
+| Drawdown máximo | 20,80% | 20,51% |
+| PnL simulado | −US$170 | −US$194 |
 
-El campeón quedó fuera de los cuatro límites en búsqueda y
-confirmación. [Corrida de referencia de la PR #15](https://github.com/Asriel550/Forex/actions/runs/42404665685)
+En una comparación posterior con el genoma fijo, el filtro elevó el
+PF en confirmación de 0,500 a 0,828 y el drawdown pasó de 20,00% a
+20,51%. Ambas variantes activaron el stop. El gate rechazó al campeón.
+Se reutilizó la confirmación histórica para el diagnóstico.
+[Corrida de referencia de la PR #16](https://github.com/Asriel550/Forex/actions/runs/42409133378)
