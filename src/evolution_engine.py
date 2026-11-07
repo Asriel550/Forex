@@ -26,6 +26,7 @@ LOG = logging.getLogger(__name__)
 MARKET = MarketConfig('M5', 'binary', 1)
 ELITE_FRACTION = .20
 MIN_WIN_RATE = .56
+WIN_RATE_SHORTFALL_WEIGHT = .5
 MIN_PROFIT_FACTOR = 1.20
 MAX_DRAWDOWN_PCT = 15.
 MIN_TRADES_HOUR, MAX_TRADES_HOUR = SCALPING_TARGET_PER_HOUR['M5']
@@ -100,7 +101,7 @@ class M5Simulation:
 
 
 def assess_fitness(metrics):
-    """Separa elegibilidad reproductiva, ranking y aprobación económica."""
+    """Puntúa a toda la población. Los checks describen el gate del campeón."""
     win = metrics['win_rate_excluding_refunds']
     pf = metrics['profit_factor']
     no_losses = metrics['profit_factor_status'] == 'infinite_no_losses'
@@ -113,14 +114,12 @@ def assess_fitness(metrics):
         drawdown=drawdown < MAX_DRAWDOWN_PCT,
     )
     pf_term = 1. if no_losses else pf / (1 + pf) if pf is not None else 0.
+    win_term = win if win is not None else 0.
+    activity_weight = min(1., rate / MIN_TRADES_HOUR)
     distance = max(0., MIN_TRADES_HOUR - rate, rate - MAX_TRADES_HOUR)
-    score = (win or 0.) + pf_term - distance / MIN_TRADES_HOUR - drawdown / 100
-    return dict(checks=checks, passed=all(checks.values()), eligible_as_parent=checks['win_rate'],
-                score=score if checks['win_rate'] else None, diagnostic_score=score)
-
-
-def rank(fitness):
-    return fitness['passed'], fitness['eligible_as_parent'], fitness['diagnostic_score']
+    win_shortfall = WIN_RATE_SHORTFALL_WEIGHT * max(0., MIN_WIN_RATE - win_term)
+    score = activity_weight * (win_term + pf_term) - distance / MIN_TRADES_HOUR - drawdown / 100 - win_shortfall
+    return dict(checks=checks, passed=all(checks.values()), score=score)
 
 
 def initial_population(rng, count, genes):
@@ -129,8 +128,6 @@ def initial_population(rng, count, genes):
 
 def breed(rng, population, elite_indices, sigma):
     """Copia las élites y rellena la población por cruce uniforme y mutación."""
-    if not elite_indices:
-        return initial_population(rng, *population.shape)
     elites = population[elite_indices]
     count = len(population) - len(elites)
     left = rng.integers(len(elites), size=count)
@@ -162,10 +159,10 @@ def save_candidate(path, genome, normalizer, manifest):
 def write_summary(path, report):
     lines = [
         '# Evolución Scalping M5 binario', '',
-        'Las generaciones se seleccionan en búsqueda. Solo el campeón preseleccionado pasa por confirmación.',
+        'Las élites se eligen por aptitud continua. Solo el campeón preseleccionado pasa por confirmación.',
         'Holdout histórico reservado.', '',
-        '| Fase | Generación | Contratos | Acierto sin reembolsos | PF | Contratos/h | DD | Gate |',
-        '| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+        '| Fase | Generación | Aptitud | Contratos | Acierto sin reembolsos | PF | Contratos/h | DD | Cumple límites |',
+        '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
     ]
     for row in [*report['generations'], report['confirmation']]:
         m = row['metrics']
@@ -175,8 +172,9 @@ def write_summary(path, report):
         pf = f'{pf:.3f}' if pf is not None else (
             '∞' if m['profit_factor_status'] == 'infinite_no_losses' else 'N/D'
         )
-        gate = 'Cumplido' if row['fitness']['passed'] else 'Rechazado'
-        lines.append(f"| {row['phase']} | {row['generation']} | {m['total_trades']} | {wr} | {pf} | "
+        gate = 'Sí' if row['fitness']['passed'] else 'No'
+        lines.append(f"| {row['phase']} | {row['generation']} | {row['fitness']['score']:.4f} | "
+                     f"{m['total_trades']} | {wr} | {pf} | "
                      f"{m['trades_per_observed_hour']:.3f} | {m['max_drawdown_pct']:.2f}% | {gate} |")
     status = 'cumplido' if report['qualified'] else 'rechazado'
     lines.extend(['', f"Gate de la corrida **{status}**. Campeón preseleccionado en generación "
@@ -224,6 +222,7 @@ def run_evolution(input_path, output_dir, config=None):
         fitness_limits=dict(min_win_rate=MIN_WIN_RATE, exclusive_min_profit_factor=MIN_PROFIT_FACTOR,
                             trades_per_hour=[MIN_TRADES_HOUR, MAX_TRADES_HOUR],
                             exclusive_max_drawdown_pct=MAX_DRAWDOWN_PCT),
+        fitness_selection=dict(method='soft_v1', win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT),
         elite_fraction=ELITE_FRACTION, confirmation_purge_bars=1,
         splits={name: dict(rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
                            end=frame.timestamp.iloc[-1].isoformat())
@@ -240,18 +239,16 @@ def run_evolution(input_path, output_dir, config=None):
         for generation in range(config.generations + 1):
             metrics = list(executor.map(simulation.evaluate, population))
             fitness = [assess_fitness(m) for m in metrics]
-            order = sorted(range(len(population)), key=lambda i: rank(fitness[i]), reverse=True)
-            best = order[0]
-            elites = [i for i in order if fitness[i]['eligible_as_parent']][:elite_count]
+            elites = sorted(range(len(population)), key=lambda i: fitness[i]['score'], reverse=True)[:elite_count]
+            best = elites[0]
             name = f'bundle_scalping_gen_{generation}.zip'
             record = dict(phase='Búsqueda', generation=generation, candidate=best, bundle=name,
                           metrics=metrics[best], fitness=fitness[best], elites=len(elites),
                           qualified_candidates=sum(f['passed'] for f in fitness))
-            improved = champion is None or rank(fitness[best]) > rank(champion['fitness'])
+            improved = champion is None or fitness[best]['score'] > champion['fitness']['score']
             if generation:
                 sigma = max(.025, sigma * .85) if improved else min(.35, sigma * 1.25)
-            record['mutation_sigma'] = sigma if elites and generation < config.generations else None
-            record['fresh_population_next'] = not elites and generation < config.generations
+            record['mutation_sigma'] = sigma if generation < config.generations else None
             digest = save_candidate(root/'candidates'/name, population[best], normalizer,
                                     dict(metadata, selection=record))
             record['bundle_sha256'] = digest
@@ -259,14 +256,14 @@ def run_evolution(input_path, output_dir, config=None):
             if improved:
                 champion, champion_genome = record, population[best].copy()
             candidate_rows.extend(dict(
-                generation=generation, candidate=i, fitness=f['score'], eligible_as_parent=f['eligible_as_parent'],
+                generation=generation, candidate=i, fitness=f['score'], elite=i in elites,
                 passed=f['passed'], **{f'pass_{k}': v for k, v in f['checks'].items()},
                 **{k: m[k] for k in ('total_trades', 'win_rate_excluding_refunds', 'profit_factor',
                                      'profit_factor_status', 'trades_per_observed_hour', 'max_drawdown_pct',
                                      'net_profit', 'risk_stop')},
             ) for i, (m, f) in enumerate(zip(metrics, fitness)))
-            LOG.info('Generación %d. Candidatos con gate %d, élites %d. Gate del ganador %s',
-                     generation, record['qualified_candidates'], len(elites), fitness[best]['passed'])
+            LOG.info('Generación %d. Aptitud %.4f, élites %d, candidatos dentro de límites %d',
+                     generation, fitness[best]['score'], len(elites), record['qualified_candidates'])
             if generation < config.generations:
                 population = breed(rng, population, elites, sigma)
 

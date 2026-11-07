@@ -58,7 +58,7 @@ def test_vectorized_execution_matches_m5_env_with_gaps_ties_and_stop(tie_policy)
     assert actual['eligible_setups'] == reference['stochastic_proposals']['after_economic_filter']['count']
 
 
-def test_fitness_enforces_all_strict_cutoffs_and_eliminates_low_win_rate():
+def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
     metrics = dict(win_rate_excluding_refunds=.56, profit_factor=1.21, profit_factor_status='finite',
                    trades_per_observed_hour=1.5, max_drawdown_pct=14.99)
     assert assess_fitness(metrics)['passed']
@@ -71,8 +71,18 @@ def test_fitness_enforces_all_strict_cutoffs_and_eliminates_low_win_rate():
     ):
         result = assess_fitness(metrics | update)
         assert not result['passed'] and not result['checks'][failed]
-        assert (result['score'] is None) == (failed == 'win_rate')
-    assert not assess_fitness(metrics | dict(win_rate_excluding_refunds=None))['eligible_as_parent']
+        assert np.isfinite(result['score'])
+
+    scores = [assess_fitness(metrics | dict(win_rate_excluding_refunds=p))['score']
+              for p in (.48, .52, .538, .562)]
+    assert all(a < b for a, b in zip(scores, scores[1:]))
+    near_cutoff = [assess_fitness(metrics | dict(win_rate_excluding_refunds=.56 + offset))['score']
+                   for offset in (-1e-6, 1e-6)]
+    assert 0 < near_cutoff[1] - near_cutoff[0] < 3e-6
+    empty = assess_fitness(dict(win_rate_excluding_refunds=None, profit_factor=None,
+                                profit_factor_status='no_trades', trades_per_observed_hour=0.,
+                                max_drawdown_pct=0.))
+    assert not empty['passed'] and np.isfinite(empty['score'])
 
 
 def test_breeding_retains_elites_and_uses_only_their_genes_before_mutation():
@@ -84,8 +94,33 @@ def test_breeding_retains_elites_and_uses_only_their_genes_before_mutation():
     np.testing.assert_array_equal(mutated[:2], population[elites])
     assert np.logical_or(crossed[2:] == population[3], crossed[2:] == population[5]).all()
     assert not np.array_equal(mutated[2:], crossed[2:])
-    restarted = breed(np.random.default_rng(5), population, [], .12)
-    assert restarted.shape == population.shape and not np.isin(restarted, population).any()
+
+
+def test_evolution_breeds_relative_elites_even_when_every_candidate_fails_gate(tmp_path, monkeypatch):
+    source = tmp_path/'m5.parquet'
+    candles(1.1 + np.arange(816) * .00001).to_parquet(source)
+    calls = []
+
+    def evaluate(self, genome):
+        calls.append(genome.copy())
+        return dict(total_trades=100, win_rate_excluding_refunds=.52 + .03 * float(np.tanh(genome[-1])),
+                    profit_factor=.9, profit_factor_status='finite', trades_per_observed_hour=1.5,
+                    max_drawdown_pct=10., net_profit=-5., risk_stop=False)
+
+    monkeypatch.setattr(M5Simulation, 'evaluate', evaluate)
+    output = tmp_path/'run'
+    report = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1))
+    assert not report['qualified']
+    assert all(g['elites'] == 2 and g['qualified_candidates'] == 0 for g in report['generations'])
+    assert len(calls) == 6 * 3 + 1
+    generations = np.asarray(calls[:-1]).reshape(3, 6, -1)
+    for before, after in zip(generations, generations[1:]):
+        order = np.argsort(-before[:, -1], kind='stable')
+        np.testing.assert_array_equal(after[:2], before[order[:2]])
+        assert not np.array_equal(after[2:], before[order[2:]])
+    assert calls[-1][-1] == max(g[-1] for g in calls[:-1])
+    scores = pd.read_csv(output/'evolution.csv')
+    assert scores.fitness.notna().all() and scores.groupby('generation').elite.sum().eq(2).all()
 
 
 def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_holdout(tmp_path):
