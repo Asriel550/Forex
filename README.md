@@ -1,3 +1,5 @@
+Holdout congelado: [diagnóstico MC/PPO, barrido de semillas y prueba Telegram](docs/train_validation_diagnostics.md). Investigación solo manual; `mode=diagnostics` no publica pesos. [Resultados MC/PPO y tres semillas](docs/research/pr8_filter_policy_diagnosis.md).
+
 Exploración PPO configurable: [entropía, incentivos y auditoría](docs/ppo_exploration.md). Default `ent_coef=0.02`; [comparación local con resultados y límites](docs/research/ppo_exploration_comparison.md).
 
 # Forex EUR/USD M15 — research and Telegram signals

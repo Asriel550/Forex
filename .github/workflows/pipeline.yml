@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'train publica un nuevo bundle; alerts usa el último exitoso'
+        description: 'diagnostics: seeds sin holdout; telegram_test: mensaje técnico; train: bundle'
         type: choice
-        options: [alerts, train]
+        options: [alerts, train, diagnostics, telegram_test]
         default: alerts
       confidence_threshold:
         description: 'Umbral de entrenamiento; alerts conserva el del bundle'
@@ -36,6 +36,10 @@ on:
         type: choice
         options: ['0', '0.005', '0.01']
         default: '0.005'
+      telegram_test_id:
+        description: 'ID estable de prueba: repetirlo NO reenvía sent/pending (1..64 ASCII)'
+        type: string
+        default: 'connectivity-v1'
   schedule:
     - cron: '15 6 * * 1'
     - cron: '1,16,31,46 * * * *'
@@ -62,7 +66,7 @@ jobs:
   unit-tests:
     if: >-
       github.event_name == 'push' || github.event_name == 'pull_request' ||
-      (github.event_name == 'workflow_dispatch' && inputs.mode == 'train') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'train' || inputs.mode == 'diagnostics')) ||
       (github.event_name == 'schedule' && github.event.schedule == '15 6 * * 1')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -88,9 +92,15 @@ jobs:
 
   research-pipeline:
     needs: unit-tests
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.mode == 'train' || inputs.mode == 'diagnostics') &&
+      github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    permissions:
+      contents: read
+      actions: read
     concurrency:
       group: forex-research-${{ github.ref }}
       cancel-in-progress: false
@@ -116,17 +126,62 @@ jobs:
           fi
       - name: Causal quant features and continuation state
         timeout-minutes: 45
-        run: python -m src.quant_engine --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE"
+        run: |
+          if [ "$RESEARCH_MODE" = diagnostics ]; then
+            python -m src.quant_engine --drop-warmup --seed 42 --drift-scale 1.5
+          else
+            python -m src.quant_engine --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE"
+          fi
+        env:
+          RESEARCH_MODE: ${{ inputs.mode }}
+      - name: Find archived production bundle for train/validation diagnosis
+        if: inputs.mode == 'diagnostics'
+        id: diagnostic-bundle
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const branch = context.payload.repository.default_branch;
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo,
+              {owner, repo, name:'forex-alert-bundle', per_page:100});
+            for (const artifact of artifacts.filter(a => !a.expired).sort((a,b)=>b.id-a.id)) {
+              if (!artifact.workflow_run || artifact.workflow_run.head_branch !== branch) continue;
+              const {data:run} = await github.rest.actions.getWorkflowRun(
+                {owner, repo, run_id:artifact.workflow_run.id});
+              if (run.conclusion !== 'success' || run.event === 'pull_request' ||
+                  run.head_repository?.full_name !== `${owner}/${repo}` ||
+                  run.path.split('@')[0] !== '.github/workflows/pipeline.yml') continue;
+              core.setOutput('artifact_id',artifact.id);
+              core.setOutput('run_id',run.id);
+              return;
+            }
+            core.setFailed('No hay bundle válido: ejecutar primero workflow_dispatch con mode=train.');
+      - uses: actions/download-artifact@v8
+        if: inputs.mode == 'diagnostics'
+        with:
+          artifact-ids: ${{ steps.diagnostic-bundle.outputs.artifact_id }}
+          run-id: ${{ steps.diagnostic-bundle.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: .diagnostic-bundle
+          merge-multiple: true
+      - name: Diagnose archived PPO (NO training or holdout)
+        if: inputs.mode == 'diagnostics'
+        timeout-minutes: 20
+        run: python -m src.diagnostics --input .diagnostic-bundle/data/eurusd_m15_features.parquet --model-dir .diagnostic-bundle/models --report-dir reports/diagnostics/active_bundle
+      - name: Fixed PR8 multi-seed diagnostics (NO holdout or promotion)
+        if: inputs.mode == 'diagnostics'
+        timeout-minutes: 240
+        run: python -m src.diagnostics --seeds 42 43 44 --total-timesteps 100000
       - name: Sensitivity on train and validation only (MC baseline, not PPO)
+        if: inputs.mode == 'train'
         timeout-minutes: 10
         run: python -m src.sensitivity
-      - name: Train with untouched holdout
+      - name: Train with frozen holdout (NO backtest)
+        if: inputs.mode == 'train'
         timeout-minutes: 120
         run: python -m src.train --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
-      - name: Holdout backtest
-        timeout-minutes: 30
-        run: python -m src.backtest
-      - name: Publish alert inference bundle only after successful research
+      - name: Publish manually requested train bundle (validation selected; holdout frozen)
+        if: inputs.mode == 'train'
         uses: actions/upload-artifact@v7
         with:
           name: forex-alert-bundle
@@ -147,6 +202,9 @@ jobs:
             reports/*.json
             reports/*.csv
             reports/*.png
+            reports/diagnostics/**/*.json
+            reports/diagnostics/**/*.csv
+            reports/diagnostics/**/*.md
             models/*.json
           if-no-files-found: warn
           retention-days: 30
@@ -154,7 +212,7 @@ jobs:
   telegram-alert:
     if: >-
       (github.event_name == 'schedule' && github.event.schedule == '1,16,31,46 * * * *') ||
-      (github.event_name == 'workflow_dispatch' && inputs.mode == 'alerts' && github.ref_name == github.event.repository.default_branch)
+      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'alerts' || inputs.mode == 'telegram_test') && github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 14
     permissions:
@@ -176,6 +234,7 @@ jobs:
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements-alerts.txt
       - name: Find latest successful research bundle on default branch
+        if: inputs.mode != 'telegram_test'
         id: bundle
         uses: actions/github-script@v8
         with:
@@ -197,6 +256,7 @@ jobs:
             }
             core.setFailed('No hay bundle válido: ejecutar primero workflow_dispatch con mode=train.');
       - uses: actions/download-artifact@v8
+        if: inputs.mode != 'telegram_test'
         with:
           artifact-ids: ${{ steps.bundle.outputs.artifact_id }}
           run-id: ${{ steps.bundle.outputs.run_id }}
@@ -204,6 +264,7 @@ jobs:
           path: .
           merge-multiple: true
       - name: Restore alert state and live data cache
+        if: inputs.mode != 'telegram_test'
         id: live-cache
         uses: actions/cache/restore@v6
         with:
@@ -213,6 +274,7 @@ jobs:
           key: telegram-static-v2-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: telegram-static-v2-
       - name: Infer closed candle and send Telegram alert
+        if: inputs.mode != 'telegram_test'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -231,3 +293,24 @@ jobs:
             data/telegram_state.json
           key: ${{ steps.live-cache.outputs.cache-primary-key }}
 
+      - name: Restore technical test outbox
+        if: inputs.mode == 'telegram_test'
+        id: test-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: data/telegram_tests
+          key: telegram-test-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: telegram-test-v1-
+      - name: Send technical message (no market data or model required)
+        if: inputs.mode == 'telegram_test' && steps.test-cache.outcome == 'success'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TEST_ID: ${{ inputs.telegram_test_id }}
+        run: python -m src.telegram_bot --test-delivery --test-id "$TELEGRAM_TEST_ID"
+      - name: Persist technical test sent or uncertain outbox
+        if: always() && inputs.mode == 'telegram_test' && steps.test-cache.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: data/telegram_tests
+          key: ${{ steps.test-cache.outputs.cache-primary-key }}

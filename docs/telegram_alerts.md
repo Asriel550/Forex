@@ -1,3 +1,5 @@
+> Operación actual: [diagnóstico y prueba técnica de Telegram](train_validation_diagnostics.md). Ya no se ejecuta backtest histórico automáticamente.
+
 # Inferencia Telegram con archivos estáticos
 
 Este ZIP es una ACTUALIZACIÓN para aplicar en la raíz del proyecto completo
@@ -12,7 +14,7 @@ Incluye los archivos completos modificados, los dos tests nuevos y este manual.
    YAML, logs o issues. El bot debe poder publicar en el chat/canal configurado.
 3. El snapshot HistData de 2021–octubre de 2026 ya está incluido en datasets/eurusd/, con su manifiesto y exclusiones; no requiere carga manual.
 4. Ejecutar el workflow manual con mode=train. Esto vuelve a generar features,
-   entrena, ejecuta el holdout y publica el artefacto forex-alert-bundle.
+   entrena, selecciona por validación y publica el artefacto forex-alert-bundle. El holdout histórico queda congelado.
 5. Tras una ejecución exitosa, ejecutar manualmente mode=alerts o dejar el cron.
 
 El bundle contiene models/best_ppo_agent.zip, normalizer.json,

@@ -253,6 +253,31 @@ def send_telegram(token, chat_id, text, *, session=None, max_attempts=3, max_wai
             client.close()
 
 
+def deliver_once(*, token, chat_id, text, key, state_path, metadata=None, freshness_check=None, session=None):
+    """Outbox compartida: pending se persiste antes de HTTP; no reenvía inciertos."""
+    metadata = metadata or {}
+    state_path = Path(state_path)
+    state_path.parent.mkdir(parents=True,exist_ok=True)
+    with FileLock(str(state_path)+'.lock',timeout=30):
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        if state.get('key')==key and state.get('status') in ('sent','pending'):
+            raise SignalSkipped('Esta entrega ya se envió o tiene una entrega no confirmada')
+        if freshness_check:
+            freshness_check()
+        record = dict(key=key,status='pending',**metadata)
+        atomic_json(state_path,record)  # outbox: evita duplicar ante un timeout ambiguo.
+        try:
+            sender_options = dict(freshness_check=freshness_check)
+            if session is not None:
+                sender_options['session'] = session
+            message_id = send_telegram(token,chat_id,text,**sender_options)
+        except TelegramRejected:
+            atomic_json(state_path,dict(record,status='rejected'))
+            raise
+        atomic_json(state_path,dict(record,status='sent',message_id=message_id))
+    return message_id
+
+
 def run_signal(*, model_dir=ROOT/'models', history_path=ROOT/'data/eurusd_m15_features.parquet',
                state_path=ROOT/'data/telegram_state.json', live_path=ROOT/'data/live_m15.parquet',
                closures=(), dry_run=False, max_delay_seconds=180, max_model_age_days=14, now=None,
@@ -301,22 +326,38 @@ def run_signal(*, model_dir=ROOT/'models', history_path=ROOT/'data/eurusd_m15_fe
     # Se verifica de nuevo el reloj real tras descarga/features/inferencia.
     fresh_check = lambda:assert_fresh(row.timestamp,current_utc(),max_delay_seconds)
     key = hashlib.sha256(f'{chat_id}|EURUSD|M15|{close.isoformat()}'.encode()).hexdigest()
-    state_path = Path(state_path)
-    state_path.parent.mkdir(parents=True,exist_ok=True)
-    with FileLock(str(state_path)+'.lock',timeout=30):
-        state = json.loads(state_path.read_text()) if state_path.exists() else {}
-        if state.get('key')==key and state.get('status') in ('sent','pending'):
-            raise SignalSkipped('Esta vela ya se envió o tiene una entrega no confirmada')
-        fresh_check()
-        record = dict(key=key,candle_close=close.isoformat(),status='pending')
-        atomic_json(state_path,record)  # outbox: evita duplicar ante un timeout ambiguo.
-        try:
-            message_id = send_telegram(token,chat_id,text,freshness_check=fresh_check)
-        except TelegramRejected:
-            atomic_json(state_path,dict(record,status='rejected'))
-            raise
-        atomic_json(state_path,dict(record,status='sent',message_id=message_id))
+    message_id = deliver_once(token=token,chat_id=chat_id,text=text,key=key,
+        state_path=state_path,metadata=dict(candle_close=close.isoformat()),freshness_check=fresh_check)
     return dict(action=int(action),status='sent',message_id=message_id)
+
+
+def run_delivery_test(test_id, *, state_dir=ROOT/'data/telegram_tests', session=None):
+    """Prueba explícita de sendMessage, sin modelo, precios, mercado ni señal.
+
+    Reutilizar test_id conserva deduplicación aun entre ejecuciones de Actions.
+    Telegram confirma aceptación, no lectura ni recepción física del teléfono.
+    """
+    import re
+    if not isinstance(test_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',test_id):
+        raise AlertError('test_id debe tener 1..64 letras ASCII, números, guion o guion bajo')
+    token,chat_id = os.environ.get('TELEGRAM_BOT_TOKEN'),os.environ.get('TELEGRAM_CHAT_ID')
+    if not token or not chat_id:
+        raise TelegramRejected('Configurar TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID como secretos')
+    key = hashlib.sha256(f'{chat_id}|delivery-test|{test_id}'.encode()).hexdigest()
+    path = Path(state_dir)/f'{key}.json'
+    text = (f'🧪 PRUEBA DE ENTREGA EUR/USD M15\nID: {test_id}\n'
+            'Bot y outbox: verificación de conectividad.\n'
+            'Este mensaje es una prueba técnica; no contiene una señal de trading.')
+    try:
+        message_id = deliver_once(token=token,chat_id=chat_id,text=text,key=key,
+            state_path=path,metadata=dict(kind='delivery_test',test_id=test_id),session=session)
+    except SignalSkipped:
+        state = json.loads(path.read_text())
+        if state.get('status') == 'sent':
+            return dict(status='already_sent',test_id=test_id,message_id=state.get('message_id'))
+        raise AlertError('Prueba con entrega incierta (pending); no se reenvía. Revisar Telegram y la outbox.') from None
+    return dict(status='sent',test_id=test_id,message_id=message_id,
+                confirmation='Telegram accepted sendMessage; mobile receipt requires user observation')
 
 
 def main():
@@ -330,12 +371,21 @@ def main():
     parser.add_argument('--input-timeframe',choices=['auto','M1','M15'],default='auto')
     parser.add_argument('--timezone',default='EST')
     parser.add_argument('--dry-run',action='store_true')
+    parser.add_argument('--test-delivery',action='store_true')
+    parser.add_argument('--test-id',default='connectivity-v1')
+    parser.add_argument('--test-state-dir',type=Path,default=ROOT/'data/telegram_tests')
     parser.add_argument('--max-delay-seconds',type=int,default=180)
     args = parser.parse_args()
     if not 1<=args.max_delay_seconds<900:
         parser.error('max-delay-seconds debe estar entre 1 y 899')
     logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
     try:
+        if args.test_delivery:
+            if args.dry_run:
+                parser.error('La prueba de entrega requiere HTTP real; no combinar con dry-run')
+            result = run_delivery_test(args.test_id,state_dir=args.test_state_dir)
+            print(json.dumps(result))
+            return
         result = run_signal(model_dir=args.model_dir,history_path=args.history,state_path=args.state,
                             live_path=args.live_data,closures=read_closures(args.closures),
                             dry_run=args.dry_run,max_delay_seconds=args.max_delay_seconds,
