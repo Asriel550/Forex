@@ -119,17 +119,27 @@ def resolve_profile(
 
 
 def main():
+    mode = os.environ.get('RESEARCH_MODE')
+    profile = os.environ.get('FOREX_TRADING_PROFILE', 'auto')
+    timeframe = os.environ.get('FOREX_TIMEFRAME', 'auto')
+    if mode == 'evolution':
+        profile = 'scalping' if profile == 'auto' else profile
+        timeframe = 'M5' if timeframe == 'auto' else timeframe
     resolved = resolve_profile(
-        profile=os.environ.get('FOREX_TRADING_PROFILE', 'auto'),
-        timeframe=os.environ.get('FOREX_TIMEFRAME', 'auto'),
+        profile=profile,
+        timeframe=timeframe,
         trading_mode=os.environ.get('FOREX_TRADING_MODE', 'binary'),
         expiry_candles=int(os.environ.get('FOREX_EXPIRY_CANDLES', '0')),
         confidence=os.environ.get('FOREX_MIN_CONFIDENCE', 'auto'),
-        entropy=os.environ.get('FOREX_ENT_COEF', 'auto'),
-        neutral_cost=os.environ.get('FOREX_NEUTRAL_OPPORTUNITY_PENALTY', 'auto'),
+        entropy='auto' if mode == 'evolution' else os.environ.get('FOREX_ENT_COEF', 'auto'),
+        neutral_cost='auto' if mode == 'evolution' else os.environ.get('FOREX_NEUTRAL_OPPORTUNITY_PENALTY', 'auto'),
         drift_scale=os.environ.get('FOREX_DRIFT_SCALE', 'auto'),
     )
-    if os.environ.get('RESEARCH_MODE') == 'diagnostics':
+    if mode == 'evolution':
+        if (resolved['FOREX_TRADING_PROFILE'], resolved['FOREX_TIMEFRAME'],
+                resolved['FOREX_TRADING_MODE'], resolved['FOREX_EXPIRY_CANDLES']) != ('scalping', 'M5', 'binary', 1):
+            raise ValueError('evolution requiere scalping/M5/binary y vencimiento de una vela')
+    if mode == 'diagnostics':
         if (resolved['FOREX_TRADING_PROFILE'], resolved['FOREX_EXPIRY_CANDLES'],
                 resolved['FOREX_TRADING_MODE']) != ('intraday', 1, 'binary'):
             raise ValueError('diagnostics conserva M15/binary/1; usar mode=train para otro perfil')
