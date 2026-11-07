@@ -121,3 +121,33 @@ def test_only_an_isolated_high_frequency_garch_refit_can_retain_parameters(monke
     monkeypatch.setattr(quant, '_fit_garch', fails_twice)
     with pytest.raises(quant.GarchConvergenceError):
         quant.causal_garch_volatility(prices, config, retain_on_nonconvergence=True)
+
+
+def test_scalping_microtrend_releases_direction_without_dropping_break_even_gate():
+    from dataclasses import replace
+    import numpy as np
+    from src.decision import RiskConfig, resolve_action
+    from src.quant_engine import MonteCarloGBM, QuantConfig, causal_drift
+
+    preset = resolve_profile('scalping', 'M5', confidence='.52')
+    assert resolve_profile()['FOREX_DRIFT_SCALE'] == 1.5
+    assert resolve_profile()['FOREX_MIN_EXPECTED_EDGE'] == .02
+    assert resolve_profile('scalping', 'M1')['FOREX_DRIFT_SCALE'] == 1.8
+    risk = RiskConfig(min_confidence=preset['FOREX_MIN_CONFIDENCE'],
+                      min_expected_edge=preset['FOREX_MIN_EXPECTED_EDGE'])
+    below_break_even = resolve_action(2, .55, .45, 0., payout=.8, tie_policy='refund', risk=risk)
+    assert below_break_even['filter_reason'] == 'expected_edge'
+
+    close = 1.1 * np.exp(np.arange(20) * .00008)
+    sigma = np.full(len(close), .0002)
+    old = QuantConfig()
+    new = replace(old, drift_window=preset['FOREX_TREND_WINDOW'],
+                  drift_scale=preset['FOREX_DRIFT_SCALE'], drift_noise_z=preset['FOREX_DRIFT_NOISE_Z'],
+                  drift_cap_sigma=preset['FOREX_DRIFT_CAP_SIGMA'])
+    old_mu = causal_drift(close, sigma, old)['mc_drift'][-1]
+    new_mu = causal_drift(close, sigma, new)['mc_drift'][-1]
+    mc = MonteCarloGBM()
+    old_probability = mc.direction_probabilities(sigma[-1], old_mu)
+    new_probability = mc.direction_probabilities(sigma[-1], new_mu)
+    assert resolve_action(2, *old_probability, payout=.8, tie_policy='refund', risk=risk)['blocked']
+    assert resolve_action(2, *new_probability, payout=.8, tie_policy='refund', risk=risk)['action'] == 2

@@ -6,7 +6,7 @@ seleccioná la rama `main` y usá `mode=train`. Elegí un perfil y dejá
 
 | Perfil | Temporalidad | Expiración binaria por defecto | Confianza nominal | Entropía PPO | Coste de omitir un setup | Ventana de tendencia |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| scalping | M5, admite M1 | 1 vela, admite 1 a 3 | 55%, admite 53–55% | 0,03 | 0,20 | 8 barras |
+| scalping | M5, admite M1 | 1 vela, admite 1 a 3 | 54%, admite 52–54% | 0,03 | 0,20 | 4 barras M5 / 6 barras M1 |
 | intraday | M15 | 1 vela | 60% | 0,02 | 0,05 | 8 barras |
 | daily | H1 | 2 velas | 63% | 0,02 | 0,05 | 12 barras |
 | swing | H4 | 2 velas | 65% | 0,02 | 0,05 | 16 barras |
@@ -16,7 +16,7 @@ campos en automático se aplica intraday. El formulario rechaza combinaciones
 incompatibles, como scalping con M15. `expiry_candles` acepta un entero y usa
 cero como selector del preset. Forex spot conserva su contrato con
 `expiry_candles=1` y evalúa posiciones de mercado sin vencimiento binario.
-Los inputs de confianza, entropía y coste neutral en `auto` aplican el preset.
+Los inputs de confianza, escala de momentum, entropía y coste neutral en `auto` aplican el preset.
 
 ## Histórico separado para scalping
 
@@ -52,18 +52,27 @@ entrenamiento aborta si falta un ajuste previo o si fallan dos consecutivos.
 ## Medir la frecuencia
 
 Scalping aumenta la entropía y el coste de omitir setups válidos. La meta es
-5–10 contratos por hora observable. Con payout 0,80 el acierto de equilibrio
-es 55,56%. El filtro de ventaja conservadora sigue aplicando el margen por
-payout y Wilson además del umbral nominal. El agente solo cobra o pierde el
-payout simulado al liquidar un contrato.
+5–10 contratos por hora observable. El momentum usa 6 barras en M1 y 4 en M5.
+Con `drift_scale=auto`, la escala es 1,8 en M1 y 2,2 en M5. El multiplicador
+de la banda neutral de momentum baja de 1,96 a 0,50, y el tope de desplazamiento
+sube de 0,75 a 0,90 veces la volatilidad condicional. P05/P95 siguen siendo los
+percentiles de las mismas trayectorias. Intraday, daily y swing conservan sus
+umbrales, sus parámetros de momentum y el margen de ventaja de 0,02.
 
-El reporte `validation_metrics.json` muestra `trades_per_observed_hour`,
-`eligible_setups_before_policy`, `trades_per_hour_upper_bound` y
-`frequency_target_met`. La frecuencia divide los contratos por las horas
-de segmentos operables de toda la validación, incluyendo el tiempo sin operar.
-La cota superior incorpora los setups que pasan el filtro y la duración del
-contrato. M5 con expiración de tres velas tiene un límite temporal de cuatro
-contratos por hora sin solapamiento.
+El umbral de 52–54% selecciona candidatos. Con payout 0,80, el acierto de
+equilibrio es 55,56%. Scalping aplica margen adicional cero y exige que el
+límite inferior de Wilson de la probabilidad simulada supere ese equilibrio.
+Wilson mide el error de muestreo de Monte Carlo. La tasa de acierto realizada
+puede quedar por debajo del equilibrio.
+
+Los logs de validación y los reportes JSON y Markdown separan tres etapas.
+Se cuenta la dirección MC en cada ventana con entrada y vencimiento válidos,
+las propuestas que superan la confianza nominal y las que superan el filtro
+de Wilson y payout. Los contratos ejecutados por PPO se muestran aparte.
+Las tasas usan las mismas horas de toda la validación en segmentos operables,
+incluso si el stop termina la ejecución de la política antes del final.
+Las propuestas son oportunidades por vela. La cota de contratos por hora
+incorpora también el vencimiento sin solapamiento.
 
 Cada ejecución publica un bundle de investigación con nombre como
 `forex-research-bundle-v4-scalping-M1-binary-e1`. El nombre y el manifiesto
@@ -74,7 +83,7 @@ su contrato de producción.
 [Bundle v4 M15 original](https://github.com/Asriel550/Forex/actions/runs/42331180138)
 
 
-## Prueba con el histórico de 2025
+## Referencia de la PR #11 con el histórico de 2025
 
 Se completaron ingesta, features y 16.384 pasos PPO con semilla 42, umbral
 nominal 55% y expiración de una vela en ambos perfiles de scalping.
@@ -90,3 +99,26 @@ La meta de 5–10 contratos por hora queda fuera de la capacidad del filtro en
 esta muestra. El incentivo de recompensa solo actúa sobre setups elegibles.
 M1 registró tres reajustes GARCH aislados retenidos con el estado causal.
 El holdout quedó reservado y se conservaron separados los pesos de prueba.
+
+
+## Prueba del ajuste de sensibilidad
+
+Dos corridas con el histórico de 2025, semilla 42, 16.384 pasos PPO, umbral
+nominal 54% y una vela de expiración. La evaluación se limitó a validación y el
+holdout quedó reservado.
+
+| Métrica de validación | M1 | M5 |
+| --- | ---: | ---: |
+| Direcciones MC por hora antes del filtro | 59,99 | 12,00 |
+| Propuestas por hora tras confianza nominal | 25,39 | 5,31 |
+| Setups por hora tras Wilson y payout | 21,55 | 4,76 |
+| Setups elegibles en toda la fase | 26.606 | 5.740 |
+| Contratos ejecutados por PPO por hora | 0,290 | 0,222 |
+| Acierto sin reembolsos | 53,47% | 51,15% |
+| PnL simulado | −US$130 | −US$206 |
+| Drawdown máximo | 20,04% | 20,60% |
+
+En M5 la cota aumentó de 0,031 a 4,76 setups por hora sobre la misma fase. En
+ambas corridas el stop de drawdown se activó y el acierto quedó por debajo del
+55,56% necesario con payout 0,80. El ajuste amplió el conjunto de candidatos
+para investigación. La frecuencia de ejecución de 5–10 por hora sigue pendiente.

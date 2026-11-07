@@ -191,6 +191,9 @@ class BestValidationCallback(BaseCallback):
         self.logger.record("validation/net_profit", metrics["net_profit"])
         self.logger.record("validation/trades", metrics["trades"])
         LOG.info("Decisiones/confianza validación: %s",json.dumps(metrics["decision_analysis"],allow_nan=False))
+        if "stochastic_proposals" in metrics:
+            LOG.info("Frecuencia MC validación step=%d %s", self.num_timesteps,
+                     json.dumps(metrics["stochastic_proposals"], allow_nan=False))
         LOG.info("Validación step=%d PnL=%.2f trades=%d DD=%.4f",
                  self.num_timesteps, metrics["net_profit"], metrics["trades"], metrics["max_drawdown"])
 
@@ -335,7 +338,7 @@ def main():
     parser.add_argument("--eval-freq", type=int, default=25_000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument('--min-confidence',type=float)
-    parser.add_argument('--min-expected-edge',type=float,default=.02)
+    parser.add_argument('--min-expected-edge',type=float)
     parser.add_argument('--risk-drawdown-limit',type=float,default=.20)
     parser.add_argument('--trade-penalty',type=float,default=RiskConfig().trade_penalty)
     parser.add_argument('--blocked-penalty',type=float,default=RiskConfig().blocked_penalty)
@@ -355,12 +358,15 @@ def main():
     expiry = args.pop('expiry_candles')
     profile = args.pop('trading_profile')
     confidence = args.pop('min_confidence')
+    min_expected_edge = args.pop('min_expected_edge')
     neutral_cost = args.pop('neutral_opportunity_penalty')
     entropy = args.pop('ent_coef')
     target_activity = RiskConfig().target_activity
     if profile is None:
         market = MarketConfig(timeframe or 'M15', trading_mode, 1 if expiry is None else expiry)
         confidence = RiskConfig().min_confidence if confidence is None else confidence
+        if min_expected_edge is None:
+            min_expected_edge = RiskConfig().min_expected_edge
         neutral_cost = .05 if neutral_cost is None else neutral_cost
         entropy = .02 if entropy is None else entropy
     else:
@@ -374,11 +380,13 @@ def main():
         profile = resolved['FOREX_TRADING_PROFILE']
         market = MarketConfig(resolved['FOREX_TIMEFRAME'], trading_mode, resolved['FOREX_EXPIRY_CANDLES'])
         confidence = resolved['FOREX_MIN_CONFIDENCE']
+        if min_expected_edge is None:
+            min_expected_edge = resolved['FOREX_MIN_EXPECTED_EDGE']
         neutral_cost = resolved['FOREX_NEUTRAL_OPPORTUNITY_PENALTY']
         entropy = resolved['FOREX_ENT_COEF']
         target_activity = resolved['FOREX_TARGET_ACTIVITY']
     opportunity_training=not args.pop('no_opportunity_training')
-    risk = RiskConfig(min_confidence=confidence,target_activity=target_activity,min_expected_edge=args.pop('min_expected_edge'),
+    risk = RiskConfig(min_confidence=confidence,target_activity=target_activity,min_expected_edge=min_expected_edge,
                       drawdown_limit=args.pop('risk_drawdown_limit'),trade_penalty=args.pop('trade_penalty'),
                       blocked_penalty=args.pop('blocked_penalty'),overtrade_penalty=args.pop('overtrade_penalty'),
                       drawdown_penalty=args.pop('drawdown_penalty'),neutral_opportunity_penalty=neutral_cost)

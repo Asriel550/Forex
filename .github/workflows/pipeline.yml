@@ -14,13 +14,13 @@ on:
       confidence_threshold:
         description: 'Umbral nominal; auto aplica el perfil'
         type: choice
-        options: [auto, '0.53', '0.54', '0.55', '0.58', '0.60', '0.62', '0.63', '0.65']
+        options: [auto, '0.52', '0.53', '0.54', '0.58', '0.60', '0.62', '0.63', '0.65']
         default: auto
       drift_scale:
-        description: 'Escala de momentum para un nuevo entrenamiento'
+        description: 'Escala de momentum; auto aplica perfil y timeframe'
         type: choice
-        options: ['1.0', '1.5', '2.0']
-        default: '1.5'
+        options: [auto, '1.0', '1.5', '1.8', '2.0', '2.2']
+        default: auto
       ent_coef:
         description: 'Regularización de entropía PPO para nuevo entrenamiento'
         type: choice
@@ -77,7 +77,7 @@ env:
   FOREX_NEUTRAL_OPPORTUNITY_PENALTY: ${{ inputs.neutral_opportunity_penalty || vars.FOREX_NEUTRAL_OPPORTUNITY_PENALTY || 'auto' }}
   FOREX_TRADE_PENALTY: ${{ vars.FOREX_TRADE_PENALTY || '0.025' }}
   FOREX_MIN_CONFIDENCE: ${{ inputs.confidence_threshold || vars.FOREX_MIN_CONFIDENCE || 'auto' }}
-  FOREX_DRIFT_SCALE: ${{ inputs.drift_scale || vars.FOREX_DRIFT_SCALE || '1.5' }}
+  FOREX_DRIFT_SCALE: ${{ inputs.drift_scale || vars.FOREX_DRIFT_SCALE || 'auto' }}
   FOREX_TRADING_PROFILE: ${{ inputs.trading_profile || 'auto' }}
   FOREX_TIMEFRAME: ${{ inputs.timeframe || 'auto' }}
   FOREX_TRADING_MODE: ${{ inputs.trading_mode || 'binary' }}
@@ -190,7 +190,7 @@ jobs:
           if [ "$RESEARCH_MODE" = diagnostics ]; then
             python -m src.quant_engine --drop-warmup --seed 42 --drift-scale 1.5
           else
-            python -m src.quant_engine --input data/eurusd_market.parquet --output data/eurusd_market_features.parquet --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE" --drift-window "$FOREX_TREND_WINDOW" --window "$FOREX_GARCH_WINDOW" --refit-every "$FOREX_REFIT_EVERY" --timeframe "$FOREX_TIMEFRAME" --expiry-candles "$FOREX_EXPIRY_CANDLES"
+            python -m src.quant_engine --input data/eurusd_market.parquet --output data/eurusd_market_features.parquet --drop-warmup --seed 42 --drift-scale "$FOREX_DRIFT_SCALE" --drift-window "$FOREX_TREND_WINDOW" --drift-noise-z "$FOREX_DRIFT_NOISE_Z" --drift-cap-sigma "$FOREX_DRIFT_CAP_SIGMA" --window "$FOREX_GARCH_WINDOW" --refit-every "$FOREX_REFIT_EVERY" --timeframe "$FOREX_TIMEFRAME" --expiry-candles "$FOREX_EXPIRY_CANDLES"
           fi
       - name: Find archived production bundle for train/validation diagnosis
         if: inputs.mode == 'diagnostics'
@@ -233,7 +233,7 @@ jobs:
       - name: Train with frozen holdout (NO backtest)
         if: inputs.mode == 'train'
         timeout-minutes: 120
-        run: python -m src.train --input data/eurusd_market_features.parquet --output-dir models/research_v4 --trading-profile "$FOREX_TRADING_PROFILE" --timeframe "$FOREX_TIMEFRAME" --trading-mode "$FOREX_TRADING_MODE" --expiry-candles "$FOREX_EXPIRY_CANDLES" --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
+        run: python -m src.train --input data/eurusd_market_features.parquet --output-dir models/research_v4 --trading-profile "$FOREX_TRADING_PROFILE" --timeframe "$FOREX_TIMEFRAME" --trading-mode "$FOREX_TRADING_MODE" --expiry-candles "$FOREX_EXPIRY_CANDLES" --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --min-expected-edge "$FOREX_MIN_EXPECTED_EDGE" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
       - name: Publish isolated v4 research bundle (no automatic production promotion)
         if: inputs.mode == 'train'
         uses: actions/upload-artifact@v7

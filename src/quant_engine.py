@@ -276,6 +276,11 @@ def causal_garch_volatility(close, config: QuantConfig, *, retain_on_nonconverge
 
 
 def momentum_log_drift(mean,se,sigma,config):
+    """Scale the momentum outside its noise band, capped in units of sigma.
+
+    The drift cap controls the maximum directional displacement of the
+    simulated prices. P05/P95 remain percentiles of those same paths.
+    """
     excess=np.sign(mean)*np.maximum(np.abs(mean)-config.drift_noise_z*se,0.)
     return np.clip(config.drift_scale*config.drift_shrinkage*excess,
                    -config.drift_cap_sigma*sigma,config.drift_cap_sigma*sigma)

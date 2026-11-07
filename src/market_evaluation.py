@@ -6,6 +6,33 @@ from .decision import mc_probability_lower
 from .metrics import calculate_metrics,decision_metrics
 
 
+def stochastic_proposal_frequency(env, observed_hours):
+    """Count the engine's best direction at each executable entry before PPO."""
+    up, down, _ = env._probabilities[env._eligible].T
+    directional = up != down
+    confident = directional & (np.maximum(up, down) > env.risk.min_confidence)
+    accepted = directional & env._setup_mask[env._eligible]
+    if not env.risk.enabled:
+        confident = accepted = directional
+
+    def frequency(mask):
+        count = int(mask.sum())
+        return dict(count=count, per_hour=count / observed_hours)
+
+    payout = env.account.payout
+    return dict(
+        observed_hours=observed_hours,
+        before_filter=frequency(directional),
+        after_confidence=frequency(confident),
+        after_economic_filter=frequency(accepted),
+        confidence_threshold=env.risk.min_confidence,
+        payout_break_even_probability=1 / (1 + payout),
+        min_wilson_probability_for_edge=(1 + env.risk.min_expected_edge) / (1 + payout),
+        wilson_z=env.risk.mc_z,
+        risk_filter_enabled=env.risk.enabled,
+    )
+
+
 def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
     balance=peak=env.account.initial_balance;activity=0.;rows=[];trades=[]
     equity=np.full(len(env._close),balance,dtype=float);filled=0
@@ -65,13 +92,15 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
     # impide operar su tramo final. Los huecos de mercado quedan fuera.
     observed_hours = sum(end - start for start, end in env.segments) * env.bar_step.total_seconds() / 3600
     result.update(observed_hours=observed_hours, trades_per_observed_hour=len(trades)/observed_hours)
+    if env.market.trading_mode == 'binary':
+        result['stochastic_proposals'] = stochastic_proposal_frequency(env, observed_hours)
     if trading_profile is not None:
         result['trading_profile'] = trading_profile
     if trading_profile == 'scalping' and env.market.trading_mode == 'binary':
         from .trading_profiles import SCALPING_TARGET_PER_HOUR
         minimum, maximum = SCALPING_TARGET_PER_HOUR
         expiry = env.market.expiry_candles
-        setups = int(env._setup_mask[env._eligible].sum()) if env.risk.enabled else len(env._eligible)
+        setups = result['stochastic_proposals']['after_economic_filter']['count'] if env.risk.enabled else len(env._eligible)
         slots = sum((end - start) // expiry for start, end in env.segments)
         result['eligible_setups_before_policy'] = setups
         result['trades_per_hour_upper_bound'] = min(setups, slots) / observed_hours
@@ -83,9 +112,32 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
         write_json(root/'validation_metrics.json',result)
         signals.to_csv(root/'validation_decisions.csv',index=False)
         pd.DataFrame(trades,columns=['action','profit','outcome']).to_csv(root/'validation_trades.csv',index=False)
-        (root/'validation.md').write_text(f"# Validación {env.market.trading_mode} {env.market.timeframe}\n\n"
-            f"Contratos cerrados: {len(trades)}; PnL simulado: {result['net_profit']:.2f} USD; "
-            f"PF: {result['profit_factor']} ({result['profit_factor_status']}); "
-            f"DD: {100*max_dd:.2f}%.\n\n"
-            f"Frecuencia media {result['trades_per_observed_hour']:.3f} operaciones por hora observable.\n\nHoldout congelado. Sin prueba de ventaja fuera de muestra.\n")
+        summary = (
+            f"# Validación {env.market.trading_mode} {env.market.timeframe}\n\n"
+            f"Contratos cerrados {len(trades)}. PnL simulado {result['net_profit']:.2f} USD. "
+            f"PF {result['profit_factor']} ({result['profit_factor_status']}). "
+            f"Drawdown máximo {100*max_dd:.2f}%.\n\n"
+        )
+        if 'stochastic_proposals' in result:
+            proposals = result['stochastic_proposals']
+            summary += (
+                f"Frecuencia sobre {observed_hours:.2f} horas observables.\n\n"
+                "| Etapa | Cantidad | Por hora |\n"
+                "| --- | ---: | ---: |\n"
+            )
+            for key, label in (
+                ('before_filter', 'Direcciones propuestas por MC'),
+                ('after_confidence', 'Superan confianza nominal'),
+                ('after_economic_filter', 'Superan confianza, Wilson y payout'),
+            ):
+                row = proposals[key]
+                summary += f"| {label} | {row['count']} | {row['per_hour']:.4f} |\n"
+            summary += f"| Contratos ejecutados por PPO | {len(trades)} | {result['trades_per_observed_hour']:.4f} |\n\n"
+            summary += (
+                f"Equilibrio del payout {proposals['payout_break_even_probability']:.2%}. "
+                f"Límite inferior exigido por el margen {proposals['min_wilson_probability_for_edge']:.2%}.\n\n"
+            )
+        else:
+            summary += f"Frecuencia media {result['trades_per_observed_hour']:.3f} operaciones por hora observable.\n\n"
+        (root/'validation.md').write_text(summary + "Holdout congelado. Sin prueba de ventaja fuera de muestra.\n")
     return result
