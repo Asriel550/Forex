@@ -218,36 +218,30 @@ Elegí `population_size` entre 4 y 64 y `generations` entre 1 y 20. Los
 valores por defecto son 24 individuos y 10 ciclos posteriores a la
 generación inicial, para un total de 11 generaciones evaluadas.
 
-Cada individuo tiene un vector de pesos y un sesgo sobre features de
-mercado normalizadas. El motor limita las entradas antes de puntuarlas
-con el genoma, tanto en búsqueda y sus cuatro bloques como en confirmación.
+El genoma puntúa todas las entradas con vencimiento M5 consecutivo.
+Un vector de pesos decide si hay contrato. Otro ajusta el margen
+direccional `mc_prob_up - mc_prob_down`. El signo resultante decide
+CALL o PUT y un empate exacto produce NEUTRO. Las observaciones
+incluyen GARCH, Monte Carlo, indicadores técnicos y nueve variables
+de contexto.
 
-1. Monte Carlo debe superar confianza, Wilson y payout.
-2. CALL exige H1 y H4 alcistas. PUT exige H1 y H4 bajistas. Cada
-   H1/H4 se forma con 12/48 velas M5 completas alineadas a UTC. La
-   dirección es el signo de EMA8 menos EMA24 del cierre de cada
-   temporalidad fuera de una banda neutral del 10% de la media
-   exponencial de 14 rangos. Se exige warmup completo y un último cierre
-   de menos de 60 minutos para H1 y 240 para H4.
-3. La entrada y el vencimiento deben quedar fuera de las ventanas de
-   investigación 16:30–18:00 en `America/New_York` y 08:00–10:00 en
-   `Asia/Tokyo`. Se incluye el inicio y se excluye el fin de cada
-   ventana. La conversión local aplica el horario de verano de NY.
-4. La volatilidad realizada es la raíz de la suma de los cuadrados de
-   12 retornos log M5 consecutivos. Debe ser positiva y alcanzar el
-   percentil 20 de las ventanas válidas de entrenamiento en sesiones
-   permitidas. El piso queda fijo para toda la búsqueda y confirmación.
-   Un hueco invalida la ventana hasta volver a acumular 12 retornos.
+- **H1 y H4.** Diferencia de EMA8 y EMA24 del cierre, dividida por
+  la media exponencial de 14 rangos. Cada vela se forma con 12 o
+  48 velas M5 completas en UTC. Se usa el último cierre disponible
+  al decidir, con vigencia menor a 60 o 240 minutos respectivamente.
+- **Volatilidad M5.** Rango de la vela dividido por el cierre y raíz
+  de la suma de los cuadrados de 12 retornos log consecutivos. Un
+  hueco reinicia la ventana de volatilidad realizada.
+- **Sesión.** Dos indicadores marcan si la entrada o su vencimiento
+  tocan 16:30–18:00 en `America/New_York` o 08:00–10:00 en
+  `Asia/Tokyo`. Se incluye el inicio y se excluye el fin. La hora
+  local de NY incorpora el horario de verano.
 
-El histórico permite medir movimiento de precio. El filtro horario es
-una hipótesis de investigación sobre liquidez y el piso de volatilidad
-usa cierres M5. El reporte muestra el máximo de contratos por hora
-después de los filtros y señala cuándo queda por debajo del gate.
-
-Los cierres posteriores se usan para liquidar, con las mismas reglas de
-caja, huecos y reembolsos del entorno M5. El stop del 20% se aplica al
-liquidar y el gate exige un drawdown menor al 15%. Las horas incluyen
-el tramo observable completo.
+La ausencia de un sesgo H1/H4 vigente o de volatilidad realizada se
+codifica con valor cero e indicador de disponibilidad propio. La dirección,
+confianza de Monte Carlo, volatilidad y sesión pueden influir mediante
+los pesos de la política. Las reglas de caja, huecos, reembolsos y stop
+al 20% se aplican al liquidar. Las horas incluyen todo el tramo observable.
 
 Cada individuo recibe un puntaje finito. Sean `w` el acierto sin
 reembolsos, `f` los contratos por hora y `d` el drawdown como fracción.
@@ -258,15 +252,10 @@ penalización suave `0.5 × max(0, 0.56 − w)`. El término de PF es
 `PF/(1+PF)`, vale uno si hay ganancias sin pérdidas y cero si el ratio
 es indefinido. Un acierto indefinido aporta cero al cálculo.
 
-El normalizador se ajusta en train. El primer 75% de validación
-cronológica se divide en cuatro bloques consecutivos de tamaño similar.
-Cada bloque empieza con saldo propio y liquida sus contratos dentro de
-sus límites. El JSON muestra la distribución H1/H4 de cada bloque
-con estados alcista, bajista, lateral y sin señal vigente.
-La aptitud combina 50% del puntaje medio y 50% del peor bloque. Resta
-0,10 veces la proporción de pesos efectivos, medida como
-`(sum(abs(w))**2 / sum(w**2)) / número_de_pesos`. El cálculo excluye el
-sesgo y reescalar todos los pesos mantiene la misma penalización.
+El primer 75% de validación cronológica se divide en cuatro bloques
+consecutivos de tamaño similar. Cada bloque empieza con saldo propio y
+liquida sus contratos dentro de sus límites. La aptitud combina 50%
+del puntaje económico medio y 50% del peor bloque.
 
 El grupo de padres conserva el tamaño del 20% superior redondeado
 hacia arriba. Da prioridad a quienes terminan en positivo con drawdown
@@ -282,41 +271,50 @@ exige consistencia en los cuatro bloques y, en búsqueda completa y
 confirmación, acierto sin reembolsos ≥56%, PF >1,20, 1,5–3,0 contratos por
 hora y drawdown <15%. El holdout histórico queda reservado.
 
-Actions publica el JSON, el CSV por individuo y el Markdown bajo
-`forex-reports-*`. El artefacto `forex-evolution-candidates-*` contiene
-un ZIP independiente por generación, desde `bundle_scalping_gen_0.zip`.
-Cada ZIP contiene pesos, normalizador y manifiesto con SHA256. Se publica
-también el representante de diagnóstico de una generación rechazada.
-El gate puede marcar la corrida como fallida y conservar los reportes y
-candidatos. Los artefactos de evolución quedan separados de Intradía M15
-y del flujo de Telegram.
+### Continuidad del linaje
 
-### Evaluación del contexto H1/H4
+La primera corrida parte de la generación 21. El individuo cero
+hereda los pesos de entrada, el sesgo y el normalizador del campeón
+Gen 20 de la PR #18. El ZIP original y su SHA256 se conservan en
+`config/evolution_m5_seed_gen20.json`. Los pesos de contexto y el
+ajuste direccional del fundador parten en cero. Se ajusta la
+normalización del contexto exclusivamente en train durante la migración.
+El resto de la población inicial nace por mutación del fundador.
+[Corrida de la PR #18](https://github.com/Asriel550/Forex/actions/runs/42421933732)
 
-La prueba local usó 64 individuos, 20 ciclos, semilla 42 y el histórico
-M5 de 2025 de la PR #17. El embudo contó los setups de forma secuencial.
+Actions guarda el campeón de búsqueda y el estado evolutivo en
+`forex-evolution-lineage-v4` antes de aplicar el gate de validación.
+La siguiente ejecución manual en la rama por defecto recupera el
+checkpoint disponible más reciente del mismo workflow, incluidos los
+de corridas rechazadas por el gate. Continúa después de la última
+generación evaluada, aunque el campeón se haya seleccionado antes.
+Al faltar un checkpoint vigente, Actions parte del fundador archivado.
+La retención solicitada del checkpoint es de 90 días. Para recuperar
+una copia archivada localmente, el motor acepta `--seed-bundle lineage.zip`.
 
-| Tramo | MC | H1 | H4 | Sesión | Volatilidad | Máximo/h |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Búsqueda | 3.311 | 1.543 | 679 | 649 | 476 | 0,526 |
-| Confirmación | 1.118 | 491 | 228 | 226 | 153 | 0,508 |
+El artefacto `forex-reports-*` contiene JSON, CSV por individuo y
+Markdown con entradas evaluables y contratos CALL/PUT. Cada generación
+publica su propio candidato `bundle_scalping_gen_X.zip` con genoma,
+normalizador y manifiesto con SHA256. Los artefactos de evolución se
+usan exclusivamente para investigación M5.
 
-El máximo queda por debajo del mínimo del gate de 1,5 contratos por hora
-en ambos tramos. El campeón de la generación 20 perdió en los cuatro
-bloques de búsqueda y el gate lo rechazó.
+### Reproducción histórica
 
-| Métrica del campeón | Búsqueda | Confirmación |
+La corrida local usó 64 individuos, 20 ciclos y semilla 42 sobre
+el histórico M5 de 2025 de la PR #18. Evaluó las generaciones 21 a 41
+y seleccionó la 39 en búsqueda. Pasaron al genoma 10.854 entradas
+evaluables en búsqueda y 3.614 en confirmación.
+
+| Confirmación | PR #18 Gen 20 | Gen 39 |
 | --- | ---: | ---: |
-| Contratos ejecutados | 197 | 107 |
-| Acierto sin reembolsos | 50,26% | 52,34% |
-| Profit Factor | 0,808 | 0,878 |
-| Contratos por hora | 0,218 | 0,355 |
-| Drawdown máximo | 20,16% | 9,75% |
-| PnL simulado | −US$184 | −US$62 |
+| Contratos ejecutados | 107 | 398 |
+| Acierto sin reembolsos | 52,34% | 53,47% |
+| Profit Factor | 0,878 | 0,919 |
+| Contratos por hora | 0,355 | 1,322 |
+| Drawdown máximo | 9,75% | 20,78% |
+| PnL simulado | −US$62 | −US$146 |
 
-Al reproducir el campeón fijo de la PR #17, el acierto pasó de 51,67%
-a 48,09% en búsqueda y de 51,74% a 54,64% en confirmación. En
-confirmación el PF pasó de 0,858 a 0,964 y el PnL de −US$198 a −US$16
-con 97 contratos frente a 297. Se reutilizó la confirmación histórica
-para el diagnóstico. El holdout quedó reservado.
-[Corrida de referencia de la PR #17](https://github.com/Asriel550/Forex/actions/runs/42413754772)
+El campeón activó el stop y quedó rechazado por el gate. La prueba
+de continuidad heredó sus pesos y comenzó en la generación 42.
+Se reutilizó la confirmación histórica para el diagnóstico y el
+holdout quedó reservado.

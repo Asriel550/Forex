@@ -1,6 +1,9 @@
 """Contratos, selección, aislamiento temporal y publicación de candidatos."""
 
+import base64
+from dataclasses import asdict
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 from zipfile import ZipFile
@@ -14,11 +17,14 @@ from src import trading_profiles
 from src.artifacts import file_sha256
 from src.decision import RiskConfig
 from src.environment import AccountConfig, BinaryOptionsEnv, market_feature_names
-from src.evolution_context import build_entry_context, closed_trend_direction, realized_volatility, session_allowed
+from src.evolution_context import (
+    CONTEXT_FEATURES, build_observations, closed_trend_bias, realized_volatility, session_observations,
+)
 from src.evolution_engine import (
     MARKET, SEARCH_BLOCKS, EvolutionConfig, M5Simulation, assess_fitness, assess_search_fitness,
-    breed, effective_features, run_evolution,
+    breed, run_evolution,
 )
+from src.evolution_lineage import FORMAT, LEGACY_FORMAT, MARKET_FEATURES, PINNED_SEED, load_founder
 from src.market_evaluation import evaluate_market_policy
 
 
@@ -35,20 +41,43 @@ def candles(close, probabilities=.8):
     return frame
 
 
+@pytest.fixture
+def legacy_seed(tmp_path):
+    width = len(MARKET_FEATURES)
+    payload = {
+        'genome.json': json.dumps(dict(weights=[0.] * width, bias=.3)),
+        'normalizer.json': json.dumps(dict(features=MARKET_FEATURES, mean=[0.] * width,
+                                           std=[1.] * width, clip=10.)),
+    }
+    split = dict(end='2025-01-06T00:00:00+00:00')
+    manifest = dict(format=LEGACY_FORMAT, profile='scalping', market=asdict(MARKET),
+                    holdout_test_evaluated=False, splits=dict(train=split, search=split),
+                    selection=dict(generation=20), account=asdict(AccountConfig()),
+                    risk=dict(drawdown_limit=.20),
+                    sha256={name: sha256(body.encode()).hexdigest() for name, body in payload.items()})
+    path = tmp_path/'founder.zip'
+    with ZipFile(path, 'w') as archive:
+        for name, body in payload.items():
+            archive.writestr(name, body)
+        archive.writestr('manifest.json', json.dumps(manifest))
+    return path
+
+
 @pytest.mark.parametrize('tie_policy', ['refund', 'loss'])
 def test_vectorized_execution_matches_m5_env_with_gaps_ties_and_stop(tie_policy):
     frame = candles([1.10, 1.11, 1.12, 1.12, 1.11, 1.11, 1.20, 1.19, 1.18, 1.17, 1.16, 1.15],
                     [.8, .8, .8, .2, .5, .8, .8, .8, .8, .8, .8, .8])
     frame.loc[6:, 'timestamp'] += pd.Timedelta(days=2)
     env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1,
-                           account=AccountConfig(initial_balance=100., tie_policy=tie_policy),
-                           risk=RiskConfig(min_confidence=.57, mc_z=2.24, min_expected_edge=.01))
+                           account=AccountConfig(initial_balance=100., tie_policy=tie_policy, max_drawdown=.20),
+                           risk=RiskConfig(enabled=False))
     sim = M5Simulation(env)
-    genes = np.r_[np.zeros(len(market_feature_names(1))), 1.]
+    width = len(market_feature_names(1))
+    genes = np.r_[np.zeros(width), 1., np.zeros(width + 1)]
 
     class AlwaysFollowMonteCarlo:
         def predict(self, obs, deterministic=True):
-            return 2 if obs[6] > obs[7] else 0, None
+            return (2 if obs[6] > obs[7] else 0 if obs[6] < obs[7] else 1), None
 
     actual = sim.evaluate(genes)
     reference = evaluate_market_policy(AlwaysFollowMonteCarlo(), env)
@@ -57,7 +86,7 @@ def test_vectorized_execution_matches_m5_env_with_gaps_ties_and_stop(tie_policy)
                 'win_rate_excluding_refunds', 'trades_per_observed_hour'):
         assert actual[key] == pytest.approx(reference[key])
     assert actual['ties'] == 1 and actual['risk_stop']
-    assert actual['eligible_setups'] == reference['stochastic_proposals']['after_economic_filter']['count']
+    assert actual['decision_opportunities'] == len(env._eligible)
 
 
 def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
@@ -90,90 +119,86 @@ def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
 @pytest.mark.parametrize('timeframe,width', [('H1', 12), ('H4', 48)])
 def test_higher_trend_uses_only_complete_candles_and_expires_at_next_close(timeframe, width):
     frame = candles(1.1 + np.arange(width * 30) * .00001)
-    trend = closed_trend_direction(frame, timeframe)
+    trend = closed_trend_bias(frame, timeframe)
     first = width * 24 - 1
-    assert np.isnan(trend[:first]).all() and trend[first] == 1.
+    assert np.isnan(trend[:first]).all() and trend[first] > 0.
     prefix = frame.iloc[:first + 4]
-    np.testing.assert_allclose(closed_trend_direction(prefix, timeframe), trend[:len(prefix)])
+    np.testing.assert_allclose(closed_trend_bias(prefix, timeframe), trend[:len(prefix)])
 
     with_gap = frame.drop(index=width * 24 + 2)
-    aligned = pd.Series(closed_trend_direction(with_gap, timeframe), index=with_gap.index)
-    assert aligned.loc[width * 25 - 2] == 1.
+    aligned = pd.Series(closed_trend_bias(with_gap, timeframe), index=with_gap.index)
+    assert aligned.loc[width * 25 - 2] == trend[first]
     assert np.isnan(aligned.loc[width * 25 - 1])
-    assert aligned.loc[width * 26 - 1] == 1.
+    assert aligned.loc[width * 26 - 1] > 0.
     down = candles(1.2 - np.arange(len(frame)) * .00001)
     lateral = candles(np.full(len(frame), 1.1))
-    assert closed_trend_direction(down, timeframe)[-1] == -1.
-    assert closed_trend_direction(lateral, timeframe)[-1] == 0.
-    assert np.isnan(closed_trend_direction(frame.iloc[:6], timeframe)).all()
+    assert closed_trend_bias(down, timeframe)[-1] < 0.
+    assert closed_trend_bias(lateral, timeframe)[-1] == 0.
+    assert np.isnan(closed_trend_bias(frame.iloc[:6], timeframe)).all()
 
 
-def test_setups_must_pass_both_trends_session_and_volatility_before_scoring():
-    frame = candles(1.1 + np.arange(12) * .00001, [.8, .8, .2, .8, .8, .8, .8, .8, .8, .8, .5, .8])
-    env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1)
-    context = pd.DataFrame(dict(
-        H1=[1., -1., -1., 0., np.nan, 1., 1., 1., 1., 1., 1.],
-        H4=[1., -1., 1., 1., 1., -1., np.nan, 1., 1., 1., 1.],
-        session_allowed=True, volatility_allowed=True,
-    ), index=env._times)
-    context.iloc[7, context.columns.get_loc('session_allowed')] = False
-    context.iloc[8, context.columns.get_loc('volatility_allowed')] = False
+def test_policy_can_trade_all_valid_entries_and_learn_context_and_direction():
+    frame = candles(1.1 + np.arange(12) * .00001, np.tile([.51, .5, .49], 4))
+    frame.timestamp += pd.Timedelta(hours=21, minutes=25)
+    env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1,
+                           risk=RiskConfig(enabled=False))
+    context = build_observations(frame).loc[env._times]
+    assert context.ny_rollover.eq(1.).all() and context.m5_volatility_available.eq(0.).all()
+    context['h1_bias'] = -1.
+    context['h1_available'] = 1.
+    assert context.h4_available.eq(0.).all()
     sim = M5Simulation(env, context)
-    np.testing.assert_array_equal(sim.entries, [0, 1])
-    np.testing.assert_array_equal(sim.actions, [2, 0])
-    assert sim.context_audit['stages'] == dict(MC=9, H1=6, H4=4, session=3, volatility=2)
-    assert sim.context_audit['rejected'] == {
-        'H1': dict(opposite=1, lateral=1, unavailable=1),
-        'H4': dict(opposite=1, lateral=0, unavailable=1), 'session': 1, 'volatility': 1,
-    }
-    genes = np.r_[np.zeros(len(market_feature_names(1))), 1.]
-    assert sim.evaluate(genes)['total_trades'] == 2
+    np.testing.assert_array_equal(sim.entries, env._eligible)
+    width = sim.features.shape[1]
+    genes = np.zeros((2, width + 1))
+    genes[0, len(market_feature_names(1)) + CONTEXT_FEATURES.index('ny_rollover')] = 1.
+    genes[1, len(market_feature_names(1)) + CONTEXT_FEATURES.index('h1_bias')] = -1.
+    result = sim.evaluate(genes.ravel())
+    assert result['calls'] == result['total_trades'] == result['decision_opportunities'] == len(env._eligible)
+    genes[1] *= -1.
+    assert sim.evaluate(genes.ravel())['puts'] == len(env._eligible)
+    genes[0] *= -1.
+    assert sim.evaluate(genes.ravel())['total_trades'] == 0
     with pytest.raises(ValueError, match='índice'):
         M5Simulation(env, context.iloc[::-1])
 
 
-def test_session_blackouts_check_expiry_and_follow_local_dst():
+def test_session_observations_include_expiry_and_follow_local_dst():
     timestamps = pd.to_datetime([
         '2025-01-15T21:15Z', '2025-01-15T21:20Z', '2025-01-15T21:25Z',
         '2025-07-15T20:15Z', '2025-07-15T20:20Z', '2025-07-15T20:25Z',
         '2025-07-15T21:50Z', '2025-07-15T21:55Z', '2025-07-15T22:50Z',
         '2025-07-16T00:50Z', '2025-07-16T00:55Z',
     ], utc=True)
-    np.testing.assert_array_equal(session_allowed(timestamps),
-                                  [True, False, False, True, False, False, False, True, False, False, True])
+    observations = session_observations(timestamps)
+    np.testing.assert_array_equal(observations['ny_rollover'], [0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0])
+    np.testing.assert_array_equal(observations['tokyo_early'], [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0])
 
 
-def test_realized_volatility_resets_on_gap_and_floor_uses_only_train():
+def test_context_is_prefix_causal_and_volatility_resets_on_gap():
     frame = candles(1.1 * np.exp(np.arange(72) * .0001))
     frame.loc[20:, 'timestamp'] += MARKET.step
     observed = realized_volatility(frame)
     assert np.isnan(observed[:12]).all() and np.isnan(observed[20:32]).all()
     assert observed[32] == pytest.approx(np.sqrt(12) * .0001)
-    cutoff = frame.timestamp.iloc[43]
-    _, config = build_entry_context(frame, cutoff)
-    changed = frame.copy()
-    changed.loc[44:, 'close'] *= np.exp(np.arange(len(changed) - 44) * .001)
-    _, other = build_entry_context(changed, cutoff)
-    assert config['realized_volatility'] == other['realized_volatility']
+    context = build_observations(frame)
+    pd.testing.assert_frame_equal(context.iloc[:44], build_observations(frame.iloc[:44]))
+    assert len(context) == len(frame) and np.isfinite(context.to_numpy()).all()
+    assert context.m5_volatility_available.iloc[20:32].eq(0.).all()
+    assert context.m5_realized_volatility.iloc[32] == observed[32]
 
 
-def test_block_fitness_rejects_one_bad_block_and_penalizes_scale_invariant_complexity():
+def test_block_fitness_rejects_one_bad_block():
     overall = dict(win_rate_excluding_refunds=.61, profit_factor=1.25, profit_factor_status='finite',
                    trades_per_observed_hour=1.7, max_drawdown_pct=12., net_profit=10.)
-    dense = np.array([1., -1., 1., 0.])
-    sparse = np.array([1., 0., 0., 5.])
-    assert effective_features(dense) == pytest.approx(3.)
-    assert effective_features(dense) == effective_features(dense * .01)
-    assert effective_features(np.array([0., 0., 0., 1.])) == 0.
     blocks = [overall] * SEARCH_BLOCKS
-    robust = assess_search_fitness(overall, blocks, sparse)
+    robust = assess_search_fitness(overall, blocks)
     assert robust['passed']
-    assert robust['score'] > assess_search_fitness(overall, blocks, dense)['score']
     bad = overall | dict(max_drawdown_pct=15.)
-    candidate = assess_search_fitness(overall, [*blocks[:-1], bad], sparse)
+    candidate = assess_search_fitness(overall, [*blocks[:-1], bad])
     assert not candidate['checks']['block_consistency'] and not candidate['passed']
     assert candidate['score'] < robust['score']
-    flat = assess_search_fitness(overall, [*blocks[:-1], overall | dict(net_profit=0.)], sparse)
+    flat = assess_search_fitness(overall, [*blocks[:-1], overall | dict(net_profit=0.)])
     assert not flat['checks']['block_consistency']
 
 
@@ -189,21 +214,23 @@ def test_breeding_retains_elites_and_uses_only_their_genes_before_mutation():
 
 
 @pytest.mark.parametrize('profitable', [True, False])
-def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path, monkeypatch, profitable):
+def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path, monkeypatch, legacy_seed, profitable):
     source = tmp_path/'m5.parquet'
     candles(1.1 + np.arange(816) * .00001).to_parquet(source)
     calls = []
 
     def evaluate(self, genome):
         calls.append(genome.copy())
-        return dict(total_trades=100, win_rate_excluding_refunds=.52 + .03 * float(np.tanh(genome[-1])),
+        return dict(total_trades=100, decision_opportunities=len(self.entries), calls=40, puts=60,
+                    win_rate_excluding_refunds=.52 + .03 * float(np.tanh(genome[-1])),
                     profit_factor=1.1 if profitable else .9, profit_factor_status='finite',
                     trades_per_observed_hour=1.5, max_drawdown_pct=10.,
                     net_profit=5. if profitable else -5., risk_stop=False)
 
     monkeypatch.setattr(M5Simulation, 'evaluate', evaluate)
     output = tmp_path/'run'
-    report = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1))
+    report = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1),
+                           seed_bundle=legacy_seed)
     assert not report['qualified']
     scores = pd.read_csv(output/'evolution.csv')
     assert scores.fitness.notna().all()
@@ -212,7 +239,8 @@ def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path,
     assert all(g['qualified_candidates'] == 0 for g in report['generations'])
     assert len(calls) == 6 * 3 * (1 + SEARCH_BLOCKS) + 1
     generations = np.asarray(calls[:-1:1 + SEARCH_BLOCKS]).reshape(3, 6, -1)
-    for generation, (before, after) in enumerate(zip(generations, generations[1:])):
+    start = report['lineage']['first_generation']
+    for generation, (before, after) in enumerate(zip(generations, generations[1:]), start=start):
         parents = scores.loc[(scores.generation == generation) & scores.parent]
         selected = parents.sort_values('fitness', ascending=False, kind='stable').candidate.to_numpy()
         if profitable:
@@ -220,23 +248,25 @@ def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path,
         else:
             assert not any(np.array_equal(child, parent) for child in after for parent in before)
     winner = report['champion']
-    np.testing.assert_array_equal(calls[-1], generations[winner['generation'], winner['candidate']])
+    np.testing.assert_array_equal(calls[-1], generations[winner['generation'] - start, winner['candidate']])
     assert winner['fitness']['score'] == pytest.approx(scores.fitness.max())
 
 
-def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_holdout(tmp_path):
+def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_holdout(tmp_path, legacy_seed):
     frame = candles(1.1 + np.arange(2400) * .00001)
     source = tmp_path/'m5.parquet'
     frame.to_parquet(source)
     output = tmp_path/'original'
-    first = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1))
-    assert len(first['generations']) == 3
-    assert first['normalizer_fit'] == 'train only' and first['holdout_test_evaluated'] is False
+    first = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1),
+                          seed_bundle=legacy_seed)
+    assert [g['generation'] for g in first['generations']] == [21, 22, 23]
+    assert first['holdout_test_evaluated'] is False
     assert len(first['search_blocks']) == SEARCH_BLOCKS
     for previous, following in zip(first['search_blocks'], first['search_blocks'][1:]):
         assert pd.Timestamp(previous['end']) < pd.Timestamp(following['start'])
-    fold_setups = sum(b['context_audit']['stages']['MC'] for b in first['search_blocks'])
-    assert fold_setups == first['context_audit']['Búsqueda']['stages']['MC'] - (SEARCH_BLOCKS - 1)
+    champion = first['champion']
+    fold_entries = sum(b['decision_opportunities'] for b in champion['blocks'])
+    assert fold_entries == champion['metrics']['decision_opportunities'] - (SEARCH_BLOCKS - 1)
     start = pd.Timestamp(first['splits']['confirmation']['start'])
     assert start > pd.Timestamp(first['splits']['search']['end']) + MARKET.step
     future = frame.timestamp >= start
@@ -244,11 +274,10 @@ def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_
     source_changed = tmp_path/'m5_changed.parquet'
     frame.to_parquet(source_changed)
     second = run_evolution(source_changed, tmp_path/'changed',
-                           EvolutionConfig(population_size=6, generations=2, workers=2))
+                           EvolutionConfig(population_size=6, generations=2, workers=2), seed_bundle=legacy_seed)
     assert first['champion']['generation'] == second['champion']['generation']
     assert first['champion']['metrics'] == second['champion']['metrics']
     assert first['confirmation']['metrics'] != second['confirmation']['metrics']
-    assert first['entry_context']['realized_volatility'] == second['entry_context']['realized_volatility']
     assert len(pd.read_csv(output/'evolution.csv')) == 18
     assert (output/'evolution.md').is_file()
     for generation in first['generations']:
@@ -257,10 +286,61 @@ def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_
         assert file_sha256(path) == generation['bundle_sha256']
         with ZipFile(path) as archive, ZipFile(other) as changed:
             manifest = json.loads(archive.read('manifest.json'))
+            assert manifest['format'] == FORMAT
             assert manifest['market']['timeframe'] == 'M5'
             for name, digest in manifest['sha256'].items():
                 assert sha256(archive.read(name)).hexdigest() == digest
                 assert archive.read(name) == changed.read(name)
+    with ZipFile(output/'lineage.zip') as checkpoint, ZipFile(tmp_path/'changed'/'lineage.zip') as changed:
+        assert all(checkpoint.read(name) == changed.read(name) for name in ('genome.json', 'normalizer.json'))
+
+
+def test_archived_gen20_preserves_legacy_genes_normalizer_and_cutoffs():
+    pinned = json.loads(PINNED_SEED.read_text())
+    bundle = base64.b64decode(pinned['bundle_base64'])
+    assert sha256(bundle).hexdigest() == pinned['bundle_sha256']
+    with ZipFile(BytesIO(bundle)) as archive:
+        manifest, genome, normalizer = [
+            json.loads(archive.read(name)) for name in ('manifest.json', 'genome.json', 'normalizer.json')
+        ]
+    context = build_observations(candles(1.1 + np.arange(48) * .00001))
+    train_end, search_end = (pd.Timestamp(manifest['splits'][phase]['end']) for phase in ('train', 'search'))
+    founder = load_founder(None, context, train_end, search_end)
+    assert founder.next_generation == 21
+    assert founder.provenance['run_id'] == 42421933732
+    assert founder.provenance['bundle_sha256'] == pinned['bundle_sha256']
+    entry, direction = founder.genome.reshape(2, -1)
+    width = len(MARKET_FEATURES)
+    np.testing.assert_array_equal(entry[:width], genome['weights'])
+    np.testing.assert_array_equal(entry[width:-1], 0.)
+    np.testing.assert_array_equal(direction, 0.)
+    assert entry[-1] == genome['bias']
+    for key in ('features', 'mean', 'std'):
+        assert founder.normalizer[key][:width] == normalizer[key]
+    with pytest.raises(ValueError, match='corte actual de search'):
+        load_founder(None, context, train_end, search_end - MARKET.step)
+
+
+def test_next_run_keeps_search_champion_and_continues_after_last_generation(tmp_path, legacy_seed):
+    source = tmp_path/'m5.parquet'
+    candles(1.1 + np.arange(816) * .00001).to_parquet(source)
+    config = EvolutionConfig(population_size=4, generations=2, workers=1)
+    output = tmp_path/'run'
+    first = run_evolution(source, output, config, seed_bundle=legacy_seed)
+    assert not first['qualified']
+    checkpoint = output/'lineage.zip'
+    assert file_sha256(checkpoint) == first['lineage_bundle_sha256']
+    with ZipFile(checkpoint) as archive, ZipFile(output/'candidates'/first['champion']['bundle']) as best:
+        for name in ('genome.json', 'normalizer.json'):
+            assert archive.read(name) == best.read(name)
+    resumed = tmp_path/'resumed'
+    report = run_evolution(source, resumed, config, seed_bundle=checkpoint)
+    assert [g['generation'] for g in report['generations']] == [24, 25, 26]
+    assert report['lineage']['source_generation'] == first['champion']['generation']
+    assert report['lineage']['bundle_sha256'] == first['lineage_bundle_sha256']
+    founder_rows = pd.read_csv(resumed/'evolution.csv').query('founder')
+    assert len(founder_rows) == 1
+    assert founder_rows.fitness.iloc[0] == pytest.approx(first['champion']['fitness']['score'])
 
 
 def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
@@ -285,6 +365,17 @@ def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
     steps = jobs['research-pipeline']['steps']
     evolution = next(s for s in steps if s.get('name') == 'Evolve isolated M5 population')
     assert evolution['if'] == "inputs.mode == 'evolution'"
+    parent = next(s for s in steps if s.get('id') == 'evolution-parent')
+    assert parent['if'] == "inputs.mode == 'evolution'"
+    assert 'a.workflow_run?.head_branch === branch' in parent['with']['script']
+    assert 'b.id - a.id' in parent['with']['script']
+    assert 'run.conclusion' not in parent['with']['script']
+    download = next(s for s in steps if s.get('name') == 'Download previous M5 research lineage')
+    assert download['with']['artifact-ids'] == '${{ steps.evolution-parent.outputs.artifact_id }}'
+    lineage = next(s for s in steps if s.get('name') == 'Save M5 research lineage')
+    gate = next(s for s in steps if s.get('name') == 'Enforce evolutionary validation gate')
+    assert lineage['with']['path'] == 'reports/evolution/lineage.zip'
+    assert steps.index(evolution) < steps.index(lineage) < steps.index(gate)
     upload = next(s for s in steps if s.get('name') == 'Upload generational research candidates')
     assert upload['if'] == "always() && inputs.mode == 'evolution'"
     assert upload['with']['path'] == 'reports/evolution/candidates/bundle_scalping_gen_*.zip'
