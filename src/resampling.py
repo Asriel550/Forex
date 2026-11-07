@@ -1,7 +1,6 @@
-"""OHLCV UTC estático, grupos completos; nunca desagrega M15 a M5."""
+"""OHLCV UTC estático; solo agrega grupos completos de velas de origen."""
 import json
 from pathlib import Path
-import numpy as np
 import pandas as pd
 from filelock import FileLock
 from .market import MarketConfig
@@ -12,7 +11,7 @@ def aggregate(frame, source_minutes, timeframe, now=None):
     market = MarketConfig(timeframe)
     target = int(market.step.total_seconds()/60)
     if source_minutes > target or target % source_minutes:
-        raise DataError(f'{timeframe} requiere datos más finos: M15 no permite reconstruir M5. Usar archivos estáticos M1.')
+        raise DataError(f'{timeframe} requiere fuente de resolución igual o más fina. Usar M1 o M5 según corresponda.')
     frame = _deduplicate(frame).sort_values('timestamp')
     if (frame.timestamp!=frame.timestamp.dt.floor(f"{source_minutes}min")).any():
         raise DataError("Fuente no alineada a su resolución declarada")
@@ -42,7 +41,7 @@ def load_resampled(*, timeframe, inputs=None, input_dir=None, output=None,
     paths = dl._files(inputs, input_dir or dl.DEFAULT_INPUT_DIR)
     fingerprints = [dict(path=str(p),sha256=dl._sha256(p)) for p in paths]
     clock = dl.utc(now if now is not None else pd.Timestamp.now(tz='UTC'))
-    signature = json.dumps(dict(version=1,files=fingerprints,timeframe=timeframe,timezone=timezone,
+    signature = json.dumps(dict(version=2,files=fingerprints,timeframe=timeframe,timezone=timezone,
         input_timeframe=input_timeframe,closures=closures,timestamp_format=timestamp_format,
         epoch_unit=epoch_unit,encoding=encoding,closed_cutoff=clock.floor(market.frequency).isoformat()),sort_keys=True)
     def select(frame):
@@ -58,14 +57,27 @@ def load_resampled(*, timeframe, inputs=None, input_dir=None, output=None,
                 return select(pd.read_parquet(output))
         frames=[];resolutions=set()
         for raw,name in dl._frames(paths,encoding=encoding,max_bytes=max_bytes,max_members=max_members):
-            resolution=dl._resolution(name,input_timeframe);resolutions.add(resolution)
+            resolution = dl._resolution(name, input_timeframe)
+            recorded = raw.attrs.get('timeframe')
+            if recorded is not None and recorded != resolution:
+                raise dl.DataError(f'{name}: resolución archivada {recorded} distinta a {resolution}')
+            resolutions.add(resolution)
             if len(resolutions)>1: raise dl.DataError('No mezclar resoluciones en una ingesta')
-            frames.append(dl.normalize(raw,timezone,epoch_unit,clock,input_timeframe=resolution,timestamp_format=timestamp_format))
-        source=1 if resolutions=={'M1'} else 15
+            normalized = dl.normalize(raw, timezone, epoch_unit, clock,
+                                      input_timeframe=resolution, timestamp_format=timestamp_format)
+            if 'source_provenance' in raw.attrs:
+                normalized.attrs['source_provenance'] = raw.attrs['source_provenance']
+            frames.append(normalized)
+        source = dl.SOURCE_MINUTES[next(iter(resolutions))]
         combined=dl._deduplicate(pd.concat(frames,ignore_index=True)).sort_values('timestamp').reset_index(drop=True)
+        if timeframe in ('M1', 'M5') and not combined.timestamp.diff().eq(pd.Timedelta(minutes=source)).any():
+            raise dl.DataError('La fuente no contiene velas consecutivas en su resolución declarada')
         missing=dl.expected_grid(combined.timestamp.iloc[0],combined.timestamp.iloc[-1]+pd.Timedelta(minutes=source),closures,step=pd.Timedelta(minutes=source)).difference(pd.DatetimeIndex(combined.timestamp))
         if len(missing): raise dl.DataError(f'Fuente tiene {len(missing)} huecos no justificados; declarar exclusiones observadas')
         result=aggregate(combined,source,timeframe,clock)
+        provenance = [frame.attrs.get('source_provenance') for frame in frames]
+        if provenance and all(item == provenance[0] for item in provenance) and provenance[0]:
+            result.attrs['source_provenance'] = provenance[0]
         if fingerprints != [dict(path=str(p),sha256=dl._sha256(p)) for p in paths]:
             raise dl.DataError('Fuente cambió durante ingesta')
         dl.write_cache(result,output,signature)

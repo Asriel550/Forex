@@ -34,7 +34,7 @@ def prepared(n=8,timeframe='M15',expiry=1):
     return prepare_market_data(f,1,1,market=MarketConfig(timeframe,expiry_candles=expiry))
 
 
-@pytest.mark.parametrize('timeframe',['M5','M15','H1','H4'])
+@pytest.mark.parametrize('timeframe',['M1','M5','M15','H1','H4'])
 def test_quant_causal_for_each_frequency_and_expiry(timeframe):
     f=raw(timeframe=timeframe).drop(columns=['cond_volatility','dist_p95','dist_p05','mc_prob_up','mc_prob_down','mc_prob_tie'])
     cfg=QuantConfig(window=128,min_observations=100,refit_every=20)
@@ -54,7 +54,7 @@ def test_mc_probability_uses_matching_column_of_actual_10000_paths(expiry):
     assert float(up+down+tie)==pytest.approx(1.)
 
 
-@pytest.mark.parametrize('timeframe',['M5','M15','H1','H4'])
+@pytest.mark.parametrize('timeframe',['M1','M5','M15','H1','H4'])
 def test_binary_nonoverlap_and_exact_expiration(timeframe):
     f=prepared(timeframe=timeframe,expiry=2);f['close']=np.linspace(1.1,1.2,len(f))
     e=BinaryOptionsEnv(f,prepared=True,lookback=1,market=MarketConfig(timeframe,expiry_candles=2),risk=RiskConfig(enabled=False))
@@ -167,11 +167,11 @@ def test_real_ppo_v4_training_freezes_market_contract_and_holdout(tmp_path,mode,
 def test_workflow_inputs_are_connected_and_bundle_isolated():
     source=(Path(__file__).resolve().parents[1]/'.github/workflows/pipeline.yml').read_text()
     w=yaml.safe_load(source);inputs=w.get('on',w.get(True))['workflow_dispatch']['inputs']
-    assert inputs['timeframe']['options']==['M5','M15','H1','H4']
+    assert inputs['timeframe']['options']==['auto','M1','M5','M15','H1','H4']
     assert inputs['trading_mode']['options']==['binary','forex_spot']
-    assert inputs['expiry_candles']['type']=='number' and inputs['expiry_candles']['default']==1
+    assert inputs['expiry_candles']['type']=='number' and inputs['expiry_candles']['default']==0
     assert 'src.backtest' not in source
-    assert 'name: forex-research-bundle-v4' in source
+    assert 'name: forex-research-bundle-v4-' in source
     assert '--trading-mode "$FOREX_TRADING_MODE"' in source and '--expiry-candles "$FOREX_EXPIRY_CANDLES"' in source
 
 

@@ -15,11 +15,10 @@ from src.data_loader import normalize, expected_grid, STEP, COLUMNS
 
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 
-def build(raw_dir,destination,manifest_path):
-    destination.mkdir(parents=True,exist_ok=True)
-    source_manifest=json.loads(manifest_path.read_text())
+def read_native_minutes(raw_dir, archives):
+    """Verify pinned archives and remove only duplicate or conflicting M1 observations."""
     frames=[];audit=[]
-    for entry in source_manifest['archives']:
+    for entry in archives:
         path=raw_dir/entry['zip_file']
         if sha(path)!=entry['sha256']:raise ValueError('Source hash mismatch')
         with zipfile.ZipFile(path) as z:
@@ -38,6 +37,13 @@ def build(raw_dir,destination,manifest_path):
         frames.append(frame)
     merged=pd.concat(frames,ignore_index=True).drop_duplicates().sort_values('timestamp')
     if merged.timestamp.duplicated().any():raise ValueError('Conflicting source timestamps')
+    return merged.reset_index(drop=True), audit
+
+
+def build(raw_dir,destination,manifest_path):
+    destination.mkdir(parents=True,exist_ok=True)
+    source_manifest=json.loads(manifest_path.read_text())
+    merged,audit=read_native_minutes(raw_dir,source_manifest['archives'])
     grouped=merged.groupby(merged.timestamp.dt.floor('15min'),sort=True)
     counts=grouped.size()
     if (counts>15).any():raise ValueError('Invalid M1 group size')

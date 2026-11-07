@@ -213,7 +213,7 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
           train_fraction=.70, validation_fraction=.20, purge_bars=1,
           lookback=16, indicator_period=14, episode_length=512,
           account=None, risk=None, seed=42, n_steps=2048, batch_size=64,
-          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, ent_coef=.02, verbose=1, market=None, opportunity_training=True):
+          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, ent_coef=.02, verbose=1, market=None, opportunity_training=True, trading_profile=None):
     """Devuelve manifiesto; guarda mejores pesos, pesos finales y normalización."""
     if total_timesteps < 1:
         raise ValueError("total_timesteps debe ser positivo")
@@ -269,6 +269,11 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
             observation_features=list(validation_env.feature_names),
             selection='validation opportunity risk score',artifact_status='research only; no automatic promotion')
         if market.trading_mode=='forex_spot': manifest['spot_config']=asdict(validation_env.spot)
+        if trading_profile is not None:
+            manifest['trading_profile'] = trading_profile
+            if trading_profile == 'scalping' and market.trading_mode == 'binary':
+                from .trading_profiles import SCALPING_TARGET_PER_HOUR
+                manifest['frequency_target_per_hour'] = list(SCALPING_TARGET_PER_HOUR)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir/"normalizer.json", normalizer)
     write_json(output_dir/"training_manifest.json", manifest)
@@ -298,7 +303,8 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
         if market is not None:
             from .agent import load_agent
             from .market_evaluation import evaluate_market_policy
-            evaluate_market_policy(load_agent(output_dir/'best_ppo_agent.zip'),validation_env,output_dir/'validation')
+            evaluate_market_policy(load_agent(output_dir/'best_ppo_agent.zip'), validation_env,
+                                   output_dir/'validation', trading_profile=trading_profile)
     finally:
         monitored.close()
         validation_env.close()
@@ -308,7 +314,7 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=ROOT/"data/eurusd_m15_features.parquet")
-    parser.add_argument("--output-dir", type=Path, default=ROOT/"models")
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--total-timesteps", type=int, default=100_000)
     parser.add_argument("--train-fraction", type=float, default=.70)
     parser.add_argument("--validation-fraction", type=float, default=.20)
@@ -328,32 +334,65 @@ def main():
     parser.add_argument("--n-epochs", type=int, default=10)
     parser.add_argument("--eval-freq", type=int, default=25_000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument('--min-confidence',type=float,default=RiskConfig().min_confidence)
+    parser.add_argument('--min-confidence',type=float)
     parser.add_argument('--min-expected-edge',type=float,default=.02)
     parser.add_argument('--risk-drawdown-limit',type=float,default=.20)
     parser.add_argument('--trade-penalty',type=float,default=RiskConfig().trade_penalty)
     parser.add_argument('--blocked-penalty',type=float,default=RiskConfig().blocked_penalty)
-    parser.add_argument('--neutral-opportunity-penalty',type=float,default=.05)
-    parser.add_argument('--ent-coef',type=float,default=.02)
+    parser.add_argument('--neutral-opportunity-penalty',type=float)
+    parser.add_argument('--ent-coef',type=float)
     parser.add_argument('--overtrade-penalty',type=float,default=2.)
     parser.add_argument('--drawdown-penalty',type=float,default=10.)
-    parser.add_argument('--timeframe',choices=['M5','M15','H1','H4'],default='M15')
+    from .trading_profiles import PROFILES, resolve_profile
+    parser.add_argument('--trading-profile', choices=['auto', *PROFILES])
+    parser.add_argument('--timeframe',choices=['M1','M5','M15','H1','H4'])
     parser.add_argument('--trading-mode',choices=['binary','forex_spot'],default='binary')
-    parser.add_argument('--expiry-candles',type=int,default=1)
+    parser.add_argument('--expiry-candles',type=int)
     parser.add_argument('--no-opportunity-training',action='store_true')
     args = vars(parser.parse_args())
-    market=MarketConfig(args.pop('timeframe'),args.pop('trading_mode'),args.pop('expiry_candles'))
+    timeframe = args.pop('timeframe')
+    trading_mode = args.pop('trading_mode')
+    expiry = args.pop('expiry_candles')
+    profile = args.pop('trading_profile')
+    confidence = args.pop('min_confidence')
+    neutral_cost = args.pop('neutral_opportunity_penalty')
+    entropy = args.pop('ent_coef')
+    target_activity = RiskConfig().target_activity
+    if profile is None:
+        market = MarketConfig(timeframe or 'M15', trading_mode, 1 if expiry is None else expiry)
+        confidence = RiskConfig().min_confidence if confidence is None else confidence
+        neutral_cost = .05 if neutral_cost is None else neutral_cost
+        entropy = .02 if entropy is None else entropy
+    else:
+        resolved = resolve_profile(
+            profile=profile, timeframe=timeframe or 'auto', trading_mode=trading_mode,
+            expiry_candles=0 if expiry is None else expiry,
+            confidence='auto' if confidence is None else confidence,
+            entropy='auto' if entropy is None else entropy,
+            neutral_cost='auto' if neutral_cost is None else neutral_cost,
+        )
+        profile = resolved['FOREX_TRADING_PROFILE']
+        market = MarketConfig(resolved['FOREX_TIMEFRAME'], trading_mode, resolved['FOREX_EXPIRY_CANDLES'])
+        confidence = resolved['FOREX_MIN_CONFIDENCE']
+        neutral_cost = resolved['FOREX_NEUTRAL_OPPORTUNITY_PENALTY']
+        entropy = resolved['FOREX_ENT_COEF']
+        target_activity = resolved['FOREX_TARGET_ACTIVITY']
     opportunity_training=not args.pop('no_opportunity_training')
-    risk = RiskConfig(min_confidence=args.pop('min_confidence'),min_expected_edge=args.pop('min_expected_edge'),
+    risk = RiskConfig(min_confidence=confidence,target_activity=target_activity,min_expected_edge=args.pop('min_expected_edge'),
                       drawdown_limit=args.pop('risk_drawdown_limit'),trade_penalty=args.pop('trade_penalty'),
                       blocked_penalty=args.pop('blocked_penalty'),overtrade_penalty=args.pop('overtrade_penalty'),
-                      drawdown_penalty=args.pop('drawdown_penalty'),neutral_opportunity_penalty=args.pop('neutral_opportunity_penalty'))
+                      drawdown_penalty=args.pop('drawdown_penalty'),neutral_opportunity_penalty=neutral_cost)
     account = AccountConfig(**{key:args.pop(key) for key in
                               ("initial_balance", "stake", "payout", "tie_policy",
                                "inactivity_penalty", "max_drawdown")})
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     input_path = args.pop("input")
-    result = train(input_path, account=account, risk=risk, market=market,opportunity_training=opportunity_training, **args)
+    if args['output_dir'] is None:
+        args['output_dir'] = ROOT/'models' if profile is None else (
+            ROOT/'models/research_v4'/profile/market.timeframe/market.trading_mode/f'e{market.expiry_candles}'
+        )
+    result = train(input_path, account=account, risk=risk, market=market,opportunity_training=opportunity_training,
+                   trading_profile=profile,ent_coef=entropy, **args)
     LOG.info("Mejor modelo: %s; test reservado sin evaluar", result["best_model"])
 
 

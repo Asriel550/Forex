@@ -116,14 +116,17 @@ def _timestamps(values,timezone,epoch_unit,timestamp_format):
     return parsed.dt.tz_localize(zone,ambiguous='raise',nonexistent='raise').dt.tz_convert('UTC')
 
 
+SOURCE_MINUTES = {'M1': 1, 'M5': 5, 'M15': 15}
+
+
 def normalize(raw,timezone='UTC',epoch_unit=None,now=None,*,input_timeframe='M15',timestamp_format=None):
     """Limpieza sin relleno. Duplicados exactos se eliminan; conflictos se rechazan.
 
     Esta función conserva el default UTC para sus consumidores existentes.
     load_data/CLI usan EST por defecto para las fuentes HistData sin zona.
     """
-    if input_timeframe not in ('M1','M15'):
-        raise DataError('Resolución de normalización debe ser M1 o M15')
+    if input_timeframe not in SOURCE_MINUTES:
+        raise DataError('Resolución de normalización debe ser M1, M5 o M15')
     df = raw.copy()
     df.columns = [str(c).strip().strip('<>').lower().replace(' ','') for c in df.columns]
     if not df.columns.is_unique:
@@ -152,14 +155,14 @@ def normalize(raw,timezone='UTC',epoch_unit=None,now=None,*,input_timeframe='M15
     if ((prices<=0).any().any() or (df.volume<0).any()
             or (df.high<prices.max(axis=1)).any() or (df.low>prices.min(axis=1)).any()):
         raise DataError('OHLC incoherente o volumen negativo')
-    frequency = '1min' if input_timeframe=='M1' else '15min'
+    frequency = f'{SOURCE_MINUTES[input_timeframe]}min'
     if (df.timestamp!=df.timestamp.dt.floor(frequency)).any():
         raise DataError(f'Timestamps no alineados a {input_timeframe}; si el archivo es M1, indicarlo explícitamente')
     df = _deduplicate(df)
     clock = utc(now if now is not None else pd.Timestamp.now(tz='UTC'))
     pending = df.loc[df.timestamp.dt.floor('15min')+STEP>clock,'timestamp']
     refresh_at = (pending.min().floor('15min')+STEP).isoformat() if len(pending) else None
-    period = pd.Timedelta(minutes=1 if input_timeframe=='M1' else 15)
+    period = pd.Timedelta(minutes=SOURCE_MINUTES[input_timeframe])
     df = df.loc[df.timestamp+period<=clock]
     if df.empty:
         raise DataError('No hay velas cerradas')
@@ -209,7 +212,7 @@ def resample_m1(df,now=None):
 
 def _resolution(name,requested):
     # Solo el nombre oficial declara instrumento/resolución; nunca se adivina por precios.
-    match = re.search(r'DAT_(?:ASCII|MT)_([A-Z]{6})_(M1|M15|T)(?:_|\.)',Path(name).name.upper())
+    match = re.search(r'(?:DAT_(?:ASCII|MT)_)?([A-Z]{6})_(M1|M5|M15|T)(?:_|\.)',Path(name).name.upper())
     named = None
     if match:
         if match[1]!='EURUSD':
@@ -350,7 +353,7 @@ def load_data(*,inputs=None,input_dir=DEFAULT_INPUT_DIR,output=DEFAULT_OUTPUT,st
     """
     if source not in ('static','local','files','histdata'):
         raise DataError('Se eliminó la ingesta remota: usar archivos locales CSV/ZIP')
-    if input_timeframe not in ('auto','M1','M15') or max_bytes<1 or max_members<1:
+    if input_timeframe not in ('auto', *SOURCE_MINUTES) or max_bytes<1 or max_members<1:
         raise DataError('Resolución o límites de entrada inválidos')
     if local is not None:
         if inputs is not None:
@@ -395,6 +398,8 @@ def load_data(*,inputs=None,input_dir=DEFAULT_INPUT_DIR,output=DEFAULT_OUTPUT,st
         try:
             for raw,name in _frames(paths,encoding=encoding,max_bytes=max_bytes,max_members=max_members):
                 resolution = _resolution(name,input_timeframe)
+                if resolution == 'M5':
+                    raise DataError('Entrada M5 requiere --timeframe explícito')
                 resolutions.add(resolution)
                 if len(resolutions)>1:
                     raise DataError('No mezclar archivos M1 y M15 en una misma ingesta')
@@ -422,8 +427,8 @@ def main():
     parser.add_argument('--input-dir',type=Path,default=DEFAULT_INPUT_DIR)
     parser.add_argument('--output',type=Path,default=DEFAULT_OUTPUT)
     parser.add_argument('--timezone',default='EST',help='Zona de timestamps sin offset; HistData usa EST fijo')
-    parser.add_argument('--input-timeframe',choices=['auto','M1','M15'],default='auto')
-    parser.add_argument('--timeframe',choices=['M5','M15','H1','H4'])
+    parser.add_argument('--input-timeframe',choices=['auto', *SOURCE_MINUTES],default='auto')
+    parser.add_argument('--timeframe',choices=['M1','M5','M15','H1','H4'])
     parser.add_argument('--timestamp-format')
     parser.add_argument('--epoch-unit',choices=['s','ms','us','ns'])
     parser.add_argument('--encoding',default='utf-8-sig')
