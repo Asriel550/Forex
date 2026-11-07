@@ -15,8 +15,8 @@ from .decision import mc_probability_lower
 
 
 def calculate_metrics(trades, equity, *, initial_balance, periods_per_year=252*96,
-                      annual_risk_free_rate=0.):
-    """equity empieza con saldo inicial; trades contiene solo PUT/CALL y PnL."""
+                      annual_risk_free_rate=0.,allow_negative_equity=False):
+    """Equity inicial y PnL de direcciones 0/2. Spot puede registrar deuda al liquidar."""
     if (not np.isfinite([initial_balance,periods_per_year,annual_risk_free_rate]).all()
             or initial_balance<=0 or periods_per_year<=0 or annual_risk_free_rate<=-1):
         raise ValueError('Capital, tasa o anualización inválidos')
@@ -25,7 +25,7 @@ def calculate_metrics(trades, equity, *, initial_balance, periods_per_year=252*9
     times=pd.DatetimeIndex(pd.to_datetime(equity.timestamp,utc=True,errors='raise'))
     balances=equity.balance.to_numpy(dtype=float)
     if (times.hasnans or not times.is_unique or not times.is_monotonic_increasing
-            or not np.isfinite(balances).all() or (balances<0).any()
+            or not np.isfinite(balances).all() or (not allow_negative_equity and (balances<0).any())
             or not np.isclose(balances[0],initial_balance,rtol=0,atol=1e-8)):
         raise ValueError('Equity inválida o primer saldo distinto del capital inicial')
     if 'profit' not in trades or (len(trades) and ('action' not in trades or not trades.action.isin([0,2]).all())):

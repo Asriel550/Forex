@@ -110,7 +110,7 @@ def test_workflow_freezes_holdout_and_isolates_diagnostics_and_telegram_test():
     job=workflow['jobs']['research-pipeline']
     assert 'workflow_dispatch' in job['if'] and 'default_branch' in job['if']
     assert 'src.backtest' not in source
-    publish=next(s for s in job['steps'] if s.get('with',{}).get('name')=='forex-alert-bundle')
+    publish=next(s for s in job['steps'] if s.get('with',{}).get('name')=='forex-research-bundle-v4')
     assert publish['if']=="inputs.mode == 'train'"
     diagnostic=next(s for s in job['steps'] if '--seeds' in s.get('run',''))
     assert diagnostic['if']=="inputs.mode == 'diagnostics'"

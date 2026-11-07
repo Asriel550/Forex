@@ -12,7 +12,7 @@ El holdout test se registra pero NO se ejecuta ni selecciona pesos con él.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict,replace
 import importlib.metadata
 import json
 import logging
@@ -26,6 +26,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 
+from .market import MarketConfig,PROTECTED_HOLDOUT_START
 from .agent import build_agent
 from .exploration import ExplorationAuditCallback,policy_snapshot
 from .decision import RiskConfig
@@ -89,8 +90,33 @@ def chronological_split(prepared, *, train_fraction=.70, validation_fraction=.20
     return pieces
 
 
+def chronological_market_split(prepared,market,*,train_fraction=.70,validation_fraction=.20,purge_bars=1):
+    """Protege también el holdout histórico ABSOLUTO al cambiar timeframe.
+
+    La agrupación/warmup pueden mover el percentil 90 de fechas. Si lo mueven
+    hacia adelante se particiona solo el prefijo anterior a la frontera PR9.
+    Ninguna OHLC cuya barra cierre después de esa frontera entra a train/val.
+    """
+    pieces=chronological_split(prepared,train_fraction=train_fraction,
+        validation_fraction=validation_fraction,purge_bars=purge_bars)
+    if pieces['test'].timestamp.iloc[0]>PROTECTED_HOLDOUT_START:
+        prefix=prepared.loc[prepared.timestamp+market.step<=PROTECTED_HOLDOUT_START]
+        end=int(len(prefix)*train_fraction/(train_fraction+validation_fraction))
+        pieces=dict(train=prefix.iloc[:end].reset_index(drop=True),
+            validation=prefix.iloc[end+purge_bars:].reset_index(drop=True),
+            test=prepared.loc[prepared.timestamp>=PROTECTED_HOLDOUT_START].reset_index(drop=True))
+    for phase in ('train','validation'):
+        pieces[phase]=pieces[phase].loc[pieces[phase].timestamp+market.step<=PROTECTED_HOLDOUT_START].reset_index(drop=True)
+    if any(len(f)<2 for f in pieces.values()):
+        raise ValueError('Datos insuficientes antes de la frontera protegida del holdout PR9')
+    return pieces
+
+
 def evaluate_policy(model, env: BinaryOptionsEnv):
     """Recorre TODA validación en orden, sin recapitalizar tras fines de semana."""
+    if getattr(env,"modern_contract",False):
+        from .market_evaluation import evaluate_market_policy
+        return evaluate_market_policy(model,env)
     balance, peak = env.account.initial_balance, env.account.initial_balance
     total_reward = 0.
     counts = {"put":0, "neutral":0, "call":0}
@@ -187,25 +213,35 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
           train_fraction=.70, validation_fraction=.20, purge_bars=1,
           lookback=16, indicator_period=14, episode_length=512,
           account=None, risk=None, seed=42, n_steps=2048, batch_size=64,
-          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, ent_coef=.02, verbose=1):
+          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, ent_coef=.02, verbose=1, market=None, opportunity_training=True):
     """Devuelve manifiesto; guarda mejores pesos, pesos finales y normalización."""
     if total_timesteps < 1:
         raise ValueError("total_timesteps debe ser positivo")
     account = account or AccountConfig()
-    risk = risk if risk is not None else RiskConfig()
+    risk = risk if risk is not None else (replace(RiskConfig(),neutral_opportunity_penalty=.05) if market is not None else RiskConfig())
     input_path, output_dir = Path(input_path), Path(output_dir)
     source_hash = file_sha256(input_path)
     raw = pd.read_parquet(input_path)
     if file_sha256(input_path) != source_hash:
         raise ValueError("El Parquet cambió durante la lectura")
-    prepared = prepare_market_data(raw, lookback, indicator_period)
-    splits = chronological_split(prepared, train_fraction=train_fraction,
+    prepared = prepare_market_data(raw, lookback, indicator_period,market=market)
+    splitter = chronological_split if market is None else lambda frame,**kw:chronological_market_split(frame,market,**kw)
+    splits = splitter(prepared, train_fraction=train_fraction,
                                   validation_fraction=validation_fraction, purge_bars=purge_bars)
     normalizer = fit_normalizer(splits["train"], lookback)
+    if market is not None: market.check_frame(raw)
     common = dict(account=account, risk=risk, lookback=lookback, prepared=True, normalizer=normalizer)
-    training_env = BinaryOptionsEnv(splits["train"], random_start=True,
+    if market is not None: common['market']=market
+    env_class = BinaryOptionsEnv
+    if market is not None and market.trading_mode=='forex_spot':
+        from .forex_spot import ForexSpotEnv
+        env_class=ForexSpotEnv
+    training_env = env_class(splits["train"], random_start=True,
                                     episode_length=episode_length, **common)
-    validation_env = BinaryOptionsEnv(splits["validation"], **common)
+    validation_env = env_class(splits["validation"], **common)
+    if market is not None and market.trading_mode=='binary' and opportunity_training and risk.enabled:
+        from .opportunities import OpportunityTraining
+        training_env=OpportunityTraining(training_env)
     check_env(training_env, warn=True, skip_render_check=True)
     training_env.reset(seed=seed)
     validation_env.reset(seed=seed+1)
@@ -224,6 +260,15 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
                             for name, frame in splits.items()},
                     versions={name:importlib.metadata.version(name)
                               for name in ("numpy", "pandas", "torch", "gymnasium", "stable-baselines3")})
+    if market is not None:
+        manifest.update(manifest_version=4,market_config=asdict(market),
+            protected_holdout_start=PROTECTED_HOLDOUT_START.isoformat(),
+            reward_version='opportunity_v3' if market.trading_mode=='binary' else 'spot_equity_v1',
+            opportunity_training=bool(opportunity_training and market.trading_mode=='binary' and risk.enabled),
+            discount_clock='eligible decisions' if opportunity_training and market.trading_mode=='binary' and risk.enabled else 'bars',
+            observation_features=list(validation_env.feature_names),
+            selection='validation opportunity risk score',artifact_status='research only; no automatic promotion')
+        if market.trading_mode=='forex_spot': manifest['spot_config']=asdict(validation_env.spot)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir/"normalizer.json", normalizer)
     write_json(output_dir/"training_manifest.json", manifest)
@@ -240,10 +285,20 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
         manifest["normalizer_sha256"] = normalizer_hash
         manifest["best_model_sha256"] = file_sha256(output_dir/"best_ppo_agent.zip")
         manifest["actual_timesteps"] = int(model.num_timesteps)
+        if market is not None:
+            selected=json.loads((output_dir/'best_validation.json').read_text())
+            manifest.update(selected_checkpoint_timesteps=selected['timesteps'],
+                selected_checkpoint_trained=bool(selected['timesteps']>0),
+                initial_validation_score=callback.history[0]['selection_score'],
+                candidate_beats_initial_score=bool(callback.best_score>callback.history[0]['selection_score']))
         manifest["best_validation_net_profit"] = float(callback.best_profit)
         manifest["best_validation_score"] = float(callback.best_score)
         manifest["best_model"] = str((output_dir/"best_ppo_agent.zip").resolve())
         write_json(output_dir/"training_manifest.json", manifest)
+        if market is not None:
+            from .agent import load_agent
+            from .market_evaluation import evaluate_market_policy
+            evaluate_market_policy(load_agent(output_dir/'best_ppo_agent.zip'),validation_env,output_dir/'validation')
     finally:
         monitored.close()
         validation_env.close()
@@ -278,11 +333,17 @@ def main():
     parser.add_argument('--risk-drawdown-limit',type=float,default=.20)
     parser.add_argument('--trade-penalty',type=float,default=RiskConfig().trade_penalty)
     parser.add_argument('--blocked-penalty',type=float,default=RiskConfig().blocked_penalty)
-    parser.add_argument('--neutral-opportunity-penalty',type=float,default=RiskConfig().neutral_opportunity_penalty)
+    parser.add_argument('--neutral-opportunity-penalty',type=float,default=.05)
     parser.add_argument('--ent-coef',type=float,default=.02)
     parser.add_argument('--overtrade-penalty',type=float,default=2.)
     parser.add_argument('--drawdown-penalty',type=float,default=10.)
+    parser.add_argument('--timeframe',choices=['M5','M15','H1','H4'],default='M15')
+    parser.add_argument('--trading-mode',choices=['binary','forex_spot'],default='binary')
+    parser.add_argument('--expiry-candles',type=int,default=1)
+    parser.add_argument('--no-opportunity-training',action='store_true')
     args = vars(parser.parse_args())
+    market=MarketConfig(args.pop('timeframe'),args.pop('trading_mode'),args.pop('expiry_candles'))
+    opportunity_training=not args.pop('no_opportunity_training')
     risk = RiskConfig(min_confidence=args.pop('min_confidence'),min_expected_edge=args.pop('min_expected_edge'),
                       drawdown_limit=args.pop('risk_drawdown_limit'),trade_penalty=args.pop('trade_penalty'),
                       blocked_penalty=args.pop('blocked_penalty'),overtrade_penalty=args.pop('overtrade_penalty'),
@@ -292,7 +353,7 @@ def main():
                                "inactivity_penalty", "max_drawdown")})
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     input_path = args.pop("input")
-    result = train(input_path, account=account, risk=risk, **args)
+    result = train(input_path, account=account, risk=risk, market=market,opportunity_training=opportunity_training, **args)
     LOG.info("Mejor modelo: %s; test reservado sin evaluar", result["best_model"])
 
 

@@ -1,0 +1,631 @@
+{
+  "scope": "train and validation only",
+  "holdout_evaluated": false,
+  "weights_promoted": false,
+  "protocol": "Paired seed42, 16384 timesteps, PPO ent .02, M15 binary expiry1; both v4 reward and selector. Gamma per eligible decision versus per bar is an explicit objective change. No claim of equivalence in elapsed bars or independent contracts.",
+  "base_commit": "6758e518612a103582496e1797fb7e27b3209e18",
+  "runs": {
+    "event": {
+      "input_sha256": "10c92b3b788fdafb74e3184dcec3244f2d2126f4781da5a861b2052a6ecf87f8",
+      "best_model_sha256": "d1ddfcad1209015b3b4174c79d1cef53b5659bda21e2d8bba4d9390ea65cf383",
+      "versions": {
+        "numpy": "2.3.5",
+        "pandas": "2.2.3",
+        "torch": "2.6.0+cpu",
+        "gymnasium": "1.1.1",
+        "stable-baselines3": "2.7.1"
+      },
+      "market_config": {
+        "timeframe": "M15",
+        "trading_mode": "binary",
+        "expiry_candles": 1
+      },
+      "risk": {
+        "enabled": true,
+        "min_confidence": 0.6,
+        "min_expected_edge": 0.02,
+        "mc_z": 1.96,
+        "trade_penalty": 0.025,
+        "blocked_penalty": 0.05,
+        "neutral_opportunity_penalty": 0.05,
+        "overtrade_penalty": 2.0,
+        "activity_decay": 0.95,
+        "target_activity": 0.1,
+        "drawdown_penalty": 10.0,
+        "drawdown_limit": 0.2,
+        "stop_penalty": 5.0,
+        "risk_std_floor": 0.1
+      },
+      "selected_checkpoint_timesteps": 16384,
+      "selected_checkpoint_trained": true,
+      "candidate_beats_initial_score": true,
+      "actual_timesteps": 16384,
+      "discount_clock": "eligible decisions",
+      "ent_coef": 0.02,
+      "exploration": {
+        "actual_timesteps": 16384,
+        "ent_coef": 0.02,
+        "evaluation_deterministic": true,
+        "requested": {
+          "PUT": 5221,
+          "NEUTRO": 5096,
+          "CALL": 6067
+        },
+        "executed": {
+          "PUT": 3625,
+          "NEUTRO": 10672,
+          "CALL": 2087
+        },
+        "blocked_attempts": 5576,
+        "missed_opportunities": 5096,
+        "final_training_policy": {
+          "observations": 256,
+          "mean_entropy_nats": 0.4495343267917633,
+          "mean_action_probabilities": {
+            "PUT": 0.3361251950263977,
+            "NEUTRO": 0.214246928691864,
+            "CALL": 0.4496278762817383
+          }
+        },
+        "caveat": "Training proposals are stochastic; final training policy is not necessarily the selected checkpoint."
+      },
+      "validation": {
+        "initial_balance": 1000.0,
+        "final_balance": 1072.0,
+        "net_profit": 72.0,
+        "net_return_pct": 7.2,
+        "total_trades": 27,
+        "winning_trades": 19,
+        "losing_trades": 8,
+        "breakeven_trades": 0,
+        "ties": 0,
+        "win_rate": 0.7037037037037037,
+        "win_rate_pct": 70.37037037037037,
+        "win_rate_excluding_refunds": 0.7037037037037037,
+        "gross_profit": 152.0,
+        "gross_loss": 80.0,
+        "profit_factor": 1.9,
+        "profit_factor_status": "finite",
+        "max_drawdown_usd": 20.0,
+        "max_drawdown_pct": 1.8832391713747645,
+        "sharpe_ratio": 1.563054304809874,
+        "sortino_ratio": 2.5122629828992715,
+        "sharpe_status": "finite",
+        "sortino_status": "finite",
+        "periods_per_year": 24192.0,
+        "annual_risk_free_rate": 0.0,
+        "return_observations": 27034,
+        "return_basis": "M15 equity bars including inactivity",
+        "selection_score": 0.11203187220744337,
+        "decision_analysis": {
+          "missed_opportunities": 13,
+          "payout": 0.8,
+          "break_even_win_rate_excluding_refunds": 0.5555555555555556,
+          "total_decisions": 26395,
+          "blocked_attempts": 20990,
+          "decisions": {
+            "executed": {
+              "PUT": {
+                "count": 16,
+                "percentage": 0.06061754120098504,
+                "mean_mc_confidence": 0.64220625,
+                "confidence_definition": "directional win probability"
+              },
+              "NEUTRO": {
+                "count": 26368,
+                "percentage": 99.89770789922333,
+                "mean_mc_confidence": 0.5050155112257283,
+                "confidence_definition": "max(up,down)"
+              },
+              "CALL": {
+                "count": 11,
+                "percentage": 0.041674559575677214,
+                "mean_mc_confidence": 0.6331272727272728,
+                "confidence_definition": "directional win probability"
+              }
+            },
+            "requested": {
+              "PUT": {
+                "count": 11436,
+                "percentage": 43.326387573404055,
+                "mean_mc_confidence": 0.4956156785589367,
+                "confidence_definition": "directional win probability"
+              },
+              "NEUTRO": {
+                "count": 5378,
+                "percentage": 20.375071036181094,
+                "mean_mc_confidence": 0.5052722759390108,
+                "confidence_definition": "max(up,down)"
+              },
+              "CALL": {
+                "count": 9581,
+                "percentage": 36.298541390414854,
+                "mean_mc_confidence": 0.5046276484709321,
+                "confidence_definition": "directional win probability"
+              }
+            }
+          },
+          "confidence_segments": [
+            {
+              "empirical_win_rate_lower_95": 0.515189666191624,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.7037037037037037,
+              "empirical_edge_per_resolved_stake": 0.2666666666666667,
+              "mean_mc_confidence": 0.6385074074074074,
+              "threshold": 0.58,
+              "comparison": "strictly_greater",
+              "trades": 27,
+              "net_profit": 72.0,
+              "wins": 19,
+              "losses": 8,
+              "profit_factor": 1.9,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": 0.515189666191624,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.7037037037037037,
+              "empirical_edge_per_resolved_stake": 0.2666666666666667,
+              "mean_mc_confidence": 0.6385074074074074,
+              "threshold": 0.6,
+              "comparison": "strictly_greater",
+              "trades": 27,
+              "net_profit": 72.0,
+              "wins": 19,
+              "losses": 8,
+              "profit_factor": 1.9,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": 0.3600507438551554,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.5882352941176471,
+              "empirical_edge_per_resolved_stake": 0.058823529411764705,
+              "mean_mc_confidence": 0.6561235294117647,
+              "threshold": 0.62,
+              "comparison": "strictly_greater",
+              "trades": 17,
+              "net_profit": 10.0,
+              "wins": 10,
+              "losses": 7,
+              "profit_factor": 1.1428571428571428,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": 0.35419734749908977,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.6666666666666666,
+              "empirical_edge_per_resolved_stake": 0.20000000000000007,
+              "mean_mc_confidence": 0.6763555555555556,
+              "threshold": 0.65,
+              "comparison": "strictly_greater",
+              "trades": 9,
+              "net_profit": 18.0,
+              "wins": 6,
+              "losses": 3,
+              "profit_factor": 1.6,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": null,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.0,
+              "empirical_edge_per_resolved_stake": -1.0,
+              "mean_mc_confidence": 0.7169,
+              "threshold": 0.7,
+              "comparison": "strictly_greater",
+              "trades": 1,
+              "net_profit": -10.0,
+              "wins": 0,
+              "losses": 1,
+              "profit_factor": 0.0,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": null,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": null,
+              "empirical_edge_per_resolved_stake": null,
+              "mean_mc_confidence": null,
+              "threshold": 0.8,
+              "comparison": "strictly_greater",
+              "trades": 0,
+              "net_profit": 0.0,
+              "wins": 0,
+              "losses": 0,
+              "profit_factor": null,
+              "profit_factor_status": "no_trades"
+            }
+          ],
+          "confidence_scope": "uncalibrated GBM model probability at one M15 step; not PPO confidence",
+          "segment_scope": "post-hoc subset of executed contracts, no policy rerun or threshold selection"
+        },
+        "raw_policy_distribution": {
+          "PUT": {
+            "count": 11436,
+            "percentage": 43.32638757340405
+          },
+          "NEUTRO": {
+            "count": 5378,
+            "percentage": 20.375071036181094
+          },
+          "CALL": {
+            "count": 9581,
+            "percentage": 36.298541390414854
+          }
+        },
+        "total_reward": 5.377529865957282,
+        "mean_reward": 0.00020373289888074567,
+        "max_drawdown": 0.01883239171374762,
+        "trades": 27,
+        "steps": 26395,
+        "wins": 19,
+        "losses": 8,
+        "risk_stop": false,
+        "eligible_setups_on_exposure": 48,
+        "missed_opportunities": 13,
+        "signals": {
+          "put": 16,
+          "neutral": 26368,
+          "call": 11
+        },
+        "evaluation": "chronological full phase; no opportunity wrapper"
+      },
+      "validation_history": [
+        {
+          "timesteps": 0,
+          "trades": 0,
+          "net_profit": 0.0,
+          "max_drawdown": 0.0,
+          "selection_score": -0.04999999999999999,
+          "total_reward": -2.3999999999999995,
+          "eligible_setups_on_exposure": 48
+        },
+        {
+          "timesteps": 8192,
+          "trades": 14,
+          "net_profit": 22.0,
+          "max_drawdown": 0.011605415860735047,
+          "selection_score": 0.0002992382071919375,
+          "total_reward": 0.014363433945213,
+          "eligible_setups_on_exposure": 48
+        },
+        {
+          "timesteps": 16384,
+          "trades": 27,
+          "net_profit": 72.0,
+          "max_drawdown": 0.01883239171374762,
+          "selection_score": 0.11203187220744337,
+          "total_reward": 5.377529865957282,
+          "eligible_setups_on_exposure": 48
+        },
+        {
+          "timesteps": 16384,
+          "trades": 29,
+          "net_profit": 70.0,
+          "max_drawdown": 0.028037383177570097,
+          "selection_score": 0.1047482807905346,
+          "total_reward": 5.02791747794566,
+          "eligible_setups_on_exposure": 48
+        }
+      ]
+    },
+    "bars": {
+      "input_sha256": "10c92b3b788fdafb74e3184dcec3244f2d2126f4781da5a861b2052a6ecf87f8",
+      "best_model_sha256": "1416a4c2960781857db9ecc9b06553d3117feb2a15319c34713b1b239afb17a4",
+      "versions": {
+        "numpy": "2.3.5",
+        "pandas": "2.2.3",
+        "torch": "2.6.0+cpu",
+        "gymnasium": "1.1.1",
+        "stable-baselines3": "2.7.1"
+      },
+      "market_config": {
+        "timeframe": "M15",
+        "trading_mode": "binary",
+        "expiry_candles": 1
+      },
+      "risk": {
+        "enabled": true,
+        "min_confidence": 0.6,
+        "min_expected_edge": 0.02,
+        "mc_z": 1.96,
+        "trade_penalty": 0.025,
+        "blocked_penalty": 0.05,
+        "neutral_opportunity_penalty": 0.05,
+        "overtrade_penalty": 2.0,
+        "activity_decay": 0.95,
+        "target_activity": 0.1,
+        "drawdown_penalty": 10.0,
+        "drawdown_limit": 0.2,
+        "stop_penalty": 5.0,
+        "risk_std_floor": 0.1
+      },
+      "selected_checkpoint_timesteps": 16384,
+      "selected_checkpoint_trained": true,
+      "candidate_beats_initial_score": true,
+      "actual_timesteps": 16384,
+      "discount_clock": "bars",
+      "ent_coef": 0.02,
+      "exploration": {
+        "actual_timesteps": 16384,
+        "ent_coef": 0.02,
+        "evaluation_deterministic": true,
+        "requested": {
+          "PUT": 5380,
+          "NEUTRO": 4975,
+          "CALL": 6029
+        },
+        "executed": {
+          "PUT": 2,
+          "NEUTRO": 16379,
+          "CALL": 3
+        },
+        "blocked_attempts": 11404,
+        "missed_opportunities": 9,
+        "final_training_policy": {
+          "observations": 256,
+          "mean_entropy_nats": 1.0147196054458618,
+          "mean_action_probabilities": {
+            "PUT": 0.368222177028656,
+            "NEUTRO": 0.2663654685020447,
+            "CALL": 0.3654123544692993
+          }
+        },
+        "caveat": "Training proposals are stochastic; final training policy is not necessarily the selected checkpoint."
+      },
+      "validation": {
+        "initial_balance": 1000.0,
+        "final_balance": 1020.0,
+        "net_profit": 20.0,
+        "net_return_pct": 2.0,
+        "total_trades": 7,
+        "winning_trades": 5,
+        "losing_trades": 2,
+        "breakeven_trades": 0,
+        "ties": 0,
+        "win_rate": 0.7142857142857143,
+        "win_rate_pct": 71.42857142857143,
+        "win_rate_excluding_refunds": 0.7142857142857143,
+        "gross_profit": 40.0,
+        "gross_loss": 20.0,
+        "profit_factor": 2.0,
+        "profit_factor_status": "finite",
+        "max_drawdown_usd": 10.0,
+        "max_drawdown_pct": 0.984251968503937,
+        "sharpe_ratio": 0.844314922130851,
+        "sortino_ratio": 1.3722421457062155,
+        "sharpe_status": "finite",
+        "sortino_status": "finite",
+        "periods_per_year": 24192.0,
+        "annual_risk_free_rate": 0.0,
+        "return_observations": 27034,
+        "return_basis": "M15 equity bars including inactivity",
+        "selection_score": -0.004176734719877745,
+        "decision_analysis": {
+          "missed_opportunities": 26,
+          "payout": 0.8,
+          "break_even_win_rate_excluding_refunds": 0.5555555555555556,
+          "total_decisions": 26395,
+          "blocked_attempts": 22152,
+          "decisions": {
+            "executed": {
+              "PUT": {
+                "count": 0,
+                "percentage": 0.0,
+                "mean_mc_confidence": null,
+                "confidence_definition": "directional win probability"
+              },
+              "NEUTRO": {
+                "count": 26388,
+                "percentage": 99.97347982572457,
+                "mean_mc_confidence": 0.5051160489616494,
+                "confidence_definition": "max(up,down)"
+              },
+              "CALL": {
+                "count": 7,
+                "percentage": 0.026520174275430953,
+                "mean_mc_confidence": 0.6409142857142857,
+                "confidence_definition": "directional win probability"
+              }
+            },
+            "requested": {
+              "PUT": {
+                "count": 10582,
+                "percentage": 40.090926311801475,
+                "mean_mc_confidence": 0.494931941031941,
+                "confidence_definition": "directional win probability"
+              },
+              "NEUTRO": {
+                "count": 4236,
+                "percentage": 16.04849403296079,
+                "mean_mc_confidence": 0.5064033758262513,
+                "confidence_definition": "max(up,down)"
+              },
+              "CALL": {
+                "count": 11577,
+                "percentage": 43.860579655237736,
+                "mean_mc_confidence": 0.504727494169474,
+                "confidence_definition": "directional win probability"
+              }
+            }
+          },
+          "confidence_segments": [
+            {
+              "empirical_win_rate_lower_95": 0.35892909014821267,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.7142857142857143,
+              "empirical_edge_per_resolved_stake": 0.2857142857142857,
+              "mean_mc_confidence": 0.6409142857142857,
+              "threshold": 0.58,
+              "comparison": "strictly_greater",
+              "trades": 7,
+              "net_profit": 20.0,
+              "wins": 5,
+              "losses": 2,
+              "profit_factor": 2.0,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": 0.35892909014821267,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.7142857142857143,
+              "empirical_edge_per_resolved_stake": 0.2857142857142857,
+              "mean_mc_confidence": 0.6409142857142857,
+              "threshold": 0.6,
+              "comparison": "strictly_greater",
+              "trades": 7,
+              "net_profit": 20.0,
+              "wins": 5,
+              "losses": 2,
+              "profit_factor": 2.0,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": 0.30063605244263664,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.75,
+              "empirical_edge_per_resolved_stake": 0.3500000000000001,
+              "mean_mc_confidence": 0.66475,
+              "threshold": 0.62,
+              "comparison": "strictly_greater",
+              "trades": 4,
+              "net_profit": 14.0,
+              "wins": 3,
+              "losses": 1,
+              "profit_factor": 2.4,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": 0.09452865480086611,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.5,
+              "empirical_edge_per_resolved_stake": -0.09999999999999998,
+              "mean_mc_confidence": 0.6970000000000001,
+              "threshold": 0.65,
+              "comparison": "strictly_greater",
+              "trades": 2,
+              "net_profit": -2.0,
+              "wins": 1,
+              "losses": 1,
+              "profit_factor": 0.8,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": null,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": 0.0,
+              "empirical_edge_per_resolved_stake": -1.0,
+              "mean_mc_confidence": 0.7289,
+              "threshold": 0.7,
+              "comparison": "strictly_greater",
+              "trades": 1,
+              "net_profit": -10.0,
+              "wins": 0,
+              "losses": 1,
+              "profit_factor": 0.0,
+              "profit_factor_status": "finite"
+            },
+            {
+              "empirical_win_rate_lower_95": null,
+              "lower_bound_exceeds_break_even": false,
+              "break_even_win_rate": 0.5555555555555556,
+              "empirical_win_rate_excluding_refunds": null,
+              "empirical_edge_per_resolved_stake": null,
+              "mean_mc_confidence": null,
+              "threshold": 0.8,
+              "comparison": "strictly_greater",
+              "trades": 0,
+              "net_profit": 0.0,
+              "wins": 0,
+              "losses": 0,
+              "profit_factor": null,
+              "profit_factor_status": "no_trades"
+            }
+          ],
+          "confidence_scope": "uncalibrated GBM model probability at one M15 step; not PPO confidence",
+          "segment_scope": "post-hoc subset of executed contracts, no policy rerun or threshold selection"
+        },
+        "raw_policy_distribution": {
+          "PUT": {
+            "count": 10582,
+            "percentage": 40.090926311801475
+          },
+          "NEUTRO": {
+            "count": 4236,
+            "percentage": 16.04849403296079
+          },
+          "CALL": {
+            "count": 11577,
+            "percentage": 43.860579655237736
+          }
+        },
+        "total_reward": -0.20048326655413173,
+        "mean_reward": -7.595501669033216e-06,
+        "max_drawdown": 0.009842519685039353,
+        "trades": 7,
+        "steps": 26395,
+        "wins": 5,
+        "losses": 2,
+        "risk_stop": false,
+        "eligible_setups_on_exposure": 48,
+        "missed_opportunities": 26,
+        "signals": {
+          "put": 0,
+          "neutral": 26388,
+          "call": 7
+        },
+        "evaluation": "chronological full phase; no opportunity wrapper"
+      },
+      "validation_history": [
+        {
+          "timesteps": 0,
+          "trades": 0,
+          "net_profit": 0.0,
+          "max_drawdown": 0.0,
+          "selection_score": -0.04999999999999999,
+          "total_reward": -2.3999999999999995,
+          "eligible_setups_on_exposure": 48
+        },
+        {
+          "timesteps": 8192,
+          "trades": 0,
+          "net_profit": 0.0,
+          "max_drawdown": 0.0,
+          "selection_score": -0.04999999999999999,
+          "total_reward": -2.3999999999999995,
+          "eligible_setups_on_exposure": 48
+        },
+        {
+          "timesteps": 16384,
+          "trades": 3,
+          "net_profit": 6.0,
+          "max_drawdown": 0.009842519685039353,
+          "selection_score": -0.03612382836793953,
+          "total_reward": -1.7339437616610975,
+          "eligible_setups_on_exposure": 48
+        },
+        {
+          "timesteps": 16384,
+          "trades": 7,
+          "net_profit": 20.0,
+          "max_drawdown": 0.009842519685039353,
+          "selection_score": -0.004176734719877745,
+          "total_reward": -0.20048326655413173,
+          "eligible_setups_on_exposure": 48
+        }
+      ]
+    }
+  }
+}

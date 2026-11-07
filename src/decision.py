@@ -43,7 +43,7 @@ class RiskConfig:
             raise ValueError('Umbral, actividad o límite de riesgo inválido')
 
 
-def ensure_probabilities(frame):
+def ensure_probabilities(frame, expected_horizon=1):
     """Deriva columnas ausentes solo de sigma/config causal; nunca de etiquetas.
 
     Fuentes de producción usan las probabilidades del motor. Para importaciones
@@ -51,8 +51,8 @@ def ensure_probabilities(frame):
     (defaults explícitos: 10k, 32, seed42, drift0). No acepta columnas parciales.
     """
     out=frame.copy()
-    if out.attrs.get('direction_probability_horizon',1)!=1:
-        raise ValueError('Las probabilidades de decisión deben corresponder a UNA vela M15')
+    if out.attrs.get('direction_probability_horizon',1)!=expected_horizon:
+        raise ValueError('Horizonte incompatible: se requiere UNA vela' if expected_horizon==1 else f'Horizonte incompatible: se requieren {expected_horizon} velas')
     present=[c in out for c in PROBABILITY_FEATURES]
     if any(present) and not all(present):raise ValueError('Probabilidades MC incompletas')
     if not any(present):
@@ -67,7 +67,7 @@ def ensure_probabilities(frame):
             if not np.isfinite(mu[ready]).all():raise ValueError('Drift momentum incompleto')
             mu=mu[ready]
         else:mu=cfg.drift_per_bar
-        probs=mc.direction_probabilities(sigma[ready],mu)
+        probs=mc.direction_probabilities(sigma[ready],mu,expected_horizon)
         for name,values in zip(PROBABILITY_FEATURES,probs):
             out[name]=np.nan;out.loc[ready,name]=values
     matrix=out[PROBABILITY_FEATURES].to_numpy(dtype=float)

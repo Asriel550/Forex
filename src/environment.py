@@ -16,11 +16,12 @@ ningún entorno puede detectar por sí solo leakage oculto dentro de un Parquet.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 
 import gymnasium as gym
 from gymnasium import spaces
-from .decision import RiskConfig, ensure_probabilities, resolve_action
+from .market import MarketConfig
+from .decision import RiskConfig, ensure_probabilities, resolve_action, mc_probability_lower
 from .quant_engine import PROBABILITY_FEATURES
 import numpy as np
 import pandas as pd
@@ -58,7 +59,7 @@ def market_feature_names(lookback=16):
             *(f"log_return_lag_{lag}" for lag in range(lookback)))
 
 
-def prepare_market_data(df: pd.DataFrame, lookback=16, indicator_period=14):
+def prepare_market_data(df: pd.DataFrame, lookback=16, indicator_period=14, *, market=None):
     """Indicadores y lags estrictamente causales; elimina solo warmup inicial.
 
     RSI y ATR usan medias exponenciales de Wilder (alpha=1/period, adjust=False).
@@ -71,11 +72,13 @@ def prepare_market_data(df: pd.DataFrame, lookback=16, indicator_period=14):
     required = ["timestamp", "open", "high", "low", "close", *QUANT_FEATURES]
     if not df.columns.is_unique or not set(required).issubset(df.columns):
         raise ValueError(f"Se requieren columnas únicas: {required}")
-    out = ensure_probabilities(df).reset_index(drop=True)
+    config = market or MarketConfig()
+    config.check_frame(df)
+    out = ensure_probabilities(df,config.expiry_candles).reset_index(drop=True)
     out["timestamp"] = pd.to_datetime(out.timestamp, utc=True, errors="raise")
     ts = out.timestamp
-    if ts.isna().any() or ts.duplicated().any() or not ts.is_monotonic_increasing or (ts != ts.dt.floor("15min")).any():
-        raise ValueError("timestamp debe ser único, ordenado, UTC y alineado a M15")
+    if ts.isna().any() or ts.duplicated().any() or not ts.is_monotonic_increasing or (ts != ts.dt.floor(config.frequency)).any():
+        raise ValueError("timestamp debe ser único, ordenado, UTC y alineado al timeframe")
     prices = out[["open", "high", "low", "close"]].apply(pd.to_numeric, errors="raise")
     if not np.isfinite(prices).all().all() or (prices <= 0).any().any():
         raise ValueError("OHLC debe ser positivo y finito")
@@ -117,7 +120,7 @@ def prepare_market_data(df: pd.DataFrame, lookback=16, indicator_period=14):
 
 def fit_normalizer(prepared: pd.DataFrame, lookback=16):
     """Estadísticos de entrenamiento únicamente; nunca llamar con validación/test."""
-    prepared = ensure_probabilities(prepared)
+    prepared = ensure_probabilities(prepared,int(prepared.attrs.get("direction_probability_horizon",1)))
     names = market_feature_names(lookback)
     matrix = prepared[list(names)].to_numpy(dtype=float)
     if len(matrix) < 2 or not np.isfinite(matrix).all():
@@ -145,23 +148,34 @@ class BinaryOptionsEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, df, *, account=None, lookback=16, indicator_period=14,
-                 prepared=False, normalizer=None, random_start=False, episode_length=None, risk=None):
+                 prepared=False, normalizer=None, random_start=False, episode_length=None, risk=None, market=None):
         super().__init__()
+        if market is not None and market.trading_mode != "binary" and type(self) is BinaryOptionsEnv:
+            raise ValueError("Usar ForexSpotEnv para forex_spot")
+        self.modern_contract = market is not None
+        self.market = market or MarketConfig()
+        self.market.check_frame(df)
+        self.bar_step = self.market.step
+        self.expiry_candles = self.market.expiry_candles
         self.account = account or AccountConfig()
-        self.risk = risk if risk is not None else RiskConfig()
+        self.risk = risk if risk is not None else (replace(RiskConfig(),neutral_opportunity_penalty=.05) if self.modern_contract else RiskConfig())
         self.lookback = lookback
-        frame = ensure_probabilities(df).reset_index(drop=True) if prepared else prepare_market_data(df, lookback, indicator_period)
+        frame = ensure_probabilities(df,self.expiry_candles).reset_index(drop=True) if prepared else prepare_market_data(df, lookback, indicator_period,market=self.market)
         names = market_feature_names(lookback)
         required = ["timestamp", "close", *names]
         if not set(required).issubset(frame.columns) or len(frame) < 2:
             raise ValueError("Datos preparados insuficientes/incompletos")
         self._times = pd.DatetimeIndex(pd.to_datetime(frame.timestamp, utc=True)).as_unit("ns")
         if (self._times.hasnans or not self._times.is_monotonic_increasing or not self._times.is_unique
-                or (self._times != self._times.floor("15min")).any()):
+                or (self._times != self._times.floor(self.market.frequency)).any()):
             raise ValueError("Timestamps preparados inválidos")
         self._probabilities = frame[PROBABILITY_FEATURES].to_numpy(dtype=float,copy=True)
         self._n_paths = int(frame.attrs.get("quant_config",{}).get("n_paths",10000))
+        confidence=self._probabilities[:,:2].max(axis=1)
+        lower=mc_probability_lower(confidence,self._n_paths,self.risk.mc_z)
+        self._setup_mask=(confidence>self.risk.min_confidence)&(self.account.payout*lower-(1-lower)>self.risk.min_expected_edge)
         self._close = frame.close.to_numpy(dtype=float, copy=True)
+        self._sigma = frame.cond_volatility.to_numpy(dtype=float,copy=True)
         matrix = frame[list(names)].to_numpy(dtype=float, copy=True)
         if not np.isfinite(matrix).all() or not np.isfinite(self._close).all() or (self._close <= 0).any():
             raise ValueError("Features/precios preparados deben ser finitos y precios positivos")
@@ -178,13 +192,13 @@ class BinaryOptionsEnv(gym.Env):
         self._market = matrix.astype(np.float32)
         if not np.isfinite(self._market).all():
             raise ValueError("Features fuera del rango float32")
-        breaks = np.flatnonzero(np.diff(self._times.asi8) != STEP.value) + 1
+        breaks = np.flatnonzero(np.diff(self._times.asi8) != self.bar_step.value) + 1
         boundaries = np.r_[0, breaks, len(frame)]
-        self.segments = tuple((int(a), int(b-1)) for a, b in zip(boundaries[:-1], boundaries[1:]) if b-a >= 2)
+        self.segments = tuple((int(a), int(b-1)) for a, b in zip(boundaries[:-1], boundaries[1:]) if b-a > self.expiry_candles)
         if not self.segments:
-            raise ValueError("No hay pares consecutivos de velas M15")
-        self._eligible = np.concatenate([np.arange(a, b) for a, b in self.segments])
-        if episode_length is not None and (not isinstance(episode_length, int) or episode_length < 1):
+            raise ValueError("No hay ventanas contiguas suficientes para la expiración")
+        self._eligible = np.concatenate([np.arange(a, b-self.expiry_candles+1) for a, b in self.segments])
+        if episode_length is not None and (not isinstance(episode_length, int) or episode_length < self.expiry_candles):
             raise ValueError("episode_length debe ser entero positivo o None")
         self.random_start, self.episode_length = random_start, episode_length
         self.feature_names = (*names, *ACCOUNT_FEATURES)
@@ -226,7 +240,7 @@ class BinaryOptionsEnv(gym.Env):
 
     def _info(self):
         return dict(index=self._index, timestamp=self._times[self._index].isoformat(),
-                    decision_time=(self._times[self._index]+STEP).isoformat(),
+                    decision_time=(self._times[self._index]+self.bar_step).isoformat(),
                     balance=self.balance, peak_balance=self.peak_balance,
                     drawdown=1-self.balance/self.peak_balance, max_drawdown=self.max_drawdown,
                     trades=self.trades, wins=self.wins, losses=self.losses, ties=self.ties,
@@ -249,7 +263,8 @@ class BinaryOptionsEnv(gym.Env):
             and decision['expected_edge_lower']>self.risk.min_expected_edge)
         old_drawdown = 1-self.balance/self.peak_balance
         entry_index = self._index
-        entry, settlement = self._close[entry_index:entry_index+2]
+        settlement_index = entry_index+self.expiry_candles
+        entry, settlement = self._close[entry_index],self._close[settlement_index]
         profit, reward, outcome = 0., (0. if self.risk.enabled else -self.account.inactivity_penalty), "neutral"
         if action != 1:
             self.trades += 1
@@ -267,7 +282,7 @@ class BinaryOptionsEnv(gym.Env):
             self.balance += profit
         self.peak_balance = max(self.peak_balance, self.balance)
         self.max_drawdown = max(self.max_drawdown, 1-self.balance/self.peak_balance)
-        self._index += 1  # exactamente una vela, dentro del segmento continuo.
+        self._index += self.expiry_candles if action!=1 else 1  # sin solapamientos; esperar avanza una barra.
         self.steps += 1
         self.previous_direction = float(action-1)
         self.trade_activity = self.risk.activity_decay*self.trade_activity+(1-self.risk.activity_decay)*float(action!=1)
@@ -282,20 +297,20 @@ class BinaryOptionsEnv(gym.Env):
                 reward = (profit/self.account.stake)/scale-self.risk.trade_penalty
                 reward -= self.risk.overtrade_penalty*max(0.,self.trade_activity-self.risk.target_activity)
             elif decision['blocked']:
-                reward = -self.risk.blocked_penalty
+                reward = -self.risk.blocked_penalty if not self.modern_contract or self._setup_mask[entry_index] else 0.
             elif missed_opportunity:
                 reward = -self.risk.neutral_opportunity_penalty
             reward -= self.risk.drawdown_penalty*max(0.,1-self.balance/self.peak_balance-old_drawdown)
             if self.max_drawdown+1e-12>=limit:reward -= self.risk.stop_penalty
         self.previous_reward = float(reward)
         terminated = self.balance < self.account.stake or self.max_drawdown + 1e-12 >= limit
-        truncated = not terminated and self._index >= self._end
+        truncated = not terminated and self._index+self.expiry_candles > self._end
         self._done = bool(terminated or truncated)
         info = self._info()
         info.update(**decision)
         info.update(action=action,missed_opportunity=missed_opportunity, entry_index=entry_index, entry_price=float(entry),
                     settlement_price=float(settlement), profit=float(profit), outcome=outcome,
-                    expiry_time=(self._times[self._index]+STEP).isoformat(),
+                    expiry_time=(self._times[self._index]+self.bar_step).isoformat(),
                     end_reason=("insufficient_balance" if self.balance < self.account.stake else
                                 "max_drawdown" if terminated else "data_or_time_limit" if truncated else None))
         return self._observation(), float(reward), bool(terminated), bool(truncated), info

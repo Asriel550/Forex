@@ -1,3 +1,5 @@
+> Actualización PR #10: [contrato de mercado v4](market_contract_v4.md). `train` ahora publica un bundle de investigación aislado; `diagnostics` conserva el protocolo PR8.
+
 # Diagnóstico sin volver a inspeccionar el holdout
 
 ## Política operativa

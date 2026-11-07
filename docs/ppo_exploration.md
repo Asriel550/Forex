@@ -1,3 +1,5 @@
+> Actualización PR #10: [contrato de mercado v4](market_contract_v4.md). `train` ahora publica un bundle de investigación aislado; `diagnostics` conserva el protocolo PR8.
+
 # Exploración PPO e incentivos causales (bundle v3, reward v2)
 
 El coeficiente anterior ya era 0.01. Se hace configurable y el default pasa a

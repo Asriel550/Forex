@@ -60,14 +60,14 @@ def read_closures(path=None):
     return items
 
 
-def expected_grid(start,end,closures=()):
+def expected_grid(start,end,closures=(),step=STEP):
     """Convención Forex domingo 17–viernes 17 Nueva York, con DST.
 
     Este calendario es independiente de EST fijo utilizado en los archivos.
     Festivos y exclusiones del proveedor requieren intervalos documentados.
     Una exclusión por falta de datos no implica que el mercado estuviera cerrado.
     """
-    grid = pd.date_range(utc(start).ceil('15min'),utc(end),freq='15min',inclusive='left')
+    grid = pd.date_range(utc(start).ceil(step),utc(end),freq=step,inclusive='left')
     ny = grid.tz_convert('America/New_York')
     day,hour = ny.dayofweek,ny.hour
     active = (day<4)|((day==4)&(hour<17))|((day==6)&(hour>=17))
@@ -338,7 +338,7 @@ def write_cache(df,path,signature,refresh_at=None):
 def load_data(*,inputs=None,input_dir=DEFAULT_INPUT_DIR,output=DEFAULT_OUTPUT,start=None,end=None,
               timezone='EST',input_timeframe='auto',timestamp_format=None,epoch_unit=None,
               encoding='utf-8-sig',closures=(),force=False,now=None,max_bytes=512*1024*1024,
-              max_members=2000,source='static',local=None):
+              max_members=2000,source='static',local=None,timeframe=None):
     """Carga archivos, devuelve M15 UTC y publica data/eurusd_m15.parquet.
 
     inputs acepta uno o varios archivos/directorios; por defecto datasets/eurusd.
@@ -356,6 +356,13 @@ def load_data(*,inputs=None,input_dir=DEFAULT_INPUT_DIR,output=DEFAULT_OUTPUT,st
         if inputs is not None:
             raise DataError('Usar inputs o local, no ambos')
         inputs = local
+    if timeframe is not None:
+        from .resampling import load_resampled
+        return load_resampled(timeframe=timeframe,inputs=inputs,input_dir=input_dir,
+            output=ROOT/f"data/eurusd_{timeframe.lower()}.parquet" if Path(output)==DEFAULT_OUTPUT else output,
+            start=start,end=end,timezone=timezone,input_timeframe=input_timeframe,
+            timestamp_format=timestamp_format,epoch_unit=epoch_unit,encoding=encoding,
+            closures=closures,force=force,now=now,max_bytes=max_bytes,max_members=max_members)
     paths = _files(inputs,input_dir)
     output = Path(output).resolve()
     if output in paths:
@@ -416,6 +423,7 @@ def main():
     parser.add_argument('--output',type=Path,default=DEFAULT_OUTPUT)
     parser.add_argument('--timezone',default='EST',help='Zona de timestamps sin offset; HistData usa EST fijo')
     parser.add_argument('--input-timeframe',choices=['auto','M1','M15'],default='auto')
+    parser.add_argument('--timeframe',choices=['M5','M15','H1','H4'])
     parser.add_argument('--timestamp-format')
     parser.add_argument('--epoch-unit',choices=['s','ms','us','ns'])
     parser.add_argument('--encoding',default='utf-8-sig')
