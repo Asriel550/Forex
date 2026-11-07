@@ -32,8 +32,9 @@ from .exploration import ExplorationAuditCallback,policy_snapshot
 from .decision import RiskConfig
 from .metrics import decision_metrics
 from .artifacts import file_sha256
-from .environment import (AccountConfig, BinaryOptionsEnv, fit_normalizer,
+from .environment import (AccountConfig, AlignmentReward, BinaryOptionsEnv, fit_normalizer,
                           market_feature_names, prepare_market_data)
+from .trading_profiles import PROFILES, SCALPING_TARGET_PER_HOUR, is_m5_binary_scalping, resolve_profile
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG = logging.getLogger(__name__)
@@ -112,11 +113,11 @@ def chronological_market_split(prepared,market,*,train_fraction=.70,validation_f
     return pieces
 
 
-def evaluate_policy(model, env: BinaryOptionsEnv):
+def evaluate_policy(model, env: BinaryOptionsEnv, *, trading_profile=None):
     """Recorre TODA validación en orden, sin recapitalizar tras fines de semana."""
     if getattr(env,"modern_contract",False):
         from .market_evaluation import evaluate_market_policy
-        return evaluate_market_policy(model,env)
+        return evaluate_market_policy(model,env,trading_profile=trading_profile)
     balance, peak = env.account.initial_balance, env.account.initial_balance
     total_reward = 0.
     counts = {"put":0, "neutral":0, "call":0}
@@ -164,8 +165,8 @@ def evaluate_policy(model, env: BinaryOptionsEnv):
 
 
 class BestValidationCallback(BaseCallback):
-    """Selecciona por score de riesgo de validación, sin mirar el holdout."""
-    def __init__(self, validation_env, output_dir, eval_freq=25_000, verbose=1):
+    """Prioriza checkpoints M5 entrenados que pasan el gate y luego el score."""
+    def __init__(self, validation_env, output_dir, eval_freq=25_000, verbose=1, *, trading_profile=None):
         super().__init__(verbose)
         if eval_freq < 1:
             raise ValueError("eval_freq debe ser positivo")
@@ -173,16 +174,23 @@ class BestValidationCallback(BaseCallback):
         self.eval_freq = int(eval_freq)
         self.best_score = -np.inf
         self.best_profit = -np.inf
+        self.best_rank = None
+        self.trading_profile = trading_profile
         self.history = []
         self.next_eval = self.eval_freq
         self.last_eval = -1
 
     def _evaluate(self):
-        metrics = evaluate_policy(self.model, self.validation_env)
+        metrics = evaluate_policy(self.model, self.validation_env, trading_profile=self.trading_profile)
         record = dict(timesteps=int(self.num_timesteps), **metrics)
         self.history.append(record)
         self.last_eval = self.num_timesteps
-        if metrics["selection_score"] > self.best_score:
+        rank = (metrics["selection_score"],)
+        if "validation_quality" in metrics:
+            trained = self.num_timesteps > 0
+            rank = (trained and metrics["validation_quality"]["passed"], trained, *rank)
+        if self.best_rank is None or rank > self.best_rank:
+            self.best_rank = rank
             self.best_score = metrics["selection_score"]
             self.best_profit = metrics["net_profit"]
             atomic_save_model(self.model, self.output_dir/"best_ppo_agent.zip")
@@ -216,17 +224,40 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
           train_fraction=.70, validation_fraction=.20, purge_bars=1,
           lookback=16, indicator_period=14, episode_length=512,
           account=None, risk=None, seed=42, n_steps=2048, batch_size=64,
-          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, ent_coef=.02, verbose=1, market=None, opportunity_training=True, trading_profile=None):
+          n_epochs=10, eval_freq=25_000, learning_rate=3e-4, ent_coef=None, verbose=1, market=None, opportunity_training=True, trading_profile=None):
     """Devuelve manifiesto; guarda mejores pesos, pesos finales y normalización."""
     if total_timesteps < 1:
         raise ValueError("total_timesteps debe ser positivo")
     account = account or AccountConfig()
+    alignment_reward = AlignmentReward() if is_m5_binary_scalping(trading_profile, market) else None
+    if alignment_reward is not None:
+        preset = resolve_profile(
+            trading_profile, market.timeframe, market.trading_mode, market.expiry_candles,
+            confidence='auto' if risk is None else risk.min_confidence,
+            entropy='auto' if ent_coef is None else ent_coef,
+        )
+        if risk is None:
+            risk = RiskConfig(
+                min_confidence=preset['FOREX_MIN_CONFIDENCE'],
+                min_expected_edge=preset['FOREX_MIN_EXPECTED_EDGE'], mc_z=preset['FOREX_MC_Z'],
+                neutral_opportunity_penalty=preset['FOREX_NEUTRAL_OPPORTUNITY_PENALTY'],
+                target_activity=preset['FOREX_TARGET_ACTIVITY'],
+            )
+        ent_coef = preset['FOREX_ENT_COEF']
+    elif ent_coef is None:
+        ent_coef = .02
     risk = risk if risk is not None else (replace(RiskConfig(),neutral_opportunity_penalty=.05) if market is not None else RiskConfig())
     input_path, output_dir = Path(input_path), Path(output_dir)
     source_hash = file_sha256(input_path)
     raw = pd.read_parquet(input_path)
     if file_sha256(input_path) != source_hash:
         raise ValueError("El Parquet cambió durante la lectura")
+    if alignment_reward is not None:
+        quant = raw.attrs.get('quant_config', {})
+        if (quant.get('drift_mode'), quant.get('drift_scale_floor'), quant.get('drift_scale')) != (
+            'momentum', preset['FOREX_DRIFT_SCALE_FLOOR'], preset['FOREX_DRIFT_SCALE']
+        ):
+            raise ValueError("Regenerar las features de scalping M5 con drift adaptativo 1.4 a 2.0")
     prepared = prepare_market_data(raw, lookback, indicator_period,market=market)
     splitter = chronological_split if market is None else lambda frame,**kw:chronological_market_split(frame,market,**kw)
     splits = splitter(prepared, train_fraction=train_fraction,
@@ -235,6 +266,8 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
     if market is not None: market.check_frame(raw)
     common = dict(account=account, risk=risk, lookback=lookback, prepared=True, normalizer=normalizer)
     if market is not None: common['market']=market
+    if alignment_reward is not None:
+        common['alignment_reward'] = alignment_reward
     env_class = BinaryOptionsEnv
     if market is not None and market.trading_mode=='forex_spot':
         from .forex_spot import ForexSpotEnv
@@ -275,14 +308,20 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
         if trading_profile is not None:
             manifest['trading_profile'] = trading_profile
             if trading_profile == 'scalping' and market.trading_mode == 'binary':
-                from .trading_profiles import SCALPING_TARGET_PER_HOUR
                 manifest['frequency_target_per_hour'] = list(SCALPING_TARGET_PER_HOUR[market.timeframe])
+        if alignment_reward is not None:
+            manifest.update(reward_version='scalping_m5_alignment_v1',
+                alignment_reward=asdict(alignment_reward),
+                selection='trained checkpoint passing validation gate, then opportunity risk score')
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir/"normalizer.json", normalizer)
     write_json(output_dir/"training_manifest.json", manifest)
     normalizer_hash = file_sha256(output_dir/"normalizer.json")
     monitored = Monitor(training_env)
-    callback = BestValidationCallback(validation_env, output_dir, eval_freq, verbose)
+    callback = BestValidationCallback(
+        validation_env, output_dir, eval_freq, verbose,
+        trading_profile=trading_profile if alignment_reward is not None else None,
+    )
     try:
         model = build_agent(monitored, seed=seed, n_steps=n_steps, batch_size=batch_size,
                             n_epochs=n_epochs, learning_rate=learning_rate, ent_coef=ent_coef, verbose=verbose)
@@ -309,6 +348,9 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
                                                 output_dir/'validation', trading_profile=trading_profile)
             if 'validation_quality' in validation:
                 manifest['validation_quality'] = validation['validation_quality']
+                manifest['validation_gate_passed'] = (
+                    manifest['selected_checkpoint_trained'] and validation['validation_quality']['passed']
+                )
                 LOG.info('Objetivos M5 en validación %s', json.dumps(validation['validation_quality'], allow_nan=False))
         write_json(output_dir/"training_manifest.json", manifest)
     finally:
@@ -350,7 +392,6 @@ def main():
     parser.add_argument('--ent-coef',type=float)
     parser.add_argument('--overtrade-penalty',type=float,default=2.)
     parser.add_argument('--drawdown-penalty',type=float,default=10.)
-    from .trading_profiles import PROFILES, resolve_profile
     parser.add_argument('--trading-profile', choices=['auto', *PROFILES])
     parser.add_argument('--timeframe',choices=['M1','M5','M15','H1','H4'])
     parser.add_argument('--trading-mode',choices=['binary','forex_spot'],default='binary')

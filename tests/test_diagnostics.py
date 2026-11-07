@@ -111,7 +111,12 @@ def test_workflow_freezes_holdout_and_isolates_diagnostics_and_telegram_test():
     assert 'workflow_dispatch' in job['if'] and 'default_branch' in job['if']
     assert 'src.backtest' not in source
     publish=next(s for s in job['steps'] if s.get('with',{}).get('name','').startswith('forex-research-bundle-v4-'))
-    assert publish['if']=="inputs.mode == 'train'"
+    assert publish['if']=="success() && inputs.mode == 'train'"
+    gate=next(s for s in job['steps'] if s.get('name')=='Enforce Scalping M5 validation gate')
+    assert "env.FOREX_TRADING_PROFILE == 'scalping'" in gate['if']
+    assert "env.FOREX_TIMEFRAME == 'M5'" in gate['if'] and "env.FOREX_TRADING_MODE == 'binary'" in gate['if']
+    assert job['steps'].index(gate)<job['steps'].index(publish)
+    assert next(s for s in job['steps'] if s.get('name')=='Upload research reports')['if']=='always()'
     diagnostic=next(s for s in job['steps'] if '--seeds' in s.get('run',''))
     assert diagnostic['if']=="inputs.mode == 'diagnostics'"
     assert '--seeds 42 43 44' in diagnostic['run']

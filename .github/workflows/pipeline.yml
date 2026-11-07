@@ -24,7 +24,7 @@ on:
       ent_coef:
         description: 'Regularización de entropía PPO para nuevo entrenamiento'
         type: choice
-        options: [auto, '0.01', '0.02', '0.03']
+        options: [auto, '0.01', '0.012', '0.02', '0.03']
         default: auto
       blocked_penalty:
         description: 'Coste de reward por intento bloqueado'
@@ -236,8 +236,21 @@ jobs:
         run: |
           python -m src.train --input data/eurusd_market_features.parquet --output-dir models/research_v4 --trading-profile "$FOREX_TRADING_PROFILE" --timeframe "$FOREX_TIMEFRAME" --trading-mode "$FOREX_TRADING_MODE" --expiry-candles "$FOREX_EXPIRY_CANDLES" --total-timesteps 100000 --seed 42 --min-confidence "$FOREX_MIN_CONFIDENCE" --min-expected-edge "$FOREX_MIN_EXPECTED_EDGE" --mc-z "$FOREX_MC_Z" --ent-coef "$FOREX_ENT_COEF" --blocked-penalty "$FOREX_BLOCKED_PENALTY" --neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY" --trade-penalty "$FOREX_TRADE_PENALTY"
           cat models/research_v4/validation/validation.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce Scalping M5 validation gate
+        if: >-
+          inputs.mode == 'train' && env.FOREX_TRADING_PROFILE == 'scalping' &&
+          env.FOREX_TIMEFRAME == 'M5' && env.FOREX_TRADING_MODE == 'binary'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('models/research_v4/training_manifest.json').read_text())
+          if manifest.get('validation_gate_passed') is not True:
+              raise SystemExit('Scalping M5 rechazado en validación. Consultar el resumen y los reportes.')
+          PY
       - name: Publish isolated v4 research bundle (no automatic production promotion)
-        if: inputs.mode == 'train'
+        if: success() && inputs.mode == 'train'
         uses: actions/upload-artifact@v7
         with:
           name: forex-research-bundle-v4-${{ env.FOREX_TRADING_PROFILE }}-${{ env.FOREX_TIMEFRAME }}-${{ env.FOREX_TRADING_MODE }}-e${{ env.FOREX_EXPIRY_CANDLES }}

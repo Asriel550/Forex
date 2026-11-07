@@ -105,7 +105,7 @@ def test_workflow_preserves_threshold_scale_and_zero_opportunity_option():
     data=yaml.safe_load(source);trigger=data.get('on',data.get(True))
     inputs=trigger['workflow_dispatch']['inputs']
     assert '0.58' in inputs['confidence_threshold']['options'] and '1.5' in inputs['drift_scale']['options']
-    assert inputs['ent_coef']['options']==['auto','0.01','0.02','0.03']
+    assert inputs['ent_coef']['options']==['auto','0.01','0.012','0.02','0.03']
     assert '0' in inputs['neutral_opportunity_penalty']['options']
     assert '--ent-coef "$FOREX_ENT_COEF"' in source
     assert '--neutral-opportunity-penalty "$FOREX_NEUTRAL_OPPORTUNITY_PENALTY"' in source

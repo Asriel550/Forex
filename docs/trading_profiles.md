@@ -6,7 +6,7 @@ seleccioná la rama `main` y usá `mode=train`. Elegí un perfil y dejá
 
 | Perfil | Temporalidad | Expiración binaria por defecto | Confianza nominal | Entropía PPO | Coste de omitir un setup | Ventana de tendencia |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| scalping | M5, admite M1 | 1 vela, admite 1 a 3 | M5 binario 58%, admite 57–58%. M1 y spot 54%, admiten 52–54% | 0,03 | 0,20 | 4 barras M5 / 6 barras M1 |
+| scalping | M5, admite M1 | 1 vela, admite 1 a 3 | M5 binario 57%. M1 y spot 54%, admiten 52–54% | M5 binario 0,012. M1 y spot 0,03 | 0,20 | 4 barras M5 / 6 barras M1 |
 | intraday | M15 | 1 vela | 60% | 0,02 | 0,05 | 8 barras |
 | daily | H1 | 2 velas | 63% | 0,02 | 0,05 | 12 barras |
 | swing | H4 | 2 velas | 65% | 0,02 | 0,05 | 16 barras |
@@ -51,22 +51,22 @@ entrenamiento aborta si falta un ajuste previo o si fallan dos consecutivos.
 
 ## Medir la frecuencia
 
-Scalping aumenta la entropía y el coste de omitir setups válidos. El objetivo
-de frecuencia ejecutada es de 2 a 4 contratos por hora observable para M5
-binario y de 5 a 10 para M1 binario. El momentum usa 6 barras en M1 y 4 en M5.
-Con `drift_scale=auto`, M1 usa 1,8 fijo. M5 binario interpola entre 1,4 y 2,2
+El objetivo de frecuencia ejecutada es de 1,5 a 3 contratos por hora
+observable para M5 binario y de 5 a 10 para M1 binario. El momentum usa 6
+barras en M1 y 4 en M5. Con `drift_scale=auto`, M1 usa 1,8 fijo. M5 binario
+interpola entre 1,4 y 2,0
 según la relación entre la media de retornos recientes y su error estándar.
 Usa el mínimo hasta una relación de 1 y el máximo desde 2,5. Ambos valores se
-calculan con velas cerradas, antes de proyectar. Un ajuste explícito de
-`drift_scale` establece el techo y limita también el piso. P05/P95 y las
+calculan con velas cerradas, antes de proyectar. En M5 binario se puede
+seleccionar `auto` o `2.0` para el techo. P05/P95 y las
 probabilidades direccionales se obtienen de la misma simulación de 10.000
 trayectorias. Intraday, daily y swing conservan sus presets.
 
 Con payout 0,80, el acierto de equilibrio es 55,56%. M5 binario exige
-probabilidad direccional superior al 58% nominal y aplica Wilson con
+probabilidad direccional superior al 57% nominal y aplica Wilson con
 `z=2.24`. La ventaja esperada calculada con ese límite debe superar el 1%
 de la apuesta, lo que requiere un límite inferior mayor al 56,11% con ese
-payout. El formulario también permite seleccionar 57%. M1 conserva
+payout. M1 conserva
 `z=1.96` y margen adicional cero. Wilson mide el error de muestreo de Monte
 Carlo bajo el GBM. La validación mide por separado el acierto observado.
 
@@ -79,14 +79,38 @@ incluso si el stop termina la ejecución de la política antes del final.
 Las propuestas son oportunidades por vela. La cota de contratos por hora
 incorpora también el vencimiento sin solapamiento.
 
-El resumen del job, el JSON y el Markdown de validación de M5 binario
-indican si el checkpoint seleccionado cumple cada objetivo. Se exige acierto
-sin reembolsos de al menos 56%, Profit Factor superior a 1,2 y entre 2 y 4
-contratos ejecutados por hora observable. `validation_quality` registra el
-resultado en el manifiesto del bundle. Los artefactos de investigación se
-publican para inspección aunque falle algún objetivo.
+## Alineación y gate de Scalping M5 binario
 
-Cada ejecución publica un bundle de investigación con nombre como
+En el formulario, elegí `mode=train`, `trading_profile=scalping`,
+`timeframe=M5`, `trading_mode=binary` y `expiry_candles=1` para reproducir
+la prueba de una vela. Usá `auto` para confianza, drift y entropía. El preset
+fija el umbral nominal en 57% y la entropía en 0,012. Se acepta un
+`ent_coef` explícito de 0,01 a 0,012.
+
+Una solicitud contraria a un setup que pasa los filtros recibe −1,25 en
+la recompensa de PPO. Una operación alineada ganadora recibe una base de
++1,75 antes de aplicar costes de actividad, penalizaciones por drawdown
+y stop. El saldo conserva la liquidación por payout y el filtro mantiene
+bloqueada la dirección contraria.
+
+El gate exige que el checkpoint entrenado cumpla todos los objetivos.
+
+| Métrica de validación | Requisito |
+| --- | ---: |
+| Acierto sin reembolsos | ≥ 56% |
+| Profit Factor | > 1,20 |
+| Contratos ejecutados por hora observable | 1,5–3,0 |
+| Contratos ejecutados sobre todos los setups elegibles | ≥ 30% |
+
+La selección prioriza los checkpoints entrenados que pasan el gate y
+desempata con el score habitual. Si ninguno pasa, Actions conserva los
+reportes JSON, Markdown y CSV y marca el job como fallido antes de publicar
+el bundle M5. El manifiesto registra `validation_gate_passed`. La conversión
+usa todos los setups de validación, incluidos los posteriores a un stop,
+y el reporte desglosa coincidencias, solicitudes contrarias y abstenciones
+entre los setups que PPO llegó a evaluar.
+
+Los bundles de investigación tienen nombres como
 `forex-research-bundle-v4-scalping-M1-binary-e1`. El nombre y el manifiesto
 distinguen perfil, temporalidad, tipo de mercado y expiración. La ejecución
 original del v4 M15 conserva su propio artefacto. La partición de validación
@@ -172,3 +196,15 @@ A payout 0,80 y apuesta fija, PF superior a 1,2 requiere más de 60% de
 acierto en los contratos resueltos. El drift adaptativo reduce propuestas
 y deja una cota de 3,41 setups/h. La frecuencia efectivamente ejecutada
 por PPO y la calidad conjunta siguen por debajo de los objetivos.
+
+## Prueba de alineación de la PR #14
+
+Se usó la fuente M5 de la corrida de la PR #13 y se reproyectó el drift
+causal con techo de 2,0. Con semilla 42, 100.000 pasos solicitados y
+vencimiento de una vela, el candidato diagnóstico seleccionado tuvo 219
+contratos, 50,94% de acierto sin reembolsos, PF 0,831 y PnL de −US$176.
+El stop de drawdown del 20% terminó la simulación. Hasta ese momento PPO
+coincidió en 219 de 275 setups, se abstuvo en 56 y pidió cero direcciones
+contrarias. Sobre la fase completa fueron 0,182 contratos por hora y
+4,94% de conversión sobre 4.429 setups. El gate quedó rechazado y el
+holdout reservado.

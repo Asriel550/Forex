@@ -26,7 +26,7 @@ PROFILES = {
 PROFILE_FOR_TIMEFRAME = {
     timeframe: name for name, profile in PROFILES.items() for timeframe in profile.timeframes
 }
-SCALPING_TARGET_PER_HOUR = {'M1': (5, 10), 'M5': (2, 4)}
+SCALPING_TARGET_PER_HOUR = {'M1': (5, 10), 'M5': (1.5, 3.)}
 
 # Settings expressed in bars and units of conditional volatility.
 # Shorter windows respond to micro-trends. The higher cap permits more
@@ -35,6 +35,11 @@ SCALPING_MOMENTUM = {
     'M1': dict(window=6, scale=1.8, noise_z=.50, cap_sigma=.90),
     'M5': dict(window=4, scale=2.2, noise_z=.50, cap_sigma=.90),
 }
+
+
+def is_m5_binary_scalping(profile, market):
+    return (profile == 'scalping' and market is not None
+            and market.timeframe == 'M5' and market.trading_mode == 'binary')
 
 
 def resolve_profile(
@@ -60,27 +65,33 @@ def resolve_profile(
     if profile == 'scalping' and market.expiry_candles > 3:
         raise ValueError('Scalping admite vencimiento de 1 a 3 velas')
 
-    quality_m5 = profile == 'scalping' and timeframe == 'M5' and trading_mode == 'binary'
-    default_confidence = .58 if quality_m5 else preset.confidence
+    quality_m5 = is_m5_binary_scalping(profile, market)
+    default_confidence = .57 if quality_m5 else preset.confidence
+    default_entropy = .012 if quality_m5 else preset.entropy
     threshold = default_confidence if confidence == 'auto' else float(confidence)
-    ent_coef = preset.entropy if entropy == 'auto' else float(entropy)
+    ent_coef = default_entropy if entropy == 'auto' else float(entropy)
     neutral_penalty = preset.neutral_cost if neutral_cost == 'auto' else float(neutral_cost)
     if not math.isfinite(threshold) or not .50 <= threshold < 1:
         raise ValueError('Umbral de confianza inválido')
-    if profile == 'scalping':
-        minimum, maximum = (.57, .58) if quality_m5 else (.52, .54)
-        if not minimum <= threshold <= maximum:
-            raise ValueError(f'Scalping {timeframe} admite un umbral nominal entre {minimum} y {maximum}')
+    if quality_m5 and threshold != default_confidence:
+        raise ValueError('Scalping M5 binario requiere confianza nominal 0.57')
+    if profile == 'scalping' and not quality_m5 and not .52 <= threshold <= .54:
+        raise ValueError(f'Scalping {timeframe} admite un umbral nominal entre 0.52 y 0.54')
     if not math.isfinite(ent_coef) or not 0 <= ent_coef <= .1:
         raise ValueError('ent_coef fuera del rango admitido por PPO')
+    if quality_m5 and not .010 <= ent_coef <= .012:
+        raise ValueError('Scalping M5 binario requiere ent_coef entre 0.01 y 0.012')
     if not math.isfinite(neutral_penalty) or neutral_penalty < 0:
         raise ValueError('Penalización de inacción inválida')
     momentum = SCALPING_MOMENTUM.get(timeframe, dict(
         window=preset.trend_window, scale=1.5, noise_z=1.96, cap_sigma=.75,
     ))
-    scale = momentum['scale'] if drift_scale == 'auto' else float(drift_scale)
+    default_scale = 2. if quality_m5 else momentum['scale']
+    scale = default_scale if drift_scale == 'auto' else float(drift_scale)
     if not math.isfinite(scale) or not 0 < scale <= 3:
         raise ValueError('Escala de momentum fuera del rango admitido')
+    if quality_m5 and scale != default_scale:
+        raise ValueError('Scalping M5 binario requiere techo de drift 2.0')
 
     target_activity = .10
     if profile == 'scalping' and trading_mode == 'binary':
@@ -98,7 +109,7 @@ def resolve_profile(
         FOREX_NEUTRAL_OPPORTUNITY_PENALTY=neutral_penalty,
         FOREX_TREND_WINDOW=momentum['window'],
         FOREX_DRIFT_SCALE=scale,
-        FOREX_DRIFT_SCALE_FLOOR=min(1.4, scale) if quality_m5 else 0.,
+        FOREX_DRIFT_SCALE_FLOOR=1.4 if quality_m5 else 0.,
         FOREX_DRIFT_NOISE_Z=momentum['noise_z'],
         FOREX_DRIFT_CAP_SIGMA=momentum['cap_sigma'],
         FOREX_GARCH_WINDOW=3072 if timeframe == 'M1' else 2016,
