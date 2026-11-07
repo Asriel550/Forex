@@ -65,6 +65,7 @@ class QuantConfig:
     drift_window: int = 8
     drift_shrinkage: float = .75
     drift_scale: float = 1.5
+    drift_scale_floor: float = 0.0
     drift_noise_z: float = 1.96
     drift_cap_sigma: float = .75
     drift_clip_sigma: float = 3.
@@ -92,10 +93,10 @@ class QuantConfig:
             raise QuantError("Requiere n_paths >= 100 y drift finito")
         if self.drift_mode not in ('constant','momentum') or self.drift_window<4:
             raise QuantError('drift_mode constant/momentum; drift_window >= 4')
-        params=[self.drift_shrinkage,self.drift_noise_z,self.drift_cap_sigma,self.drift_clip_sigma,self.drift_scale]
+        params=[self.drift_shrinkage,self.drift_noise_z,self.drift_cap_sigma,self.drift_clip_sigma,self.drift_scale,self.drift_scale_floor]
         if (not np.isfinite(params).all() or not 0<=self.drift_shrinkage<=1
                 or self.drift_noise_z<0 or self.drift_cap_sigma<=0 or self.drift_clip_sigma<=0
-                or not 0<self.drift_scale<=3):
+                or not 0<self.drift_scale<=3 or not 0<=self.drift_scale_floor<=self.drift_scale):
             raise QuantError('Parámetros de momentum inválidos')
         if self.drift_mode=='momentum' and self.drift_per_bar!=0:
             raise QuantError('drift_per_bar no nulo requiere drift_mode=constant')
@@ -280,9 +281,16 @@ def momentum_log_drift(mean,se,sigma,config):
 
     The drift cap controls the maximum directional displacement of the
     simulated prices. P05/P95 remain percentiles of those same paths.
+    With a positive floor, scale interpolates from floor to ceiling as the
+    causal signal-to-noise ratio moves from 1 to 2.5. Floor zero is fixed.
     """
     excess=np.sign(mean)*np.maximum(np.abs(mean)-config.drift_noise_z*se,0.)
-    return np.clip(config.drift_scale*config.drift_shrinkage*excess,
+    scale = config.drift_scale
+    if config.drift_scale_floor > 0:
+        snr = np.divide(np.abs(mean), se, out=np.zeros_like(excess, dtype=float), where=se > 0)
+        strength = np.clip((snr - 1.) / 1.5, 0., 1.)
+        scale = config.drift_scale_floor + (scale - config.drift_scale_floor) * strength
+    return np.clip(scale*config.drift_shrinkage*excess,
                    -config.drift_cap_sigma*sigma,config.drift_cap_sigma*sigma)
 
 
@@ -292,7 +300,8 @@ def reproject_drift_scale(frame,scale):
     Es fila a fila: no lee retornos futuros ni cambia el origen de ventanas.
     Permite evaluar subconjuntos train/validation sin tocar el holdout.
     """
-    cfg=replace(QuantConfig.from_metadata(frame.attrs.get('quant_config',{})),drift_scale=scale)
+    original = QuantConfig.from_metadata(frame.attrs.get('quant_config', {}))
+    cfg = replace(original, drift_scale=scale, drift_scale_floor=min(original.drift_scale_floor, scale))
     if cfg.drift_mode!='momentum' or not {'momentum_mean','momentum_se','cond_volatility','close'}.issubset(frame):
         raise QuantError('La sensibilidad requiere features de momentum archivadas')
     out=frame.copy();sigma=out.cond_volatility.to_numpy(dtype=float);ready=np.isfinite(sigma)
@@ -426,7 +435,7 @@ def main():
                             default=getattr(QuantConfig(), name))
     parser.add_argument('--drift-mode',choices=['constant','momentum'],default=QuantConfig().drift_mode)
     parser.add_argument('--drift-window',type=int,default=QuantConfig().drift_window)
-    for name in ('drift_scale','drift_shrinkage','drift_noise_z','drift_cap_sigma','drift_clip_sigma'):
+    for name in ('drift_scale','drift_scale_floor','drift_shrinkage','drift_noise_z','drift_cap_sigma','drift_clip_sigma'):
         parser.add_argument('--'+name.replace('_','-'),type=float,default=getattr(QuantConfig(),name))
     parser.add_argument("--drift-per-bar", type=float, default=0.0)
     parser.add_argument("--drop-warmup", action="store_true")

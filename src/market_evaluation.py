@@ -33,6 +33,29 @@ def stochastic_proposal_frequency(env, observed_hours):
     )
 
 
+def scalping_m5_quality(result, frequency_target):
+    """Evaluate the three M5 objectives on executed validation contracts."""
+    rate = result['win_rate_excluding_refunds']
+    profit_factor = result['profit_factor']
+    pf_status = result['profit_factor_status']
+    frequency = result['trades_per_observed_hour']
+    minimum, maximum = frequency_target
+    checks = {
+        'win_rate_excluding_refunds': dict(
+            value=rate, minimum=.56, passed=rate is not None and rate >= .56,
+        ),
+        'profit_factor': dict(
+            value=profit_factor, status=pf_status, exclusive_minimum=1.2,
+            passed=pf_status == 'infinite_no_losses' or (profit_factor is not None and profit_factor > 1.2),
+        ),
+        'trades_per_observed_hour': dict(
+            value=frequency, minimum=minimum, maximum=maximum,
+            passed=minimum <= frequency <= maximum,
+        ),
+    }
+    return dict(passed=all(check['passed'] for check in checks.values()), checks=checks)
+
+
 def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
     balance=peak=env.account.initial_balance;activity=0.;rows=[];trades=[]
     equity=np.full(len(env._close),balance,dtype=float);filled=0
@@ -98,14 +121,17 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
         result['trading_profile'] = trading_profile
     if trading_profile == 'scalping' and env.market.trading_mode == 'binary':
         from .trading_profiles import SCALPING_TARGET_PER_HOUR
-        minimum, maximum = SCALPING_TARGET_PER_HOUR
+        frequency_target = SCALPING_TARGET_PER_HOUR[env.market.timeframe]
+        minimum, maximum = frequency_target
         expiry = env.market.expiry_candles
         setups = result['stochastic_proposals']['after_economic_filter']['count'] if env.risk.enabled else len(env._eligible)
         slots = sum((end - start) // expiry for start, end in env.segments)
         result['eligible_setups_before_policy'] = setups
         result['trades_per_hour_upper_bound'] = min(setups, slots) / observed_hours
-        result['frequency_target_per_hour'] = list(SCALPING_TARGET_PER_HOUR)
+        result['frequency_target_per_hour'] = list(frequency_target)
         result['frequency_target_met'] = minimum <= result['trades_per_observed_hour'] <= maximum
+        if env.market.timeframe == 'M5':
+            result['validation_quality'] = scalping_m5_quality(result, frequency_target)
     if report_dir is not None:
         from .train import write_json
         root=Path(report_dir);root.mkdir(parents=True,exist_ok=True)
@@ -139,5 +165,29 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
             )
         else:
             summary += f"Frecuencia media {result['trades_per_observed_hour']:.3f} operaciones por hora observable.\n\n"
+        if 'validation_quality' in result:
+            quality = result['validation_quality']
+            checks = quality['checks']
+            win = checks['win_rate_excluding_refunds']
+            pf = checks['profit_factor']
+            rate = checks['trades_per_observed_hour']
+            win_display = 'N/D' if win['value'] is None else f"{win['value']:.2%}"
+            pf_display = '∞' if pf['status'] == 'infinite_no_losses' else (
+                'N/D' if pf['value'] is None else f"{pf['value']:.3f}"
+            )
+            summary += (
+                "## Objetivos de scalping M5\n\n"
+                f"Resultado de los tres objetivos **{'Cumplidos' if quality['passed'] else 'Pendientes'}**.\n\n"
+                "| Métrica | Objetivo | Validación | Estado |\n"
+                "| --- | --- | ---: | --- |\n"
+            )
+            for label, target, value, check in (
+                ('Acierto sin reembolsos', '≥ 56%', win_display, win),
+                ('Profit Factor', '> 1,2', pf_display, pf),
+                ('Contratos ejecutados por hora', '2 a 4', f"{rate['value']:.4f}", rate),
+            ):
+                status = 'Cumplido' if check['passed'] else 'Pendiente'
+                summary += f"| {label} | {target} | {value} | {status} |\n"
+            summary += '\n'
         (root/'validation.md').write_text(summary + "Holdout congelado. Sin prueba de ventaja fuera de muestra.\n")
     return result
