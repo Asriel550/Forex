@@ -267,3 +267,34 @@ def test_frequency_report_counts_valid_entry_grid_and_separates_policy(tmp_path)
     assert result['trades_per_observed_hour'] == 0
     assert json.loads((tmp_path/'validation_metrics.json').read_text())['stochastic_proposals'] == proposals
     assert 'Superan confianza, Wilson y payout' in (tmp_path/'validation.md').read_text()
+
+
+def test_m5_quality_checks_actual_execution_and_strict_profit_factor():
+    from src.market_evaluation import scalping_m5_quality
+
+    metrics = dict(
+        win_rate_excluding_refunds=.56, profit_factor=1.2, profit_factor_status='finite',
+        trades_per_observed_hour=2., trades_per_hour_upper_bound=3.,
+    )
+    result = scalping_m5_quality(metrics, (2, 4))
+    assert result['checks']['win_rate_excluding_refunds']['passed']
+    assert not result['checks']['profit_factor']['passed']
+    assert not result['passed']
+    metrics['profit_factor'] = 1.21
+    assert scalping_m5_quality(metrics, (2, 4))['passed']
+    metrics['trades_per_observed_hour'] = .2
+    assert not scalping_m5_quality(metrics, (2, 4))['passed']
+
+
+def test_adaptive_drift_suppresses_weak_momentum_and_preserves_strong_momentum():
+    from src.quant_engine import momentum_log_drift
+
+    cfg = QuantConfig(drift_scale=2.2, drift_noise_z=.5, drift_cap_sigma=.9)
+    adaptive = replace(cfg, drift_scale_floor=1.4)
+    mean = np.array([.00008, -.00008])
+    se = np.array([.00008, .00002])
+    sigma = np.array([.0002, .0002])
+    fixed = momentum_log_drift(mean, se, sigma, cfg)
+    changed = momentum_log_drift(mean, se, sigma, adaptive)
+    assert 0 < changed[0] < fixed[0]
+    assert changed[1] == fixed[1]

@@ -276,7 +276,7 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
             manifest['trading_profile'] = trading_profile
             if trading_profile == 'scalping' and market.trading_mode == 'binary':
                 from .trading_profiles import SCALPING_TARGET_PER_HOUR
-                manifest['frequency_target_per_hour'] = list(SCALPING_TARGET_PER_HOUR)
+                manifest['frequency_target_per_hour'] = list(SCALPING_TARGET_PER_HOUR[market.timeframe])
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir/"normalizer.json", normalizer)
     write_json(output_dir/"training_manifest.json", manifest)
@@ -302,12 +302,15 @@ def train(input_path, *, output_dir=ROOT/"models", total_timesteps=100_000,
         manifest["best_validation_net_profit"] = float(callback.best_profit)
         manifest["best_validation_score"] = float(callback.best_score)
         manifest["best_model"] = str((output_dir/"best_ppo_agent.zip").resolve())
-        write_json(output_dir/"training_manifest.json", manifest)
         if market is not None:
             from .agent import load_agent
             from .market_evaluation import evaluate_market_policy
-            evaluate_market_policy(load_agent(output_dir/'best_ppo_agent.zip'), validation_env,
-                                   output_dir/'validation', trading_profile=trading_profile)
+            validation = evaluate_market_policy(load_agent(output_dir/'best_ppo_agent.zip'), validation_env,
+                                                output_dir/'validation', trading_profile=trading_profile)
+            if 'validation_quality' in validation:
+                manifest['validation_quality'] = validation['validation_quality']
+                LOG.info('Objetivos M5 en validación %s', json.dumps(validation['validation_quality'], allow_nan=False))
+        write_json(output_dir/"training_manifest.json", manifest)
     finally:
         monitored.close()
         validation_env.close()
@@ -339,6 +342,7 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument('--min-confidence',type=float)
     parser.add_argument('--min-expected-edge',type=float)
+    parser.add_argument('--mc-z', type=float)
     parser.add_argument('--risk-drawdown-limit',type=float,default=.20)
     parser.add_argument('--trade-penalty',type=float,default=RiskConfig().trade_penalty)
     parser.add_argument('--blocked-penalty',type=float,default=RiskConfig().blocked_penalty)
@@ -359,9 +363,11 @@ def main():
     profile = args.pop('trading_profile')
     confidence = args.pop('min_confidence')
     min_expected_edge = args.pop('min_expected_edge')
+    mc_z = args.pop('mc_z')
     neutral_cost = args.pop('neutral_opportunity_penalty')
     entropy = args.pop('ent_coef')
     target_activity = RiskConfig().target_activity
+    default_mc_z = RiskConfig().mc_z
     if profile is None:
         market = MarketConfig(timeframe or 'M15', trading_mode, 1 if expiry is None else expiry)
         confidence = RiskConfig().min_confidence if confidence is None else confidence
@@ -385,8 +391,10 @@ def main():
         neutral_cost = resolved['FOREX_NEUTRAL_OPPORTUNITY_PENALTY']
         entropy = resolved['FOREX_ENT_COEF']
         target_activity = resolved['FOREX_TARGET_ACTIVITY']
+        default_mc_z = resolved['FOREX_MC_Z']
     opportunity_training=not args.pop('no_opportunity_training')
     risk = RiskConfig(min_confidence=confidence,target_activity=target_activity,min_expected_edge=min_expected_edge,
+                      mc_z=default_mc_z if mc_z is None else mc_z,
                       drawdown_limit=args.pop('risk_drawdown_limit'),trade_penalty=args.pop('trade_penalty'),
                       blocked_penalty=args.pop('blocked_penalty'),overtrade_penalty=args.pop('overtrade_penalty'),
                       drawdown_penalty=args.pop('drawdown_penalty'),neutral_opportunity_penalty=neutral_cost)

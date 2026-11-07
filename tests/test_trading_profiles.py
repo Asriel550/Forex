@@ -129,7 +129,7 @@ def test_scalping_microtrend_releases_direction_without_dropping_break_even_gate
     from src.decision import RiskConfig, resolve_action
     from src.quant_engine import MonteCarloGBM, QuantConfig, causal_drift
 
-    preset = resolve_profile('scalping', 'M5', confidence='.52')
+    preset = resolve_profile('scalping', 'M1', confidence='.52')
     assert resolve_profile()['FOREX_DRIFT_SCALE'] == 1.5
     assert resolve_profile()['FOREX_MIN_EXPECTED_EDGE'] == .02
     assert resolve_profile('scalping', 'M1')['FOREX_DRIFT_SCALE'] == 1.8
@@ -151,3 +151,18 @@ def test_scalping_microtrend_releases_direction_without_dropping_break_even_gate
     new_probability = mc.direction_probabilities(sigma[-1], new_mu)
     assert resolve_action(2, *old_probability, payout=.8, tie_policy='refund', risk=risk)['blocked']
     assert resolve_action(2, *new_probability, payout=.8, tie_policy='refund', risk=risk)['action'] == 2
+
+
+def test_m5_quality_profile_raises_the_directional_and_economic_gates():
+    from src.decision import RiskConfig, resolve_action
+
+    profile = resolve_profile('scalping', 'M5', confidence='.57')
+    assert resolve_profile('scalping', 'M5')['FOREX_MIN_CONFIDENCE'] == .58
+    assert profile['FOREX_DRIFT_SCALE_FLOOR'] == 1.4
+    assert profile['FOREX_MC_Z'] == 2.24
+    risk = RiskConfig(min_confidence=profile['FOREX_MIN_CONFIDENCE'],
+                      min_expected_edge=profile['FOREX_MIN_EXPECTED_EDGE'], mc_z=profile['FOREX_MC_Z'])
+    for probability, expected in ((.5705, 'expected_edge'), (.585, 'accepted')):
+        decision = resolve_action(2, probability, 1 - probability, 0.,
+                                  payout=.8, tie_policy='refund', risk=risk)
+        assert decision['filter_reason'] == expected

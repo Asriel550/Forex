@@ -6,7 +6,7 @@ seleccioná la rama `main` y usá `mode=train`. Elegí un perfil y dejá
 
 | Perfil | Temporalidad | Expiración binaria por defecto | Confianza nominal | Entropía PPO | Coste de omitir un setup | Ventana de tendencia |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| scalping | M5, admite M1 | 1 vela, admite 1 a 3 | 54%, admite 52–54% | 0,03 | 0,20 | 4 barras M5 / 6 barras M1 |
+| scalping | M5, admite M1 | 1 vela, admite 1 a 3 | M5 binario 58%, admite 57–58%. M1 y spot 54%, admiten 52–54% | 0,03 | 0,20 | 4 barras M5 / 6 barras M1 |
 | intraday | M15 | 1 vela | 60% | 0,02 | 0,05 | 8 barras |
 | daily | H1 | 2 velas | 63% | 0,02 | 0,05 | 12 barras |
 | swing | H4 | 2 velas | 65% | 0,02 | 0,05 | 16 barras |
@@ -51,19 +51,24 @@ entrenamiento aborta si falta un ajuste previo o si fallan dos consecutivos.
 
 ## Medir la frecuencia
 
-Scalping aumenta la entropía y el coste de omitir setups válidos. La meta es
-5–10 contratos por hora observable. El momentum usa 6 barras en M1 y 4 en M5.
-Con `drift_scale=auto`, la escala es 1,8 en M1 y 2,2 en M5. El multiplicador
-de la banda neutral de momentum baja de 1,96 a 0,50, y el tope de desplazamiento
-sube de 0,75 a 0,90 veces la volatilidad condicional. P05/P95 siguen siendo los
-percentiles de las mismas trayectorias. Intraday, daily y swing conservan sus
-umbrales, sus parámetros de momentum y el margen de ventaja de 0,02.
+Scalping aumenta la entropía y el coste de omitir setups válidos. El objetivo
+de frecuencia ejecutada es de 2 a 4 contratos por hora observable para M5
+binario y de 5 a 10 para M1 binario. El momentum usa 6 barras en M1 y 4 en M5.
+Con `drift_scale=auto`, M1 usa 1,8 fijo. M5 binario interpola entre 1,4 y 2,2
+según la relación entre la media de retornos recientes y su error estándar.
+Usa el mínimo hasta una relación de 1 y el máximo desde 2,5. Ambos valores se
+calculan con velas cerradas, antes de proyectar. Un ajuste explícito de
+`drift_scale` establece el techo y limita también el piso. P05/P95 y las
+probabilidades direccionales se obtienen de la misma simulación de 10.000
+trayectorias. Intraday, daily y swing conservan sus presets.
 
-El umbral de 52–54% selecciona candidatos. Con payout 0,80, el acierto de
-equilibrio es 55,56%. Scalping aplica margen adicional cero y exige que el
-límite inferior de Wilson de la probabilidad simulada supere ese equilibrio.
-Wilson mide el error de muestreo de Monte Carlo. La tasa de acierto realizada
-puede quedar por debajo del equilibrio.
+Con payout 0,80, el acierto de equilibrio es 55,56%. M5 binario exige
+probabilidad direccional superior al 58% nominal y aplica Wilson con
+`z=2.24`. La ventaja esperada calculada con ese límite debe superar el 1%
+de la apuesta, lo que requiere un límite inferior mayor al 56,11% con ese
+payout. El formulario también permite seleccionar 57%. M1 conserva
+`z=1.96` y margen adicional cero. Wilson mide el error de muestreo de Monte
+Carlo bajo el GBM. La validación mide por separado el acierto observado.
 
 Los logs de validación y los reportes JSON y Markdown separan tres etapas.
 Se cuenta la dirección MC en cada ventana con entrada y vencimiento válidos,
@@ -73,6 +78,13 @@ Las tasas usan las mismas horas de toda la validación en segmentos operables,
 incluso si el stop termina la ejecución de la política antes del final.
 Las propuestas son oportunidades por vela. La cota de contratos por hora
 incorpora también el vencimiento sin solapamiento.
+
+El resumen del job, el JSON y el Markdown de validación de M5 binario
+indican si el checkpoint seleccionado cumple cada objetivo. Se exige acierto
+sin reembolsos de al menos 56%, Profit Factor superior a 1,2 y entre 2 y 4
+contratos ejecutados por hora observable. `validation_quality` registra el
+resultado en el manifiesto del bundle. Los artefactos de investigación se
+publican para inspección aunque falle algún objetivo.
 
 Cada ejecución publica un bundle de investigación con nombre como
 `forex-research-bundle-v4-scalping-M1-binary-e1`. El nombre y el manifiesto
@@ -101,7 +113,7 @@ M1 registró tres reajustes GARCH aislados retenidos con el estado causal.
 El holdout quedó reservado y se conservaron separados los pesos de prueba.
 
 
-## Prueba del ajuste de sensibilidad
+## Referencia de sensibilidad de la PR #12
 
 Dos corridas con el histórico de 2025, semilla 42, 16.384 pasos PPO, umbral
 nominal 54% y una vela de expiración. La evaluación se limitó a validación y el
@@ -122,3 +134,41 @@ En M5 la cota aumentó de 0,031 a 4,76 setups por hora sobre la misma fase. En
 ambas corridas el stop de drawdown se activó y el acierto quedó por debajo del
 55,56% necesario con payout 0,80. El ajuste amplió el conjunto de candidatos
 para investigación. La frecuencia de ejecución de 5–10 por hora sigue pendiente.
+
+## Comparación de drift de la PR #13
+
+Se reutilizaron las volatilidades GARCH causales del histórico M5 de 2025
+para aislar el efecto del drift. Con la misma validación y payout 0,80,
+se evaluó la dirección de mayor probabilidad en cada setup elegible.
+
+| Filtro y drift | Setups | Setups/h | Acierto resuelto del motor | Profit Factor del motor |
+| --- | ---: | ---: | ---: | ---: |
+| PR #12, 54%, fijo 2,2 | 5.740 | 4,76 | 48,46% | 0,752 |
+| PR #13, 58%, fijo 2,2 | 5.315 | 4,41 | 48,28% | 0,747 |
+| PR #13, 58%, adaptativo 1,4–2,2 | 4.112 | 3,41 | 47,91% | 0,736 |
+
+El drift adaptativo reduce el número de setups en un 22,6% frente a la
+escala fija con el mismo filtro. En esta validación, el acierto del motor
+también baja. Las dos configuraciones de la PR #13 admitieron los mismos
+candidatos después del umbral nominal y del filtro económico. El holdout
+quedó reservado.
+
+Con semilla 42 y 100.000 pasos solicitados por corrida, se seleccionaron
+los checkpoints con el criterio habitual de validación ajustado por riesgo.
+Ambas corridas usaron 58%, el mismo Wilson y el mismo presupuesto PPO.
+
+| Checkpoint seleccionado en validación | Fijo 2,2 | Adaptativo 1,4–2,2 |
+| --- | ---: | ---: |
+| Paso | 75.000 | 50.000 |
+| Contratos | 53 | 63 |
+| Contratos/h | 0,044 | 0,052 |
+| Acierto sin reembolsos | 58,49% | 55,74% |
+| Profit Factor | 1,127 | 1,007 |
+| PnL simulado | +US$28 | +US$2 |
+| Drawdown máximo | 6,20% | 6,79% |
+| Objetivos cumplidos | 1 de 3 | 0 de 3 |
+
+A payout 0,80 y apuesta fija, PF superior a 1,2 requiere más de 60% de
+acierto en los contratos resueltos. El drift adaptativo reduce propuestas
+y deja una cota de 3,41 setups/h. La frecuencia efectivamente ejecutada
+por PPO y la calidad conjunta siguen por debajo de los objetivos.
