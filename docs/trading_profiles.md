@@ -225,25 +225,28 @@ se usan para liquidar, con las mismas reglas de caja, huecos y reembolsos
 del entorno M5. El stop del 20% se aplica al liquidar y el gate exige un
 drawdown menor al 15%. Las horas incluyen el tramo observable completo.
 
-El gate exige acierto sin reembolsos ≥56%, PF >1,20, 1,5–3,0 contratos por
-hora y drawdown <15%. Los candidatos que cumplen los cuatro criterios
-tienen prioridad. El orden dentro de cada grupo usa
-`acierto + PF/(1+PF) − distancia(frecuencia, [1,5; 3,0])/1,5 − drawdown`,
-con acierto y drawdown como fracciones. El término de PF vale uno si hay
-ganancias sin pérdidas y cero cuando el ratio es indefinido. Un candidato
-por debajo de 56% o sin contratos resueltos queda fuera de la reproducción.
+Cada individuo recibe un puntaje finito. Sean `w` el acierto sin
+reembolsos, `f` los contratos por hora y `d` el drawdown como fracción.
+La aptitud suma `w` y el término de PF, ponderados por `min(1, f/1.5)`
+para dar menos peso a resultados de baja frecuencia. Se resta la distancia
+de `f` al rango [1,5–3,0], dividida por 1,5, el drawdown `d` y la
+penalización suave `0.5 × max(0, 0.56 − w)`. El término de PF es
+`PF/(1+PF)`, vale uno si hay ganancias sin pérdidas y cero si el ratio
+es indefinido. Un acierto indefinido aporta cero al cálculo.
 
-Hasta el 20% superior de la población, redondeado hacia arriba, pasa como
-élite. Los descendientes combinan pesos de dos padres y reciben una
-perturbación gaussiana. La amplitud de la mutación baja cuando mejora el
-mejor candidato acumulado y sube si se estanca. Si queda una sola élite,
-los hijos son mutaciones de ella. Si no queda ninguna, la siguiente
-generación parte de una población nueva.
+El 20% superior por aptitud, redondeado hacia arriba, pasa como élite.
+Se conserva incluso cuando toda la población queda por debajo del 56%.
+Los descendientes combinan pesos de dos padres y reciben una perturbación
+gaussiana. La amplitud de la mutación baja cuando mejora el mejor
+candidato acumulado y sube si se estanca. El CSV marca las élites de
+cada generación.
 
 El normalizador se ajusta en train. La búsqueda usa el primer 75% de la
 validación cronológica. Tras una vela de purga, el tramo restante evalúa
-una sola vez al genoma preseleccionado. El gate de la corrida exige
-aprobar búsqueda y confirmación. El holdout histórico queda reservado.
+una sola vez al genoma con la mayor aptitud de búsqueda. El gate final
+exige en ambos tramos acierto sin reembolsos ≥56%, PF >1,20,
+1,5–3,0 contratos por hora y drawdown <15%. El holdout histórico queda
+reservado.
 
 Actions publica el JSON, el CSV por individuo y el Markdown bajo
 `forex-reports-*`. El artefacto `forex-evolution-candidates-*` contiene
@@ -254,17 +257,23 @@ El gate puede marcar la corrida como fallida y conservar los reportes y
 candidatos. Los artefactos de evolución quedan separados de Intradía M15
 y del flujo de Telegram.
 
-Con 24 individuos, 20 ciclos y semilla 42 sobre el histórico M5 de 2025,
-se evaluaron 504 candidatos. El mayor acierto en búsqueda fue 53,72%.
-Las 20 transiciones reiniciaron la población por falta de padres que
-superaran el corte. El representante mejor clasificado fue el de la
-generación 16.
+### Comparación de la selección relativa
 
-| Validación de la prueba local | Búsqueda | Confirmación |
-| --- | ---: | ---: |
-| Contratos ejecutados | 460 | 99 |
-| Acierto sin reembolsos | 53,36% | 44,33% |
-| Profit Factor | 0,915 | 0,637 |
-| Contratos por hora | 0,509 | 0,329 |
-| Drawdown máximo | 20,46% | 20,24% |
-| PnL simulado | −US$176 | −US$196 |
+Con 24 individuos, 10 ciclos y semilla 42 sobre el mismo histórico M5 de
+2025, las 10 transiciones conservaron 5 élites y generaron 19
+descendientes cada una. El score del mejor individuo subió de −0,631 en
+la generación 0 a −0,534 en la generación 5. El mayor acierto de cualquier
+individuo fue 54,69%. Se reutilizó el tramo de confirmación de la PR #15
+para comparar el comportamiento histórico.
+
+| Métrica del campeón | PR #15 búsqueda | Selección relativa búsqueda | Selección relativa confirmación |
+| --- | ---: | ---: | ---: |
+| Contratos ejecutados | 385 | 453 | 56 |
+| Acierto sin reembolsos | 53,72% | 54,42% | 34,55% |
+| Profit Factor | 0,929 | 0,955 | 0,422 |
+| Contratos por hora | 0,426 | 0,501 | 0,186 |
+| Drawdown máximo | 20,36% | 20,45% | 20,80% |
+| PnL simulado | −US$124 | −US$90 | −US$208 |
+
+El campeón quedó fuera de los cuatro límites en búsqueda y
+confirmación. [Corrida de referencia de la PR #15](https://github.com/Asriel550/Forex/actions/runs/42404665685)
