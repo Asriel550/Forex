@@ -14,9 +14,10 @@ from src import trading_profiles
 from src.artifacts import file_sha256
 from src.decision import RiskConfig
 from src.environment import AccountConfig, BinaryOptionsEnv, market_feature_names
+from src.evolution_context import build_entry_context, closed_trend_direction, realized_volatility, session_allowed
 from src.evolution_engine import (
     MARKET, SEARCH_BLOCKS, EvolutionConfig, M5Simulation, assess_fitness, assess_search_fitness,
-    breed, closed_h1_direction, effective_features, run_evolution,
+    breed, effective_features, run_evolution,
 )
 from src.market_evaluation import evaluate_market_policy
 
@@ -86,36 +87,74 @@ def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
     assert not empty['passed'] and np.isfinite(empty['score'])
 
 
-def test_h1_trend_is_available_only_after_complete_hour_and_expires_at_next_close():
-    frame = candles(1.1 + np.arange(12 * 30) * .00001)
-    trend = closed_h1_direction(frame)
-    first = 12 * 24 - 1
+@pytest.mark.parametrize('timeframe,width', [('H1', 12), ('H4', 48)])
+def test_higher_trend_uses_only_complete_candles_and_expires_at_next_close(timeframe, width):
+    frame = candles(1.1 + np.arange(width * 30) * .00001)
+    trend = closed_trend_direction(frame, timeframe)
+    first = width * 24 - 1
     assert np.isnan(trend[:first]).all() and trend[first] == 1.
     prefix = frame.iloc[:first + 4]
-    np.testing.assert_allclose(closed_h1_direction(prefix), trend[:len(prefix)])
+    np.testing.assert_allclose(closed_trend_direction(prefix, timeframe), trend[:len(prefix)])
 
-    with_gap = frame.drop(index=12 * 24 + 2)
-    aligned = pd.Series(closed_h1_direction(with_gap), index=with_gap.index)
-    assert aligned.loc[12 * 25 - 2] == 1.
-    assert np.isnan(aligned.loc[12 * 25 - 1])
-    assert aligned.loc[12 * 26 - 1] == 1.
+    with_gap = frame.drop(index=width * 24 + 2)
+    aligned = pd.Series(closed_trend_direction(with_gap, timeframe), index=with_gap.index)
+    assert aligned.loc[width * 25 - 2] == 1.
+    assert np.isnan(aligned.loc[width * 25 - 1])
+    assert aligned.loc[width * 26 - 1] == 1.
     down = candles(1.2 - np.arange(len(frame)) * .00001)
     lateral = candles(np.full(len(frame), 1.1))
-    assert closed_h1_direction(down)[-1] == -1.
-    assert closed_h1_direction(lateral)[-1] == 0.
-    assert np.isnan(closed_h1_direction(frame.iloc[:6])).all()
+    assert closed_trend_direction(down, timeframe)[-1] == -1.
+    assert closed_trend_direction(lateral, timeframe)[-1] == 0.
+    assert np.isnan(closed_trend_direction(frame.iloc[:6], timeframe)).all()
 
 
-def test_h1_filter_only_allows_agreement_with_mc_direction():
-    frame = candles(1.1 + np.arange(8) * .00001, [.8, .8, .2, .8, .8, .2, .5, .8])
+def test_setups_must_pass_both_trends_session_and_volatility_before_scoring():
+    frame = candles(1.1 + np.arange(12) * .00001, [.8, .8, .2, .8, .8, .8, .8, .8, .8, .8, .5, .8])
     env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1)
-    trend = [1., -1., -1., 0., np.nan, 1., 1.]
-    sim = M5Simulation(env, trend)
+    context = pd.DataFrame(dict(
+        H1=[1., -1., -1., 0., np.nan, 1., 1., 1., 1., 1., 1.],
+        H4=[1., -1., 1., 1., 1., -1., np.nan, 1., 1., 1., 1.],
+        session_allowed=True, volatility_allowed=True,
+    ), index=env._times)
+    context.iloc[7, context.columns.get_loc('session_allowed')] = False
+    context.iloc[8, context.columns.get_loc('volatility_allowed')] = False
+    sim = M5Simulation(env, context)
     np.testing.assert_array_equal(sim.entries, [0, 1])
     np.testing.assert_array_equal(sim.actions, [2, 0])
-    assert {k: sim.h1_audit[k] for k in ('before', 'after', 'opposite', 'lateral', 'unavailable')} == {
-        'before': 5, 'after': 2, 'opposite': 1, 'lateral': 1, 'unavailable': 1,
+    assert sim.context_audit['stages'] == dict(MC=9, H1=6, H4=4, session=3, volatility=2)
+    assert sim.context_audit['rejected'] == {
+        'H1': dict(opposite=1, lateral=1, unavailable=1),
+        'H4': dict(opposite=1, lateral=0, unavailable=1), 'session': 1, 'volatility': 1,
     }
+    genes = np.r_[np.zeros(len(market_feature_names(1))), 1.]
+    assert sim.evaluate(genes)['total_trades'] == 2
+    with pytest.raises(ValueError, match='índice'):
+        M5Simulation(env, context.iloc[::-1])
+
+
+def test_session_blackouts_check_expiry_and_follow_local_dst():
+    timestamps = pd.to_datetime([
+        '2025-01-15T21:15Z', '2025-01-15T21:20Z', '2025-01-15T21:25Z',
+        '2025-07-15T20:15Z', '2025-07-15T20:20Z', '2025-07-15T20:25Z',
+        '2025-07-15T21:50Z', '2025-07-15T21:55Z', '2025-07-15T22:50Z',
+        '2025-07-16T00:50Z', '2025-07-16T00:55Z',
+    ], utc=True)
+    np.testing.assert_array_equal(session_allowed(timestamps),
+                                  [True, False, False, True, False, False, False, True, False, False, True])
+
+
+def test_realized_volatility_resets_on_gap_and_floor_uses_only_train():
+    frame = candles(1.1 * np.exp(np.arange(72) * .0001))
+    frame.loc[20:, 'timestamp'] += MARKET.step
+    observed = realized_volatility(frame)
+    assert np.isnan(observed[:12]).all() and np.isnan(observed[20:32]).all()
+    assert observed[32] == pytest.approx(np.sqrt(12) * .0001)
+    cutoff = frame.timestamp.iloc[43]
+    _, config = build_entry_context(frame, cutoff)
+    changed = frame.copy()
+    changed.loc[44:, 'close'] *= np.exp(np.arange(len(changed) - 44) * .001)
+    _, other = build_entry_context(changed, cutoff)
+    assert config['realized_volatility'] == other['realized_volatility']
 
 
 def test_block_fitness_rejects_one_bad_block_and_penalizes_scale_invariant_complexity():
@@ -186,7 +225,7 @@ def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path,
 
 
 def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_holdout(tmp_path):
-    frame = candles(1.1 + np.arange(816) * .00001)
+    frame = candles(1.1 + np.arange(2400) * .00001)
     source = tmp_path/'m5.parquet'
     frame.to_parquet(source)
     output = tmp_path/'original'
@@ -196,8 +235,8 @@ def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_
     assert len(first['search_blocks']) == SEARCH_BLOCKS
     for previous, following in zip(first['search_blocks'], first['search_blocks'][1:]):
         assert pd.Timestamp(previous['end']) < pd.Timestamp(following['start'])
-    fold_setups = sum(b['h1_audit']['before'] for b in first['search_blocks'])
-    assert fold_setups == first['h1_audit']['Búsqueda']['before'] - (SEARCH_BLOCKS - 1)
+    fold_setups = sum(b['context_audit']['stages']['MC'] for b in first['search_blocks'])
+    assert fold_setups == first['context_audit']['Búsqueda']['stages']['MC'] - (SEARCH_BLOCKS - 1)
     start = pd.Timestamp(first['splits']['confirmation']['start'])
     assert start > pd.Timestamp(first['splits']['search']['end']) + MARKET.step
     future = frame.timestamp >= start
@@ -209,6 +248,7 @@ def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_
     assert first['champion']['generation'] == second['champion']['generation']
     assert first['champion']['metrics'] == second['champion']['metrics']
     assert first['confirmation']['metrics'] != second['confirmation']['metrics']
+    assert first['entry_context']['realized_volatility'] == second['entry_context']['realized_volatility']
     assert len(pd.read_csv(output/'evolution.csv')) == 18
     assert (output/'evolution.md').is_file()
     for generation in first['generations']:

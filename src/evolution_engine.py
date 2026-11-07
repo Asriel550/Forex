@@ -17,17 +17,14 @@ import pandas as pd
 from .artifacts import file_sha256
 from .decision import RiskConfig
 from .environment import BinaryOptionsEnv, fit_normalizer, prepare_market_data
+from .evolution_context import build_entry_context, filter_setups
 from .market import MarketConfig, PROTECTED_HOLDOUT_START
 from .metrics import _atomic_write, calculate_metrics
-from .resampling import aggregate
 from .trading_profiles import SCALPING_TARGET_PER_HOUR, resolve_profile
 from .train import chronological_market_split, write_json
 
 LOG = logging.getLogger(__name__)
 MARKET = MarketConfig('M5', 'binary', 1)
-HOUR = MarketConfig('H1').step
-H1_FAST_SPAN, H1_SLOW_SPAN, H1_RANGE_SPAN = 8, 24, 14
-H1_NEUTRAL_RANGE_FRACTION = .10
 SEARCH_BLOCKS = 4
 WORST_BLOCK_WEIGHT = .5
 COMPLEXITY_WEIGHT = .10
@@ -56,30 +53,6 @@ class EvolutionConfig:
                 raise ValueError(f'{name} debe ser un entero de {lower} a {upper}')
 
 
-def closed_h1_direction(frame):
-    """Tendencia H1 en cada decisión M5, usando solo horas completas y vigentes."""
-    timestamp = frame.timestamp
-    result = np.full(len(frame), np.nan)
-    if not timestamp.dt.floor('h').value_counts().eq(HOUR / MARKET.step).any():
-        return result
-    decisions = pd.DatetimeIndex(timestamp + MARKET.step)
-    ohlc = frame[['timestamp', 'open', 'high', 'low', 'close']].assign(volume=0.)
-    hourly = aggregate(ohlc, 5, 'H1', now=decisions[-1])
-    fast = hourly.close.ewm(span=H1_FAST_SPAN, adjust=False, min_periods=H1_FAST_SPAN).mean()
-    slow = hourly.close.ewm(span=H1_SLOW_SPAN, adjust=False, min_periods=H1_SLOW_SPAN).mean()
-    band = H1_NEUTRAL_RANGE_FRACTION * (hourly.high - hourly.low).ewm(
-        span=H1_RANGE_SPAN, adjust=False, min_periods=H1_RANGE_SPAN,
-    ).mean()
-    gap = fast - slow
-    direction = np.select([gap > band, gap < -band], [1., -1.], default=0.)
-    direction[gap.isna() | band.isna()] = np.nan
-    closes = pd.DatetimeIndex(hourly.timestamp + HOUR)
-    last = closes.get_indexer(decisions, method='pad', tolerance=HOUR - MARKET.step)
-    available = last >= 0
-    result[available] = direction[last[available]]
-    return result
-
-
 class M5Simulation:
     """Simulación vectorizada, con la misma caja y ventanas del entorno M5.
 
@@ -87,31 +60,23 @@ class M5Simulation:
     se guardan por separado para liquidar las entradas seleccionadas.
     """
 
-    def __init__(self, env: BinaryOptionsEnv, h1_direction=None):
+    def __init__(self, env: BinaryOptionsEnv, context=None):
         if env.market != MARKET or not env.risk.enabled:
             raise ValueError('La evolución requiere M5 binario, una vela y filtro activo')
         entries = env._eligible[env._setup_mask[env._eligible]]
         up, down, _ = env._probabilities[entries].T
         actions = np.where(up > down, 2, 0)
         self.observed_hours = sum(end - start for start, end in env.segments) / 12
-        self.h1_audit = None
-        if h1_direction is not None:
-            direction = np.asarray(h1_direction)
-            if direction.shape != (len(env._times),):
-                raise ValueError('Se requiere una tendencia H1 por vela M5')
-            trend = direction[entries]
-            signal = np.where(actions == 2, 1, -1)
-            aligned = trend == signal
-            all_trends = direction[env._eligible]
-            self.h1_audit = dict(
-                observed_hours=self.observed_hours, before=len(entries), after=int(aligned.sum()),
-                capacity_per_hour=float(aligned.sum() / self.observed_hours),
-                opposite=int((trend == -signal).sum()), lateral=int((trend == 0).sum()),
-                unavailable=int(np.isnan(trend).sum()),
-                regimes=dict(up=int((all_trends == 1).sum()), down=int((all_trends == -1).sum()),
-                             lateral=int((all_trends == 0).sum()), unavailable=int(np.isnan(all_trends).sum())),
-            )
-            entries, actions = entries[aligned], actions[aligned]
+        self.context_audit = None
+        if context is not None:
+            if not context.index.equals(env._times):
+                raise ValueError('El contexto debe coincidir con el índice de velas M5')
+            allowed, audit = filter_setups(context, entries, actions, env._eligible)
+            entries, actions = entries[allowed], actions[allowed]
+            capacity = len(entries) / self.observed_hours
+            self.context_audit = dict(audit, observed_hours=self.observed_hours,
+                                      capacity_per_hour=capacity,
+                                      frequency_minimum_reachable=capacity >= MIN_TRADES_HOUR)
         self.entries = entries
         self.features = env._market[entries]
         self.actions = actions
@@ -260,19 +225,24 @@ def write_summary(path, report):
     status = 'cumplido' if report['qualified'] else 'rechazado'
     lines.extend(['', f"Gate de la corrida **{status}**. Campeón preseleccionado en generación "
                       f"{report['champion']['generation']}.", '',
-                  '## Filtro causal H1', '',
-                  '| Tramo | Setups MC | Alineados | Opuestos | Laterales | H1 ausente | Máximo/h |',
+                  '## Filtros de entrada', '',
+                  '| Tramo | MC | Tras H1 | Tras H4 | Tras sesión | Tras volatilidad | Máximo/h |',
                   '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'])
-    for label, audit in report['h1_audit'].items():
-        lines.append(f"| {label} | {audit['before']} | {audit['after']} | {audit['opposite']} | "
-                     f"{audit['lateral']} | {audit['unavailable']} | {audit['capacity_per_hour']:.3f} |")
+    for label, audit in report['context_audit'].items():
+        stages = ' | '.join(str(audit['stages'][key]) for key in ('MC', 'H1', 'H4', 'session', 'volatility'))
+        lines.append(f"| {label} | {stages} | {audit['capacity_per_hour']:.3f} |")
+    below_minimum = [label for label, audit in report['context_audit'].items()
+                     if not audit['frequency_minimum_reachable']]
+    if below_minimum:
+        phases = ' y '.join(below_minimum)
+        lines.extend(['', f"La capacidad de {phases} queda por debajo del mínimo de "
+                          f"{MIN_TRADES_HOUR:g} contratos por hora del gate."])
     lines.extend(['', '## Bloques del campeón', '',
-                  '| Bloque | H1 alcista / bajista / lateral / ausente (velas M5) | Contratos | PnL USD | DD |',
+                  '| Bloque | Setups tras filtros | Contratos | PnL USD | DD |',
                   '| --- | ---: | ---: | ---: | ---: |'])
     for block, metrics in zip(report['search_blocks'], report['champion']['blocks']):
-        regimes = block['h1_audit']['regimes']
-        counts = ' / '.join(str(regimes[key]) for key in ('up', 'down', 'lateral', 'unavailable'))
-        lines.append(f"| {block['block']} | {counts} | {metrics['total_trades']} | "
+        setups = block['context_audit']['stages']['volatility']
+        lines.append(f"| {block['block']} | {setups} | {metrics['total_trades']} | "
                      f"{metrics['net_profit']:.2f} | {metrics['max_drawdown_pct']:.2f}% |")
     lines.append('')
     _atomic_write(path, lambda p: Path(p).write_text('\n'.join(lines), encoding='utf-8'))
@@ -302,16 +272,17 @@ def run_evolution(input_path, output_dir, config=None):
         raise ValueError('Datos insuficientes para bloques de búsqueda y confirmación')
     bounds = np.linspace(0, len(search), SEARCH_BLOCKS + 1, dtype=int)
     blocks = [search.iloc[start:end] for start, end in zip(bounds, bounds[1:])]
-    h1_source = prepared.loc[prepared.timestamp <= validation.timestamp.iloc[-1]]
-    h1 = pd.Series(closed_h1_direction(h1_source), index=h1_source.timestamp)
+    context_source = prepared.loc[prepared.timestamp <= validation.timestamp.iloc[-1]]
+    context, context_settings = build_entry_context(context_source, splits['train'].timestamp.iloc[-1])
     normalizer = fit_normalizer(splits['train'])
     risk = RiskConfig(min_confidence=preset['FOREX_MIN_CONFIDENCE'],
                       min_expected_edge=preset['FOREX_MIN_EXPECTED_EDGE'], mc_z=preset['FOREX_MC_Z'])
     env_options = dict(market=MARKET, prepared=True, risk=risk, normalizer=normalizer)
-    search_env = BinaryOptionsEnv(search, **env_options)
-    simulation = M5Simulation(search_env, h1.reindex(search.timestamp).to_numpy())
-    block_sims = [M5Simulation(BinaryOptionsEnv(block, **env_options),
-                               h1.reindex(block.timestamp).to_numpy()) for block in blocks]
+    def simulate(frame):
+        return M5Simulation(BinaryOptionsEnv(frame, **env_options), context.loc[frame.timestamp])
+
+    simulation = simulate(search)
+    block_sims = [simulate(block) for block in blocks]
 
     def evaluate(genome):
         metrics = simulation.evaluate(genome)
@@ -323,9 +294,9 @@ def run_evolution(input_path, output_dir, config=None):
         raise ValueError('La evolución requiere un directorio de salida vacío')
 
     metadata = dict(
-        format='forex_m5_evolution_candidate_v2', profile='scalping', market=asdict(MARKET),
-        policy='accept MC direction when H1 agrees and normalized_features @ weights + bias > 0',
-        input_sha256=source_hash, quant_config=quant, account=asdict(search_env.account),
+        format='forex_m5_evolution_candidate_v3', profile='scalping', market=asdict(MARKET),
+        policy='apply MC, H1/H4, session and realized volatility filters before scoring entries with the genome',
+        input_sha256=source_hash, quant_config=quant, account=asdict(simulation.account),
         risk=asdict(risk), config=asdict(config), holdout_test_evaluated=False,
         protected_holdout_start=PROTECTED_HOLDOUT_START.isoformat(), normalizer_fit='train only',
         fitness_limits=dict(min_win_rate=MIN_WIN_RATE, exclusive_min_profit_factor=MIN_PROFIT_FACTOR,
@@ -334,10 +305,9 @@ def run_evolution(input_path, output_dir, config=None):
         fitness_selection=dict(method='chronological_blocks_v2', blocks=SEARCH_BLOCKS,
                                worst_block_weight=WORST_BLOCK_WEIGHT, complexity_weight=COMPLEXITY_WEIGHT,
                                win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT),
-        h1_filter=dict(fast_span=H1_FAST_SPAN, slow_span=H1_SLOW_SPAN, range_span=H1_RANGE_SPAN,
-                       neutral_range_fraction=H1_NEUTRAL_RANGE_FRACTION, max_age_minutes_exclusive=60),
+        entry_context=context_settings,
         search_blocks=[dict(block=i, rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
-                            end=frame.timestamp.iloc[-1].isoformat(), h1_audit=sim.h1_audit)
+                            end=frame.timestamp.iloc[-1].isoformat(), context_audit=sim.context_audit)
                        for i, (frame, sim) in enumerate(zip(blocks, block_sims), start=1)],
         elite_fraction=ELITE_FRACTION, confirmation_purge_bars=1,
         splits={name: dict(rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
@@ -389,12 +359,12 @@ def run_evolution(input_path, output_dir, config=None):
                 population = breed(rng, population, elites, parents, sigma)
 
     # El genoma queda congelado antes de construir el evaluador de confirmación.
-    confirm_sim = M5Simulation(BinaryOptionsEnv(confirmation, **env_options), h1.reindex(confirmation.timestamp).to_numpy())
+    confirm_sim = simulate(confirmation)
     confirmed = confirm_sim.evaluate(champion_genome)
     final = dict(phase='Confirmación', generation=champion['generation'],
                  metrics=confirmed, fitness=assess_fitness(confirmed))
     report = dict(metadata, generations=history, champion=champion, confirmation=final,
-                  h1_audit={'Búsqueda': simulation.h1_audit, 'Confirmación': confirm_sim.h1_audit},
+                  context_audit={'Búsqueda': simulation.context_audit, 'Confirmación': confirm_sim.context_audit},
                   qualified=champion['fitness']['passed'] and final['fitness']['passed'])
     write_json(root/'evolution.json', report)
     _atomic_write(root/'evolution.csv', lambda p: pd.DataFrame(candidate_rows).to_csv(p, index=False))
