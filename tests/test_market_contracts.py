@@ -241,3 +241,29 @@ def test_resampling_cannot_move_historical_holdout_into_training():
     other=chronological_market_split(changed,market)
     pd.testing.assert_frame_equal(splits['train'],other['train'])
     pd.testing.assert_frame_equal(splits['validation'],other['validation'])
+
+
+def test_frequency_report_counts_valid_entry_grid_and_separates_policy(tmp_path):
+    from src.market_evaluation import evaluate_market_policy
+
+    class Neutral:
+        def predict(self, obs, deterministic=True):
+            return np.array(1), None
+
+    frame = prepared(timeframe='M5').iloc[:6].copy()
+    frame['mc_prob_up'] = [.50, .52, .55, .57, .60, .99]
+    frame['mc_prob_down'] = 1 - frame.mc_prob_up
+    env = BinaryOptionsEnv(
+        frame, prepared=True, lookback=1, market=MarketConfig('M5'),
+        risk=RiskConfig(min_confidence=.54, min_expected_edge=0.),
+    )
+    result = evaluate_market_policy(Neutral(), env, tmp_path, trading_profile='scalping')
+    proposals = result['stochastic_proposals']
+    assert proposals['observed_hours'] == pytest.approx(5/12)
+    assert proposals['before_filter']['count'] == 4
+    assert proposals['after_confidence']['count'] == 3
+    assert proposals['after_economic_filter']['count'] == 2
+    assert proposals['after_economic_filter']['per_hour'] == pytest.approx(4.8)
+    assert result['trades_per_observed_hour'] == 0
+    assert json.loads((tmp_path/'validation_metrics.json').read_text())['stochastic_proposals'] == proposals
+    assert 'Superan confianza, Wilson y payout' in (tmp_path/'validation.md').read_text()
