@@ -20,6 +20,7 @@ from src.environment import AccountConfig, BinaryOptionsEnv, market_feature_name
 from src.evolution_context import (
     CONTEXT_FEATURES, build_observations, closed_trend_bias, realized_volatility, session_observations,
 )
+from src.evolution_direction import FrozenDirectionSimulation, direction_genes, with_direction
 from src.evolution_engine import (
     MARKET, SEARCH_BLOCKS, EvolutionConfig, M5Simulation, assess_fitness, assess_search_fitness,
     breed, improves_on_parent, run_evolution, seeded_population,
@@ -114,6 +115,29 @@ def test_activation_threshold_rejects_weak_call_and_put_signals_before_stop():
     assert filtered['signals_after_activation'] == filtered['total_trades']
     assert filtered['signals_unfilled_due_to_stop'] == 0
     assert 0 < filtered['calls'] < baseline['calls'] and 0 < filtered['puts'] < baseline['puts']
+
+
+def test_direction_ablation_keeps_admissions_and_scores_all_eligible_bars():
+    close = 1.1 + np.tile([0., .0001, .0002, .0001], 5)
+    frame = candles(close, np.tile([.8, .51, .50, .20], 5))
+    env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1,
+                           risk=RiskConfig(enabled=False))
+    sim = M5Simulation(env)
+    width = sim.features.shape[1]
+    founder = np.r_[np.zeros(width), 1., np.zeros(width), .5, .25]
+    control = with_direction(founder, 0.)
+    frozen = FrozenDirectionSimulation(sim, founder)
+    result = frozen.evaluate(control)
+    assert result['signals_after_activation'] == sim.evaluate(founder)['signals_after_activation']
+    assert result['signals_after_activation'] != sim.evaluate(control)['signals_after_activation']
+    assert result['directional']['eligible_bars'] == len(sim.entries)
+    assert result['directional']['eligible_bars'] > result['total_trades']
+    assert result['directional']['paired_gain_per_eligible_bar'] == 0.
+    assert result['directional']['spearman'] == result['directional']['mc_spearman']
+    assert result['directional']['score'] == 0.
+    opposite = with_direction(founder, np.r_[np.zeros(width), -2.])
+    assert frozen.evaluate(opposite)['directional']['disagreements'] > 0
+    assert frozen.evaluate(opposite)['signals_after_activation'] == result['signals_after_activation']
 
 
 def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
@@ -489,6 +513,31 @@ def test_next_run_keeps_search_champion_and_continues_after_last_generation(tmp_
     assert migrated.next_generation == 24 and migrated.genome[-1] == 0.
     for head, name in zip(migrated.genome[:-1].reshape(2, -1), ('entry', 'direction_residual')):
         np.testing.assert_array_equal(head, [*genome[name]['weights'], genome[name]['bias']])
+
+
+def test_direction_only_evolution_freezes_entry_genes_and_isolates_checkpoint(tmp_path, legacy_seed):
+    source = tmp_path/'m5.parquet'
+    candles(1.1 + np.arange(816) * .00001).to_parquet(source)
+    output = tmp_path/'direction'
+    with pytest.raises(ValueError, match='checkpoint de entrada explícito'):
+        run_evolution(source, output, direction_only=True)
+    report = run_evolution(source, output, EvolutionConfig(population_size=4, generations=1, workers=1),
+                           seed_bundle=legacy_seed, direction_only=True)
+    assert report['direction_ablation']['frozen_entry_bundle_sha256'] == file_sha256(legacy_seed)
+    admitted = report['founder_evaluation']['metrics']['signals_after_activation']
+    candidates = pd.read_csv(output/'evolution.csv')
+    assert candidates.signals_after_activation.eq(admitted).all()
+    assert candidates.directional_eligible_bars.eq(candidates.decision_opportunities).all()
+    assert candidates.loc[(candidates.generation == 21) & (candidates.candidate == 1),
+                          'directional_score'].iloc[0] == 0.
+    checkpoint = output/'lineage.zip'
+    train_end, search_end = (pd.Timestamp(report['splits'][phase]['end']) for phase in ('train', 'search'))
+    with pytest.raises(ValueError, match='entradas congeladas'):
+        load_founder(checkpoint, None, train_end, search_end)
+    winner = load_founder(checkpoint, None, train_end, search_end, allow_direction_ablation=True)
+    assert winner.genome[-1] == 0.
+    np.testing.assert_array_equal(winner.genome[:len(direction_genes(winner.genome))-1], 0.)
+    assert winner.genome[len(direction_genes(winner.genome))-1] == .3
 
 
 def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
