@@ -262,7 +262,7 @@ def test_higher_trend_uses_only_complete_candles_and_expires_at_next_close(timef
     prefix = frame.iloc[:first + 4]
     np.testing.assert_allclose(closed_trend_bias(prefix, timeframe), trend[:len(prefix)])
 
-    with_gap = frame.drop(index=width * 24 + 2)
+    with_gap = frame.drop(index=width * 24)
     aligned = pd.Series(closed_trend_bias(with_gap, timeframe), index=with_gap.index)
     assert aligned.loc[width * 25 - 2] == trend[first]
     assert np.isnan(aligned.loc[width * 25 - 1])

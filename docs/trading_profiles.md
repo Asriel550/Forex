@@ -380,7 +380,8 @@ del linaje estándar. ATR y M15 quedan para pruebas separadas.
 El workflow manual **Comparación direccional M15 en Scalping M5**
 continúa desde el checkpoint experimental de la Gen 291 y mantiene
 la admisión de la Gen 268. Los tres brazos usan la misma semilla,
-128 individuos, 20 ciclos y los mismos bloques internos de búsqueda.
+128 individuos, 20 ciclos y los mismos bloques internos de búsqueda,
+preparados una vez en el mismo runner.
 
 El control conserva la dirección original. El brazo con feature
 añade a la dirección la diferencia EMA 8–24 de velas M15 cerradas,
@@ -390,7 +391,8 @@ fijo de +12 cuando el GARCH M5 supera el percentil 67 del tramo de
 entrenamiento. Con ese sesgo direccional todavía pueden coexistir
 señales CALL y PUT. Las entradas conservan su máscara.
 
-Después de congelar a cada campeón, se comprueba el hash de la misma
+Después de congelar a los tres campeones, se prepara marzo una sola vez
+y se comprueba el hash de la misma
 máscara de marzo. El reporte también reproduce a cada campeón con
 su término M15 apagado y cuenta cambios de lado y aciertos en las
 primeras 101 admisiones. La comparación de marzo es retrospectiva.

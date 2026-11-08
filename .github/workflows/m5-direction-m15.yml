@@ -1,15 +1,13 @@
 name: Comparación direccional M15 en Scalping M5
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/m5-direction-m15]
 permissions:
   contents: read
   actions: read
 jobs:
   compare:
-    strategy:
-      fail-fast: false
-      matrix:
-        arm: [control, feature, anchor]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -47,19 +45,19 @@ jobs:
           github-token: ${{ github.token }}
           path: data/direction-pr25
           merge-multiple: true
-      - name: Evolve the arm and replay frozen March admissions
+      - name: Evolve the three arms and replay frozen March admissions
         run: >-
           python -m scripts.run_m5_direction_ablation
           --seed-bundle data/direction-founder/lineage.zip
           --direction-seed-bundle data/direction-pr25/lineage.zip
-          --m15-arm ${{ matrix.arm }}
+          --m15-arm control --m15-arm feature --m15-arm anchor
           --output-dir reports/direction-m15
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: m5-direction-m15-${{ matrix.arm }}
+          name: m5-direction-m15
           path: |
-            reports/direction-m15/evolution.*
-            reports/direction-m15/march.json
-            reports/direction-m15/lineage.zip
+            reports/direction-m15/*/evolution.*
+            reports/direction-m15/*/march.json
+            reports/direction-m15/*/lineage.zip
           if-no-files-found: warn

@@ -95,7 +95,8 @@ def march_comparison(data, founder, candidate, *, direction_seed=None, m15_confi
     admission_hash = sha256(env._times[simulation.entries[frozen.proposed]].asi8.tobytes()).hexdigest()
     if ((len(simulation.entries), len(frozen.proposed)) != (6258, 2859)
             or admission_hash != FROZEN_MARCH_ADMISSIONS_SHA256):
-        raise ValueError('La máscara de marzo difiere de la auditoría de referencia')
+        raise ValueError(f'La máscara de marzo difiere de la auditoría de referencia: '
+                         f'{len(simulation.entries)} velas, {len(frozen.proposed)} admisiones, hash {admission_hash}')
     march = prepared.loc[prepared.timestamp.dt.month.eq(3)]
     bias = m15_direction_bias(prepared) if m15_config and m15_config['arm'] != 'control' else None
     trial = frozen_simulation(simulation, founder.genome, march, bias, m15_config)
@@ -164,7 +165,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--seed-bundle', type=Path, required=True)
     parser.add_argument('--direction-seed-bundle', type=Path)
-    parser.add_argument('--m15-arm', choices=M15_ARMS)
+    parser.add_argument('--m15-arm', choices=M15_ARMS, action='append',
+                        help='Repetir para comparar brazos sobre los mismos datos preparados')
     parser.add_argument('--raw-dir', type=Path, default=Path('data/histdata_scalping'))
     parser.add_argument('--output-dir', type=Path, default=Path('reports/direction-ablation'))
     args = parser.parse_args()
@@ -174,37 +176,45 @@ def main():
         raise ValueError('La primera ablación requiere el checkpoint exacto de la corrida #84')
     if (args.m15_arm is None) != (args.direction_seed_bundle is None):
         parser.error('--m15-arm y --direction-seed-bundle deben proporcionarse juntos')
+    arms = args.m15_arm or [None]
+    if len(set(arms)) != len(arms):
+        parser.error('Cada brazo M15 se debe especificar una sola vez')
     if args.direction_seed_bundle and sha256(args.direction_seed_bundle.read_bytes()).hexdigest() != PR25_DIRECTION_SHA256:
         raise ValueError('La comparación M15 requiere el checkpoint direccional exacto de la PR #25')
     with ZipFile(args.seed_bundle) as archive:
         manifest = json.loads(archive.read('manifest.json'))
     quant = QuantConfig.from_metadata(manifest['quant_config'])
+    train_end, search_end = (pd.Timestamp(manifest['splits'][phase]['end']) for phase in ('train', 'search'))
+    selected = []
     with TemporaryDirectory() as temporary:
         input_path = Path(temporary) / 'features-2025.parquet'
         load_features(args.raw_dir, ['2025'], quant).to_parquet(input_path, index=False)
-        search = run_evolution(input_path, args.output_dir, EvolutionConfig(population_size=128, generations=20),
-                               seed_bundle=args.seed_bundle, direction_only=True,
-                               direction_seed_bundle=args.direction_seed_bundle, m15_arm=args.m15_arm)
+        for arm in arms:
+            output = args.output_dir / arm if len(arms) > 1 else args.output_dir
+            search = run_evolution(input_path, output, EvolutionConfig(population_size=128, generations=20),
+                                   seed_bundle=args.seed_bundle, direction_only=True,
+                                   direction_seed_bundle=args.direction_seed_bundle, m15_arm=arm)
+            for phase in ('train', 'search', 'confirmation'):
+                if search['splits'][phase] != manifest['splits'][phase]:
+                    raise ValueError(f'El tramo {phase} difiere de la corrida de referencia')
+            first_generation = 294 if arm else 273
+            if search['lineage']['first_generation'] != first_generation:
+                raise ValueError(f'Se esperaba iniciar la ablación en la generación {first_generation}')
+            selected.append((output, search))
 
-    # El campeón y su checkpoint ya están fijados al cargar las velas de 2026.
-    train_end, search_end = (pd.Timestamp(manifest['splits'][phase]['end']) for phase in ('train', 'search'))
-    for phase in ('train', 'search', 'confirmation'):
-        if search['splits'][phase] != manifest['splits'][phase]:
-            raise ValueError(f'El tramo {phase} difiere de la corrida de referencia')
+    # Todos los campeones y sus checkpoints ya están fijados al cargar las velas de 2026.
     founder = load_founder(args.seed_bundle, None, train_end, search_end)
-    candidate = load_founder(args.output_dir/'lineage.zip', None, train_end, search_end,
-                             allow_direction_ablation=True)
-    first_generation = 294 if args.m15_arm else 273
-    if search['lineage']['first_generation'] != first_generation:
-        raise ValueError(f'Se esperaba iniciar la ablación en la generación {first_generation}')
     direction_seed = (load_founder(args.direction_seed_bundle, None, train_end, search_end,
                                    allow_direction_ablation=True) if args.direction_seed_bundle else None)
     fresh = load_features(args.raw_dir, ['202601', '202602', '202603'], quant)
-    result = march_comparison(fresh, founder, candidate, direction_seed=direction_seed,
-                              m15_config=search['direction_ablation'].get('m15'),
-                              m15_weight=search['champion'].get('m15_weight', 0.))
-    write_json(args.output_dir/'march.json', result)
-    print('DIRECTION_ABLATION ' + json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
+    for output, search in selected:
+        candidate = load_founder(output/'lineage.zip', None, train_end, search_end,
+                                 allow_direction_ablation=True)
+        result = march_comparison(fresh, founder, candidate, direction_seed=direction_seed,
+                                  m15_config=search['direction_ablation'].get('m15'),
+                                  m15_weight=search['champion'].get('m15_weight', 0.))
+        write_json(output/'march.json', result)
+        print('DIRECTION_ABLATION ' + json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
 
 
 if __name__ == '__main__':
