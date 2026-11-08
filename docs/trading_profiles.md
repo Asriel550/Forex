@@ -374,3 +374,23 @@ compara el campeón con la Gen 268 y Monte Carlo sobre las mismas
 entradas. Marzo se usa como diagnóstico retrospectivo. El artefacto
 experimental requiere el checkpoint de entradas y se guarda fuera
 del linaje estándar. ATR y M15 quedan para pruebas separadas.
+
+### Comparación M15 de las Gen 294 a 314
+
+El workflow manual **Comparación direccional M15 en Scalping M5**
+continúa desde el checkpoint experimental de la Gen 291 y mantiene
+la admisión de la Gen 268. Los tres brazos usan la misma semilla,
+128 individuos, 20 ciclos y los mismos bloques internos de búsqueda.
+
+El control conserva la dirección original. El brazo con feature
+añade a la dirección la diferencia EMA 8–24 de velas M15 cerradas,
+dividida por su propio rango medio y recortada a ±3. El coeficiente
+heredable se limita a ±6. El brazo con ancla añade un coeficiente
+fijo de +12 cuando el GARCH M5 supera el percentil 67 del tramo de
+entrenamiento. Con ese sesgo direccional todavía pueden coexistir
+señales CALL y PUT. Las entradas conservan su máscara.
+
+Después de congelar a cada campeón, se comprueba el hash de la misma
+máscara de marzo. El reporte también reproduce a cada campeón con
+su término M15 apagado y cuenta cambios de lado y aciertos en las
+primeras 101 admisiones. La comparación de marzo es retrospectiva.

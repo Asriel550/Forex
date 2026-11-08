@@ -18,9 +18,10 @@ import pandas as pd
 from .artifacts import file_sha256
 from .decision import RiskConfig
 from .environment import BinaryOptionsEnv, prepare_market_data
-from .evolution_context import CONTEXT_SETTINGS, build_observations
+from .evolution_context import CONTEXT_SETTINGS, M15_DIRECTION_CLIP, build_observations, m15_direction_bias
 from .evolution_direction import (
-    DISAGREEMENT_WEIGHT, SPEARMAN_WEIGHT, FrozenDirectionSimulation, direction_genes, with_direction,
+    DISAGREEMENT_WEIGHT, M15_ANCHOR_WEIGHT, M15_ARMS, M15_WEIGHT_LIMIT, SPEARMAN_WEIGHT,
+    direction_genes, frozen_simulation, with_direction,
 )
 from .evolution_lineage import FORMAT, MARKET, MARKET_FEATURES, genome_payload, load_founder
 from .market import PROTECTED_HOLDOUT_START
@@ -315,11 +316,36 @@ def write_summary(path, report):
     _atomic_write(path, lambda p: Path(p).write_text('\n'.join(lines), encoding='utf-8'))
 
 
-def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, direction_only=False):
+def _load_direction_seed(bundle, founder, train_end, search_end, m15_arm):
+    """Continúa solo desde una ablación que usó las mismas entradas congeladas."""
+    with ZipFile(bundle) as archive:
+        manifest = json.loads(archive.read('manifest.json'))
+    ablation = manifest.get('direction_ablation', {})
+    if ablation.get('frozen_entry_bundle_sha256') != founder.provenance['bundle_sha256']:
+        raise ValueError('El checkpoint direccional usó otras entradas congeladas')
+    prior_m15 = ablation.get('m15')
+    if prior_m15 is not None and prior_m15['arm'] != m15_arm:
+        raise ValueError('El checkpoint direccional pertenece a otro brazo M15')
+    direction_seed = load_founder(bundle, None, train_end, search_end, allow_direction_ablation=True)
+    if (direction_seed.normalizer != founder.normalizer or direction_seed.account != founder.account
+            or direction_seed.drawdown_limit != founder.drawdown_limit
+            or not np.array_equal(direction_seed.genome, with_direction(founder.genome, direction_genes(direction_seed.genome)))):
+        raise ValueError('El checkpoint direccional modificó los genes congelados o la simulación')
+    m15_weight = float(manifest['selection'].get('m15_weight', 0.))
+    if not np.isfinite(m15_weight) or abs(m15_weight) > M15_WEIGHT_LIMIT:
+        raise ValueError('Peso M15 inválido en el checkpoint direccional')
+    return direction_seed, m15_weight
+
+
+def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, direction_only=False,
+                  direction_seed_bundle=None, m15_arm=None):
     """Guarda cada ganador de generación y comprueba al campeón fuera de búsqueda."""
     config = config or EvolutionConfig()
     if direction_only and seed_bundle is None:
         raise ValueError('La ablación direccional requiere un checkpoint de entrada explícito')
+    if ((direction_seed_bundle is not None or m15_arm is not None) and not direction_only
+            or (m15_arm is not None and m15_arm not in M15_ARMS)):
+        raise ValueError('El checkpoint direccional y M15 requieren una ablación compatible')
     input_path, root = Path(input_path), Path(output_dir)
     source_hash = file_sha256(input_path)
     raw = pd.read_parquet(input_path)
@@ -346,6 +372,21 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
     train = splits['train']
     founder = load_founder(seed_bundle, context.loc[train.timestamp],
                            train.timestamp.iloc[-1], search.timestamp.iloc[-1])
+    direction_seed, initial_m15_weight = founder, 0.
+    if direction_seed_bundle is not None:
+        direction_seed, initial_m15_weight = _load_direction_seed(
+            direction_seed_bundle, founder, train.timestamp.iloc[-1], search.timestamp.iloc[-1], m15_arm,
+        )
+    m15_config = m15_bias = None
+    if m15_arm is not None:
+        m15_config = dict(
+            arm=m15_arm, feature='closed_M15_ema8_minus_ema24_over_mean_range',
+            feature_clip=M15_DIRECTION_CLIP, learned_weight_limit=M15_WEIGHT_LIMIT,
+            high_volatility_cutoff=float(train.cond_volatility.quantile(2/3)),
+            anchor_weight=M15_ANCHOR_WEIGHT if m15_arm == 'anchor' else 0.,
+        )
+        if m15_arm != 'control':
+            m15_bias = m15_direction_bias(context_source)
     normalizer = founder.normalizer
     width = len(MARKET_FEATURES)
     market_normalizer = {k: normalizer[k][:width] for k in ('features', 'mean', 'std')}
@@ -358,19 +399,28 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
 
     def simulate(frame):
         sim = M5Simulation(BinaryOptionsEnv(frame, **env_options), context.loc[frame.timestamp])
-        return FrozenDirectionSimulation(sim, founder.genome) if direction_only else sim
+        return frozen_simulation(sim, founder.genome, frame, m15_bias, m15_config) if direction_only else sim
 
     simulation = simulate(search)
     block_sims = [simulate(block) for block in blocks]
     payout = founder.account.payout
 
     def full_genome(genes):
+        if m15_config is not None:
+            genes = genes[:-1]
         return with_direction(founder.genome, genes) if direction_only else genes
+
+    def m15_weight(genes):
+        return float(genes[-1]) if m15_bias is not None else 0.
+
+    def evaluate_simulation(sim, genome, weight):
+        return sim.evaluate(genome, m15_weight=weight) if direction_only else sim.evaluate(genome)
 
     def evaluate(genes):
         genome = full_genome(genes)
-        metrics = simulation.evaluate(genome)
-        by_block = [sim.evaluate(genome) for sim in block_sims]
+        weight = m15_weight(genes)
+        metrics = evaluate_simulation(simulation, genome, weight)
+        by_block = [evaluate_simulation(sim, genome, weight) for sim in block_sims]
         fitness = assess_search_fitness(metrics, by_block, payout=payout)
         if direction_only:
             scores = [block['directional']['score'] for block in by_block]
@@ -384,7 +434,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
     if any(root.iterdir()):
         raise ValueError('La evolución requiere un directorio de salida vacío')
 
-    first_generation = founder.next_generation
+    first_generation = direction_seed.next_generation
     last_generation = first_generation + config.generations
     wide_count = max(1, round(WIDE_MUTATION_FRACTION * config.population_size))
     wide_start = config.population_size - wide_count
@@ -395,7 +445,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
         risk=dict(drawdown_limit=risk.drawdown_limit), config=asdict(config), holdout_test_evaluated=False,
         protected_holdout_start=PROTECTED_HOLDOUT_START.isoformat(),
         normalizer_fit='inherited market statistics; context fitted on train at migration',
-        lineage=dict(founder.provenance, first_generation=first_generation, last_generation=last_generation),
+        lineage=dict(direction_seed.provenance, first_generation=first_generation, last_generation=last_generation),
         fitness_limits=dict(min_win_rate=MIN_WIN_RATE, exclusive_min_profit_factor=MIN_PROFIT_FACTOR,
                             trades_per_hour=[MIN_TRADES_HOUR, MAX_TRADES_HOUR],
                             exclusive_max_drawdown_pct=MAX_DRAWDOWN_PCT),
@@ -428,7 +478,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
                 for name, frame in (('train', train), ('search', search),
                                     ('confirmation', confirmation))},
     )
-    genes = founder.genome
+    genes = direction_seed.genome
     if direction_only:
         genes = direction_genes(genes)
         metadata['policy'] = 'frozen founder admissions; evolve direction residual only'
@@ -439,15 +489,20 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
             fitness_weight=DIRECTIONAL_FITNESS_WEIGHT, initial_mc_candidate=1,
             tie_policy='MC direction, then frozen founder direction',
         )
+        if m15_config is not None:
+            # El control reserva el mismo gen inactivo para igualar el presupuesto y el RNG inicial.
+            genes = np.r_[genes, initial_m15_weight]
+            metadata['direction_ablation']['m15'] = m15_config
+            metadata['direction_ablation']['initial_mc_candidate'] = 1 if m15_arm != 'anchor' else None
     LOG.info('Linaje M5. Fundador gen %d. Generaciones %d a %d',
-             founder.provenance['source_generation'], first_generation, last_generation)
+             direction_seed.provenance['source_generation'], first_generation, last_generation)
     founder_result = evaluate(genes)
     founder_metrics, founder_blocks, founder_fitness = founder_result
-    founder_evaluation = dict(generation=founder.provenance['source_generation'],
+    founder_evaluation = dict(generation=direction_seed.provenance['source_generation'],
                               metrics=founder_metrics, blocks=founder_blocks, fitness=founder_fitness)
     LOG.info('Aptitud reevaluada del fundador: %.4f', founder_fitness['score'])
     rng = np.random.default_rng([config.seed, first_generation])
-    sigma = founder.mutation_sigma
+    sigma = direction_seed.mutation_sigma
     population = seeded_population(rng, genes, config.population_size, sigma, wide_count=wide_count)
     if direction_only:
         # Un residuo cero representa a Monte Carlo con las entradas congeladas.
@@ -460,6 +515,8 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
             # Refleja mutaciones negativas del umbral para mantener una escala no negativa.
             if not direction_only:
                 population[:, -1] = np.abs(population[:, -1])
+            elif m15_config is not None:
+                population[:, -1] = np.clip(population[:, -1], -M15_WEIGHT_LIMIT, M15_WEIGHT_LIMIT)
             if generation == first_generation:
                 evaluations = chain((founder_result,), executor.map(evaluate, population[1:]))
             else:
@@ -480,6 +537,8 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
                           wide_eligible=sum(eligible[wide_start:]),
                           wide_parents=sum(i >= wide_start for i in parents),
                           qualified_candidates=sum(f['passed'] for f in fitness))
+            if m15_config is not None:
+                record['m15_weight'] = m15_weight(population[best])
             improved = champion is None or ranks[best] > (
                 champion['fitness']['score'], champion['net_profit_per_observed_hour'],
             )
@@ -521,7 +580,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, dire
 
     # El genoma queda congelado antes de construir el evaluador de confirmación.
     confirm_sim = simulate(confirmation)
-    confirmed = confirm_sim.evaluate(champion_genome)
+    confirmed = evaluate_simulation(confirm_sim, champion_genome, champion.get('m15_weight', 0.))
     final = dict(phase='Confirmación', generation=champion['generation'],
                  metrics=confirmed, fitness=assess_fitness(confirmed, payout=payout))
     lineage_state = dict(last_completed_generation=last_generation, next_mutation_sigma=sigma)
@@ -544,6 +603,8 @@ def main():
     parser.add_argument('--output-dir', type=Path, default=Path('reports/evolution'))
     parser.add_argument('--seed-bundle', type=Path)
     parser.add_argument('--direction-only', action='store_true')
+    parser.add_argument('--direction-seed-bundle', type=Path)
+    parser.add_argument('--m15-arm', choices=M15_ARMS)
     parser.add_argument('--population-size', type=int, default=defaults.population_size)
     parser.add_argument('--generations', type=int, default=defaults.generations)
     parser.add_argument('--seed', type=int, default=defaults.seed)
@@ -552,7 +613,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     config = EvolutionConfig(args.population_size, args.generations, args.seed, args.workers)
     run_evolution(args.input, args.output_dir, config, seed_bundle=args.seed_bundle,
-                  direction_only=args.direction_only)
+                  direction_only=args.direction_only, direction_seed_bundle=args.direction_seed_bundle,
+                  m15_arm=args.m15_arm)
 
 
 if __name__ == '__main__':

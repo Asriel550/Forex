@@ -6,6 +6,9 @@ from scipy.stats import rankdata
 
 DISAGREEMENT_WEIGHT = 2.
 SPEARMAN_WEIGHT = .10
+M15_ARMS = ('control', 'feature', 'anchor')
+M15_WEIGHT_LIMIT = 6.
+M15_ANCHOR_WEIGHT = 12.
 
 
 def direction_genes(genome):
@@ -18,6 +21,16 @@ def with_direction(genome, genes):
     return candidate
 
 
+def frozen_simulation(simulation, founder, frame, m15_bias=None, m15_config=None):
+    """Prepara el término M15 en las mismas velas elegibles que la simulación."""
+    if m15_bias is None:
+        return FrozenDirectionSimulation(simulation, founder)
+    bias = m15_bias.loc[frame.timestamp].to_numpy()[simulation.entries]
+    volatility = frame.cond_volatility.to_numpy()[simulation.entries]
+    anchor = m15_config['anchor_weight'] * (volatility > m15_config['high_volatility_cutoff'])
+    return FrozenDirectionSimulation(simulation, founder, m15_bias=bias, m15_anchor=anchor)
+
+
 def _centered_ranks(values):
     ranks = rankdata(values)
     return ranks - (len(ranks) + 1) / 2
@@ -26,7 +39,7 @@ def _centered_ranks(values):
 class FrozenDirectionSimulation:
     """Usa la decisión de entrada y el umbral del fundador para todos los candidatos."""
 
-    def __init__(self, simulation, founder):
+    def __init__(self, simulation, founder, *, m15_bias=None, m15_anchor=0.):
         self.simulation = simulation
         entry, original_direction = simulation.decision_scores(founder)
         margin = np.abs(original_direction)
@@ -43,6 +56,8 @@ class FrozenDirectionSimulation:
         self.mc_rho = self._spearman(simulation.mc_margin)
         self.mc_payoff = self._unit_payoff(self.mc_side)
         self.mc_hits = (self.mc_side == simulation.change) & self.resolved
+        self.m15_bias = m15_bias
+        self.m15_anchor = m15_anchor
 
     def _spearman(self, direction):
         ranks = _centered_ranks(direction[self.resolved])
@@ -55,11 +70,17 @@ class FrozenDirectionSimulation:
         return np.where((side == 0.) | ((change == 0.) & (account.tie_policy == 'refund')), 0.,
                         np.where(side == change, account.payout, -1.))
 
-    def evaluate(self, genome):
+    def direction_scores(self, genome, *, m15_weight=0.):
         _, raw_direction = self.simulation.decision_scores(genome)
+        if self.m15_bias is not None:
+            raw_direction = raw_direction + (m15_weight + self.m15_anchor) * self.m15_bias
         # En un empate exacto se conserva la entrada con dirección MC o, si
         # también empata MC, con el lado original del fundador.
         direction = np.where(raw_direction != 0., raw_direction, self.mc_direction)
+        return raw_direction, direction
+
+    def evaluate(self, genome, *, m15_weight=0.):
+        raw_direction, direction = self.direction_scores(genome, m15_weight=m15_weight)
         metrics = self.simulation.simulate_trades(
             direction, self.proposed, signals=self.signals, activation_threshold=self.threshold,
         )
