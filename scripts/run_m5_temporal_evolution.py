@@ -231,6 +231,9 @@ def run(*, generations=MAX_GENERATIONS, seeds=SEEDS, percentiles=PERCENTILES,
             or not percentiles or not set(percentiles).issubset(PERCENTILES)
             or len(percentiles) != len(set(percentiles))):
         raise ValueError('Parámetros fuera del protocolo Gen 376+')
+    if ((generations > 1 or len(seeds) > 1 or len(percentiles) > 1)
+            and (snapshot_path is None or snapshot_manifest is None)):
+        raise ValueError('Evolución extendida requiere dos reconstrucciones IS idénticas y snapshot sellado')
     output = OUTPUT / ('evolution-full.json' if generations == MAX_GENERATIONS and
                        set(seeds) == set(SEEDS) and set(percentiles) == set(PERCENTILES)
                        else f'evolution-smoke-{generations}g-{len(seeds)}s-{len(percentiles)}p.json')
@@ -280,6 +283,7 @@ def run(*, generations=MAX_GENERATIONS, seeds=SEEDS, percentiles=PERCENTILES,
         selection_requires_both_quarters=True,
         high_volatility_training_cutoff_from_q1=sample['vol_cut'],
         hash_audit=sample['hashes'],
+        fitness_calibration=__import__('src.evolution_engine', fromlist=['temporal_fitness_weights']).temporal_fitness_weights(),
         is_snapshot_sha256=(file_sha256(snapshot_path) if snapshot_path is not None else None),
         interpretation='research: never promote a non-qualifying champion',
         replicas=replicas,
