@@ -63,7 +63,7 @@ def _check_normalizer(normalizer, names):
         raise ValueError('Normalizador del linaje incompatible')
 
 
-def load_founder(seed_bundle, context_train, train_end, search_end):
+def load_founder(seed_bundle, context_train, train_end, search_end, *, allow_direction_ablation=False):
     """Migra v3/v4 con umbral cero y conserva el umbral heredado de v5."""
     origin = {}
     if seed_bundle is None:
@@ -85,6 +85,8 @@ def load_founder(seed_bundle, context_train, train_end, search_end):
             contents[name] = json.loads(raw)
 
     version = manifest.get('format')
+    if manifest.get('direction_ablation') and not allow_direction_ablation:
+        raise ValueError('La ablación direccional requiere su checkpoint de entradas congeladas')
     if (version not in (LEGACY_FORMAT, CONTEXT_FORMAT, FORMAT) or manifest.get('market') != asdict(MARKET)
             or manifest.get('profile') != 'scalping' or manifest.get('holdout_test_evaluated') is not False):
         raise ValueError('El fundador debe ser un candidato de investigación M5 binario compatible')

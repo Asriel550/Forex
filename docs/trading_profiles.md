@@ -351,3 +351,26 @@ El campeón activó el stop y quedó rechazado por el gate. La prueba
 de continuidad heredó sus pesos y comenzó en la generación 42.
 Se reutilizó la confirmación histórica para el diagnóstico y el
 holdout quedó reservado.
+
+### Ablación direccional de la Gen 273
+
+El workflow manual **Ablación direccional Scalping M5** descarga el
+checkpoint de la #84 y comprueba su SHA256. La admisión se reconstruye
+con la Gen 268 completa en cada ventana. El cruce y la mutación actúan
+sobre los genes direccionales. Monte Carlo puro participa como control
+de la primera población con los pesos de ajuste en cero.
+
+La aptitud suma al puntaje económico una medida direccional calculada
+sobre todas las velas elegibles de los cuatro bloques internos. La
+medida combina dos veces el diferencial de payoff por vela frente a
+Monte Carlo y 0,10 veces la diferencia de Spearman. Para agregar los
+bloques se ponderan por igual su media y su mínimo. En empate exacto
+del puntaje direccional se toma el lado Monte Carlo o el lado original
+del fundador si Monte Carlo también empata.
+
+Tras seleccionar al campeón y guardar el checkpoint, el workflow
+carga 2026 y reproduce marzo con la máscara congelada. El reporte
+compara el campeón con la Gen 268 y Monte Carlo sobre las mismas
+entradas. Marzo se usa como diagnóstico retrospectivo. El artefacto
+experimental requiere el checkpoint de entradas y se guarda fuera
+del linaje estándar. ATR y M15 quedan para pruebas separadas.

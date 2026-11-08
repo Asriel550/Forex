@@ -19,6 +19,9 @@ from .artifacts import file_sha256
 from .decision import RiskConfig
 from .environment import BinaryOptionsEnv, prepare_market_data
 from .evolution_context import CONTEXT_SETTINGS, build_observations
+from .evolution_direction import (
+    DISAGREEMENT_WEIGHT, SPEARMAN_WEIGHT, FrozenDirectionSimulation, direction_genes, with_direction,
+)
 from .evolution_lineage import FORMAT, MARKET, MARKET_FEATURES, genome_payload, load_founder
 from .market import PROTECTED_HOLDOUT_START
 from .metrics import _atomic_write, calculate_metrics
@@ -49,6 +52,7 @@ MIN_TRADES_HOUR, MAX_TRADES_HOUR = 1.2, 2.5
 LOW_FREQUENCY_WEIGHT = 2.
 MIN_ACTIVATION_REJECTION, MAX_ACTIVATION_REJECTION = .20, .30
 ACTIVATION_REJECTION_WEIGHT = .15
+DIRECTIONAL_FITNESS_WEIGHT = 1.
 
 
 @dataclass(frozen=True)
@@ -95,16 +99,23 @@ class M5Simulation:
         self.timestamps = env._times + env.bar_step
         self.stop_limit = min(self.account.max_drawdown, env.risk.drawdown_limit)
 
+    def decision_scores(self, genome):
+        heads = genome[:-1].reshape(2, self.features.shape[1] + 1)
+        scores = np.einsum('ij,kj->ik', self.features, heads[:, :-1]) + heads[:, -1]
+        return scores[:, 0], self.mc_margin + scores[:, 1]
+
     def evaluate(self, genome):
         """El genoma decide entrada y dirección. Los retornos futuros solo liquidan."""
-        heads = genome[:-1].reshape(2, self.features.shape[1] + 1)
+        entry, direction = self.decision_scores(genome)
         activation_threshold = float(genome[-1])
-        scores = np.einsum('ij,kj->ik', self.features, heads[:, :-1]) + heads[:, -1]
-        direction = self.mc_margin + scores[:, 1]
         margin = np.abs(direction)
-        entries = (scores[:, 0] > 0.) & (margin > 0.)
+        entries = (entry > 0.) & (margin > 0.)
         proposed = np.flatnonzero(entries & (margin > activation_threshold))
-        signals = int(entries.sum())
+        return self.simulate_trades(direction, proposed, signals=int(entries.sum()),
+                                    activation_threshold=activation_threshold)
+
+    def simulate_trades(self, direction, proposed, *, signals, activation_threshold):
+        """Liquida una secuencia de entradas bajo las mismas reglas de caja y stop."""
         accepted = len(proposed)
         rejected = signals - accepted
         side = np.sign(direction[proposed])
@@ -304,9 +315,11 @@ def write_summary(path, report):
     _atomic_write(path, lambda p: Path(p).write_text('\n'.join(lines), encoding='utf-8'))
 
 
-def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
+def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None, direction_only=False):
     """Guarda cada ganador de generación y comprueba al campeón fuera de búsqueda."""
     config = config or EvolutionConfig()
+    if direction_only and seed_bundle is None:
+        raise ValueError('La ablación direccional requiere un checkpoint de entrada explícito')
     input_path, root = Path(input_path), Path(output_dir)
     source_hash = file_sha256(input_path)
     raw = pd.read_parquet(input_path)
@@ -344,16 +357,28 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                        account=founder.account)
 
     def simulate(frame):
-        return M5Simulation(BinaryOptionsEnv(frame, **env_options), context.loc[frame.timestamp])
+        sim = M5Simulation(BinaryOptionsEnv(frame, **env_options), context.loc[frame.timestamp])
+        return FrozenDirectionSimulation(sim, founder.genome) if direction_only else sim
 
     simulation = simulate(search)
     block_sims = [simulate(block) for block in blocks]
-    payout = simulation.account.payout
+    payout = founder.account.payout
 
-    def evaluate(genome):
+    def full_genome(genes):
+        return with_direction(founder.genome, genes) if direction_only else genes
+
+    def evaluate(genes):
+        genome = full_genome(genes)
         metrics = simulation.evaluate(genome)
         by_block = [sim.evaluate(genome) for sim in block_sims]
-        return metrics, by_block, assess_search_fitness(metrics, by_block, payout=payout)
+        fitness = assess_search_fitness(metrics, by_block, payout=payout)
+        if direction_only:
+            scores = [block['directional']['score'] for block in by_block]
+            robustness = .5 * (float(np.mean(scores)) + min(scores))
+            fitness['economic_score'] = fitness['score']
+            fitness['directional_robustness'] = robustness
+            fitness['score'] += DIRECTIONAL_FITNESS_WEIGHT * robustness
+        return metrics, by_block, fitness
 
     root.mkdir(parents=True, exist_ok=True)
     if any(root.iterdir()):
@@ -366,7 +391,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
     metadata = dict(
         format=FORMAT, profile='scalping', market=asdict(MARKET),
         policy='positive entry head and absolute adjusted direction margin above inherited activation threshold',
-        input_sha256=source_hash, quant_config=quant, account=asdict(simulation.account),
+        input_sha256=source_hash, quant_config=quant, account=asdict(founder.account),
         risk=dict(drawdown_limit=risk.drawdown_limit), config=asdict(config), holdout_test_evaluated=False,
         protected_holdout_start=PROTECTED_HOLDOUT_START.isoformat(),
         normalizer_fit='inherited market statistics; context fitted on train at migration',
@@ -403,23 +428,38 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 for name, frame in (('train', train), ('search', search),
                                     ('confirmation', confirmation))},
     )
+    genes = founder.genome
+    if direction_only:
+        genes = direction_genes(genes)
+        metadata['policy'] = 'frozen founder admissions; evolve direction residual only'
+        metadata['direction_ablation'] = dict(
+            frozen_entry_bundle_sha256=founder.provenance['bundle_sha256'],
+            frozen_entry_generation=founder.provenance['source_generation'],
+            disagreement_weight=DISAGREEMENT_WEIGHT, spearman_weight=SPEARMAN_WEIGHT,
+            fitness_weight=DIRECTIONAL_FITNESS_WEIGHT, initial_mc_candidate=1,
+            tie_policy='MC direction, then frozen founder direction',
+        )
     LOG.info('Linaje M5. Fundador gen %d. Generaciones %d a %d',
              founder.provenance['source_generation'], first_generation, last_generation)
-    founder_result = evaluate(founder.genome)
+    founder_result = evaluate(genes)
     founder_metrics, founder_blocks, founder_fitness = founder_result
     founder_evaluation = dict(generation=founder.provenance['source_generation'],
                               metrics=founder_metrics, blocks=founder_blocks, fitness=founder_fitness)
     LOG.info('Aptitud reevaluada del fundador: %.4f', founder_fitness['score'])
     rng = np.random.default_rng([config.seed, first_generation])
     sigma = founder.mutation_sigma
-    population = seeded_population(rng, founder.genome, config.population_size, sigma, wide_count=wide_count)
+    population = seeded_population(rng, genes, config.population_size, sigma, wide_count=wide_count)
+    if direction_only:
+        # Un residuo cero representa a Monte Carlo con las entradas congeladas.
+        population[1] = 0.
     elite_count = math.ceil(ELITE_FRACTION * len(population))
     history, candidate_rows = [], []
     champion = champion_genome = None
     with ThreadPoolExecutor(max_workers=config.workers) as executor:
         for generation in range(first_generation, last_generation + 1):
             # Refleja mutaciones negativas del umbral para mantener una escala no negativa.
-            population[:, -1] = np.abs(population[:, -1])
+            if not direction_only:
+                population[:, -1] = np.abs(population[:, -1])
             if generation == first_generation:
                 evaluations = chain((founder_result,), executor.map(evaluate, population[1:]))
             else:
@@ -446,12 +486,13 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
             if generation > first_generation:
                 sigma = max(.025, sigma * .85) if improved else min(.35, sigma * 1.25)
             record['mutation_sigma'] = sigma if generation < last_generation else None
-            digest = save_candidate(root/'candidates'/name, population[best], normalizer,
+            winner = full_genome(population[best])
+            digest = save_candidate(root/'candidates'/name, winner, normalizer,
                                     dict(metadata, selection=record))
             record['bundle_sha256'] = digest
             history.append(record)
             if improved:
-                champion, champion_genome = record, population[best].copy()
+                champion, champion_genome = record, winner.copy()
             candidate_rows.extend(dict(
                 generation=generation, candidate=i, fitness=f['score'], elite=i in elites,
                 wide_mutation=i >= wide_start, selection_eligible=eligible[i],
@@ -461,6 +502,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 passed=f['passed'], **{f'pass_{k}': v for k, v in f['checks'].items()},
                 **{f'block_{j}_score': score for j, score in enumerate(f['block_scores'], start=1)},
                 **{f'forward_to_{j}_penalty': penalty for j, penalty in enumerate(f['forward_penalties'], start=2)},
+                **{f'directional_{k}': v for k, v in m.get('directional', {}).items()},
                 **{k: m[k] for k in ('total_trades', 'win_rate_excluding_refunds', 'profit_factor',
                                      'profit_factor_status', 'trades_per_observed_hour', 'max_drawdown_pct',
                                      'net_profit', 'risk_stop', 'calls', 'puts', 'decision_opportunities',
@@ -501,6 +543,7 @@ def main():
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, default=Path('reports/evolution'))
     parser.add_argument('--seed-bundle', type=Path)
+    parser.add_argument('--direction-only', action='store_true')
     parser.add_argument('--population-size', type=int, default=defaults.population_size)
     parser.add_argument('--generations', type=int, default=defaults.generations)
     parser.add_argument('--seed', type=int, default=defaults.seed)
@@ -508,7 +551,8 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     config = EvolutionConfig(args.population_size, args.generations, args.seed, args.workers)
-    run_evolution(args.input, args.output_dir, config, seed_bundle=args.seed_bundle)
+    run_evolution(args.input, args.output_dir, config, seed_bundle=args.seed_bundle,
+                  direction_only=args.direction_only)
 
 
 if __name__ == '__main__':
