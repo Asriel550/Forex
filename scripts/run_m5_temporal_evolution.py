@@ -151,7 +151,9 @@ def score_individual(scores, sample, percentile):
     fitness = assess_temporal_multiregime_fitness(
         quarterly, stake=sample['account'].stake, direction_loss=loss['total']
     )
-    fitness.update(direction_loss_components=loss,
+    fitness.update(loss_direction=loss['direction'],
+                   loss_high_vol_false_positive=loss['high_vol_false_positive'],
+                   high_vol_wrong_count=loss['high_vol_wrong_count'],
                    quarter_pnl_usd=[q['pnl_usd'] for q in quarterly],
                    quarter_pf=[q['profit_factor'] for q in quarterly],
                    quarter_trades=[q['trades'] for q in quarterly])
