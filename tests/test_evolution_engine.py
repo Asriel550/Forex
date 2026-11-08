@@ -24,7 +24,9 @@ from src.evolution_engine import (
     MARKET, SEARCH_BLOCKS, EvolutionConfig, M5Simulation, assess_fitness, assess_search_fitness,
     breed, run_evolution,
 )
-from src.evolution_lineage import FORMAT, LEGACY_FORMAT, MARKET_FEATURES, PINNED_SEED, load_founder
+from src.evolution_lineage import (
+    CONTEXT_FORMAT, FORMAT, LEGACY_FORMAT, MARKET_FEATURES, PINNED_SEED, load_founder,
+)
 from src.market_evaluation import evaluate_market_policy
 
 
@@ -73,7 +75,7 @@ def test_vectorized_execution_matches_m5_env_with_gaps_ties_and_stop(tie_policy)
                            risk=RiskConfig(enabled=False))
     sim = M5Simulation(env)
     width = len(market_feature_names(1))
-    genes = np.r_[np.zeros(width), 1., np.zeros(width + 1)]
+    genes = np.r_[np.zeros(width), 1., np.zeros(width + 2)]
 
     class AlwaysFollowMonteCarlo:
         def predict(self, obs, deterministic=True):
@@ -87,6 +89,26 @@ def test_vectorized_execution_matches_m5_env_with_gaps_ties_and_stop(tie_policy)
         assert actual[key] == pytest.approx(reference[key])
     assert actual['ties'] == 1 and actual['risk_stop']
     assert actual['decision_opportunities'] == len(env._eligible)
+    assert actual['signals_before_activation'] > actual['total_trades']
+    assert actual['activation_rejections'] == 0
+
+
+def test_activation_threshold_rejects_weak_call_and_put_signals_before_stop():
+    frame = candles(1.1 + np.arange(12) * .00001, np.tile([.80, .51, .49, .20], 3))
+    env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1,
+                           risk=RiskConfig(enabled=False))
+    sim = M5Simulation(env)
+    width = sim.features.shape[1]
+    founder = np.r_[np.zeros(width), 1., np.zeros(width + 2)]
+    stronger = founder.copy()
+    stronger[-1] = .1
+    baseline, filtered = sim.evaluate(founder), sim.evaluate(stronger)
+    rejected = int((np.abs(sim.mc_margin) <= .1).sum())
+    assert rejected > 0
+    assert filtered['signals_before_activation'] == baseline['signals_before_activation']
+    assert filtered['activation_rejections'] == rejected
+    assert filtered['activation_rejection_rate'] == pytest.approx(rejected / len(sim.entries))
+    assert 0 < filtered['calls'] < baseline['calls'] and 0 < filtered['puts'] < baseline['puts']
 
 
 def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
@@ -138,6 +160,10 @@ def test_search_fitness_penalizes_unstable_win_rates_and_low_or_high_activity():
     inactive = assess_search_fitness(neutral, [neutral] * SEARCH_BLOCKS)
     assert inactive['block_win_rate_variance'] == 0.
     assert inactive['score'] < stable['score']
+    in_range = search(overall | dict(activation_rejection_rate=.25), blocks)
+    assert in_range['score'] > stable['score']
+    assert in_range['score'] > search(overall | dict(activation_rejection_rate=.40), blocks)['score']
+    assert not search(neutral | dict(activation_rejection_rate=.25), [neutral] * SEARCH_BLOCKS)['passed']
 
 
 @pytest.mark.parametrize('timeframe,width', [('H1', 12), ('H4', 48)])
@@ -177,12 +203,12 @@ def test_policy_can_trade_all_valid_entries_and_learn_context_and_direction():
     genes = np.zeros((2, width + 1))
     genes[0, len(market_feature_names(1)) + CONTEXT_FEATURES.index('ny_rollover')] = 1.
     genes[1, len(market_feature_names(1)) + CONTEXT_FEATURES.index('h1_bias')] = -1.
-    result = sim.evaluate(genes.ravel())
+    result = sim.evaluate(np.r_[genes.ravel(), 0.])
     assert result['calls'] == result['total_trades'] == result['decision_opportunities'] == len(env._eligible)
     genes[1] *= -1.
-    assert sim.evaluate(genes.ravel())['puts'] == len(env._eligible)
+    assert sim.evaluate(np.r_[genes.ravel(), 0.])['puts'] == len(env._eligible)
     genes[0] *= -1.
-    assert sim.evaluate(genes.ravel())['total_trades'] == 0
+    assert sim.evaluate(np.r_[genes.ravel(), 0.])['total_trades'] == 0
     with pytest.raises(ValueError, match='índice'):
         M5Simulation(env, context.iloc[::-1])
 
@@ -246,10 +272,12 @@ def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path,
     def evaluate(self, genome):
         calls.append(genome.copy())
         return dict(total_trades=100, decision_opportunities=len(self.entries), calls=40, puts=60,
-                    win_rate_excluding_refunds=.52 + .03 * float(np.tanh(genome[-1])),
+                    win_rate_excluding_refunds=.52 + .03 * float(np.tanh(genome[-2])),
                     profit_factor=1.1 if profitable else .9, profit_factor_status='finite',
                     trades_per_observed_hour=1.5, max_drawdown_pct=10.,
-                    net_profit=5. if profitable else -5., risk_stop=False)
+                    net_profit=5. if profitable else -5., risk_stop=False,
+                    activation_threshold=genome[-1], signals_before_activation=100,
+                    activation_rejections=0, activation_rejection_rate=0.)
 
     monkeypatch.setattr(M5Simulation, 'evaluate', evaluate)
     output = tmp_path/'run'
@@ -333,7 +361,8 @@ def test_archived_gen20_preserves_legacy_genes_normalizer_and_cutoffs():
     assert founder.next_generation == 21
     assert founder.provenance['run_id'] == 42421933732
     assert founder.provenance['bundle_sha256'] == pinned['bundle_sha256']
-    entry, direction = founder.genome.reshape(2, -1)
+    entry, direction = founder.genome[:-1].reshape(2, -1)
+    assert founder.genome[-1] == 0.
     width = len(MARKET_FEATURES)
     np.testing.assert_array_equal(entry[:width], genome['weights'])
     np.testing.assert_array_equal(entry[width:-1], 0.)
@@ -365,6 +394,25 @@ def test_next_run_keeps_search_champion_and_continues_after_last_generation(tmp_
     founder_rows = pd.read_csv(resumed/'evolution.csv').query('founder')
     assert len(founder_rows) == 1
     assert founder_rows.fitness.iloc[0] == pytest.approx(first['champion']['fitness']['score'])
+
+    with ZipFile(checkpoint) as archive:
+        genome = json.loads(archive.read('genome.json'))
+        normalizer = archive.read('normalizer.json')
+        manifest = json.loads(archive.read('manifest.json'))
+    assert founder_rows.activation_threshold.iloc[0] == pytest.approx(genome.pop('activation_threshold'))
+    genome_data = json.dumps(genome).encode()
+    manifest['format'] = CONTEXT_FORMAT
+    manifest['sha256']['genome.json'] = sha256(genome_data).hexdigest()
+    v4 = tmp_path/'previous.zip'
+    with ZipFile(v4, 'w') as archive:
+        archive.writestr('manifest.json', json.dumps(manifest))
+        archive.writestr('genome.json', genome_data)
+        archive.writestr('normalizer.json', normalizer)
+    train_end, search_end = (pd.Timestamp(manifest['splits'][phase]['end']) for phase in ('train', 'search'))
+    migrated = load_founder(v4, None, train_end, search_end)
+    assert migrated.next_generation == 24 and migrated.genome[-1] == 0.
+    for head, name in zip(migrated.genome[:-1].reshape(2, -1), ('entry', 'direction_residual')):
+        np.testing.assert_array_equal(head, [*genome[name]['weights'], genome[name]['bias']])
 
 
 def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
