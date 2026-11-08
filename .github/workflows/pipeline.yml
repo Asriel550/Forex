@@ -12,9 +12,9 @@ on:
         options: [alerts, train, evolution, diagnostics, telegram_test]
         default: alerts
       population_size:
-        description: 'evolution: individuos por generación (entero de 4 a 64)'
+        description: 'evolution: individuos por generación (entero de 4 a 128)'
         type: number
-        default: 24
+        default: 128
       generations:
         description: 'evolution: ciclos después de la población inicial (entero de 1 a 20)'
         type: number

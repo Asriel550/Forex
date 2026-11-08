@@ -256,26 +256,29 @@ def test_block_fitness_rejects_one_bad_block():
     assert not flat['checks']['block_consistency']
 
 
-def test_breeding_retains_elites_and_uses_only_their_genes_before_mutation():
+def test_arithmetic_crossover_blends_both_parents_before_mutation():
     population = np.arange(40, dtype=float).reshape(8, 5)
     elites = [3, 5]
     crossed = breed(np.random.default_rng(5), population, elites, elites, 0.)
     mutated = breed(np.random.default_rng(5), population, elites, elites, .12)
     np.testing.assert_array_equal(crossed[:2], population[elites])
     np.testing.assert_array_equal(mutated[:2], population[elites])
-    assert np.logical_or(crossed[2:] == population[3], crossed[2:] == population[5]).all()
+    first, second = population[elites]
+    fractions = (crossed[2:] - first) / (second - first)
+    assert ((fractions >= .25) & (fractions <= .75)).all()
+    np.testing.assert_allclose(fractions, np.broadcast_to(fractions[:, :1], fractions.shape))
     assert not np.array_equal(mutated[2:], crossed[2:])
 
 
 def test_wide_mutation_changes_weights_and_threshold_in_reserved_slots():
     founder = np.linspace(-3., 5.6, 71)
-    population = np.repeat(founder[None, :], 64, axis=0)
-    seeded = seeded_population(np.random.default_rng(5), founder, 64, .35, wide_count=12)
-    bred = breed(np.random.default_rng(5), population, [0], [0, 1], .35, wide_count=12)
+    population = np.repeat(founder[None, :], 128, axis=0)
+    seeded = seeded_population(np.random.default_rng(5), founder, 128, .35, wide_count=24)
+    bred = breed(np.random.default_rng(5), population, [0], [0, 1], .35, wide_count=24)
     for candidates in (seeded, bred):
-        assert candidates.shape == (64, 71)
+        assert candidates.shape == (128, 71)
         np.testing.assert_array_equal(candidates[0], founder)
-        regular, wide = candidates[1:52] - founder, candidates[52:] - founder
+        regular, wide = candidates[1:104] - founder, candidates[104:] - founder
         assert np.std(wide) > 2.5 * np.std(regular)
         assert (wide[:, -1] != 0.).all()
 
@@ -288,8 +291,13 @@ def test_wide_mutant_requires_strict_gain_and_no_regression():
     assert not improves_on_parent(dict(parent, score=.89, checks=dict(win_rate=True, frequency=False)), parent)
 
 
-@pytest.mark.parametrize('profitable', [True, False])
-def test_evolution_preserves_best_and_other_consistent_elites(tmp_path, monkeypatch, legacy_seed, profitable):
+@pytest.mark.parametrize(('profitable', 'population_size', 'parent_count', 'wide_count'), [
+    (True, 6, 2, 1),
+    (False, 128, 26, 24),
+])
+def test_evolution_preserves_best_and_other_consistent_elites(
+    tmp_path, monkeypatch, legacy_seed, profitable, population_size, parent_count, wide_count,
+):
     source = tmp_path/'m5.parquet'
     candles(1.1 + np.arange(816) * .00001).to_parquet(source)
     calls = []
@@ -306,27 +314,27 @@ def test_evolution_preserves_best_and_other_consistent_elites(tmp_path, monkeypa
 
     monkeypatch.setattr(M5Simulation, 'evaluate', evaluate)
     output = tmp_path/'run'
-    report = run_evolution(source, output, EvolutionConfig(population_size=6, generations=2, workers=1),
+    report = run_evolution(source, output, EvolutionConfig(population_size=population_size, generations=2, workers=1),
                            seed_bundle=legacy_seed)
     assert not report['qualified']
     scores = pd.read_csv(output/'evolution.csv')
     assert scores.fitness.notna().all()
-    assert scores.groupby('generation').parent.sum().eq(2).all()
-    assert scores.groupby('generation').elite.sum().eq(2 if profitable else 1).all()
-    assert scores.groupby('generation').wide_mutation.sum().eq(1).all()
+    assert scores.groupby('generation').parent.sum().eq(parent_count).all()
+    assert scores.groupby('generation').elite.sum().eq(parent_count if profitable else 1).all()
+    assert scores.groupby('generation').wide_mutation.sum().eq(wide_count).all()
     assert not scores.loc[~scores.selection_eligible, ['parent', 'elite']].any().any()
     for _, group in scores.groupby('generation'):
-        incumbent, explorer = group.iloc[0], group.iloc[-1]
-        assert explorer.selection_eligible == (explorer.fitness > incumbent.fitness)
+        explorers = group.loc[group.wide_mutation]
+        assert (explorers.selection_eligible == explorers.fitness.gt(group.iloc[0].fitness)).all()
     assert all(g['qualified_candidates'] == 0 for g in report['generations'])
-    assert len(calls) == 6 * 3 * (1 + SEARCH_BLOCKS) + 1
-    generations = np.asarray(calls[:-1:1 + SEARCH_BLOCKS]).reshape(3, 6, -1)
+    assert len(calls) == population_size * 3 * (1 + SEARCH_BLOCKS) + 1
+    generations = np.asarray(calls[:-1:1 + SEARCH_BLOCKS]).reshape(3, population_size, -1)
     start = report['lineage']['first_generation']
     for generation, (before, after) in enumerate(zip(generations, generations[1:]), start=start):
         parents = scores.loc[(scores.generation == generation) & scores.parent]
         selected = parents.sort_values('fitness', ascending=False, kind='stable').candidate.to_numpy()
         if profitable:
-            np.testing.assert_array_equal(after[:2], before[selected])
+            np.testing.assert_array_equal(after[:parent_count], before[selected])
         else:
             np.testing.assert_array_equal(after[0], before[selected[0]])
             assert not any(np.array_equal(child, parent) for child in after[1:] for parent in before)
@@ -462,6 +470,12 @@ def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
 
     path = Path(__file__).resolve().parents[1]/'.github/workflows/pipeline.yml'
     workflow = yaml.safe_load(path.read_text())
+    # PyYAML interpreta la clave on como booleana.
+    inputs = workflow.get('on', workflow.get(True))['workflow_dispatch']['inputs']
+    assert inputs['population_size']['default'] == EvolutionConfig().population_size == 128
+    assert EvolutionConfig(population_size=64).population_size == 64
+    with pytest.raises(ValueError, match='population_size debe ser un entero de 4 a 128'):
+        EvolutionConfig(population_size=129)
     jobs = workflow['jobs']
     assert 'evolution' in jobs['research-pipeline']['if'] and 'evolution' in jobs['unit-tests']['if']
     assert 'evolution' not in jobs['telegram-alert']['if']

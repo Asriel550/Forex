@@ -214,8 +214,8 @@ holdout reservado.
 En **Run workflow**, seleccioná `main` y `mode=evolution`. Los valores
 `trading_profile=auto`, `timeframe=auto`, `trading_mode=binary` y
 `expiry_candles=0` resuelven Scalping M5 binario con una vela de vencimiento.
-Elegí `population_size` entre 4 y 64 y `generations` entre 1 y 20. Los
-valores por defecto son 24 individuos y 10 ciclos posteriores a la
+Elegí `population_size` entre 4 y 128 y `generations` entre 1 y 20. Los
+valores por defecto son 128 individuos y 10 ciclos posteriores a la
 generación inicial, para un total de 11 generaciones evaluadas.
 
 El genoma puntúa todas las entradas con vencimiento M5 consecutivo.
@@ -271,11 +271,14 @@ El grupo de padres conserva el tamaño del 20% superior redondeado hacia
 arriba. El mejor individuo elegible pasa intacto a la generación siguiente
 como padre de referencia. Entre los demás padres, quienes terminan en
 positivo con drawdown menor al 15% en los cuatro bloques también pasan
-como élites. Todos los padres pueden aportar genes por cruce y mutación.
+como élites. Para cada descendiente ordinario, el motor elige dos padres
+distintos del grupo y mezcla sus pesos, sesgos y umbral con un coeficiente
+aleatorio entre 0,25 y 0,75. Después aplica la mutación ordinaria.
+Si el grupo contiene un solo padre, el descendiente parte de una copia.
 
 Cada generación reserva aproximadamente el 18,75% de la población para
 saltos directos desde el mejor padre, con redondeo al entero más próximo
-y un mínimo de un individuo. Con 64 individuos se reservan 12 plazas.
+y un mínimo de un individuo. Con 128 individuos se reservan 24 plazas.
 El salto aplica ruido gaussiano a los pesos y al umbral, con desviación
 estándar de tres veces la mutación ordinaria y un mínimo de 0,35. Estos
 descendientes pueden reproducirse o quedar como campeones si superan la

@@ -25,11 +25,13 @@ from .trading_profiles import resolve_profile
 from .train import chronological_market_split, write_json
 
 LOG = logging.getLogger(__name__)
+MAX_POPULATION_SIZE = 128
 SEARCH_BLOCKS = 4
 OVERALL_SCORE_WEIGHT = .5
 WORST_BLOCK_WEIGHT = .5
 WIN_RATE_VARIANCE_WEIGHT = 4.
 ELITE_FRACTION = .20
+CROSSOVER_WEIGHT_RANGE = (.25, .75)
 WIDE_MUTATION_FRACTION = .1875
 WIDE_MUTATION_SIGMA_MULTIPLIER = 3.
 WIDE_MUTATION_SIGMA_FLOOR = .35
@@ -44,14 +46,14 @@ ACTIVATION_REJECTION_WEIGHT = .15
 
 @dataclass(frozen=True)
 class EvolutionConfig:
-    population_size: int = 24
+    population_size: int = MAX_POPULATION_SIZE
     generations: int = 10
     seed: int = 42
     workers: int = 4
 
     def __post_init__(self):
         for name, lower, upper in (
-            ('population_size', 4, 64), ('generations', 1, 20),
+            ('population_size', 4, MAX_POPULATION_SIZE), ('generations', 1, 20),
             ('seed', 0, 2**32 - 1), ('workers', 1, 8),
         ):
             value = getattr(self, name)
@@ -195,15 +197,16 @@ def seeded_population(rng, founder, count, sigma, *, wide_count=0):
 
 
 def breed(rng, population, elite_indices, parent_indices, sigma, *, wide_count=0):
-    """Copia las élites, cruza padres y explora con saltos desde el mejor padre."""
+    """Copia las élites y mezcla dos genomas por hijo antes de la mutación ordinaria."""
     elites = population[elite_indices]
     parents = population[parent_indices]
     count = len(population) - len(elites) - wide_count
     left = rng.integers(len(parents), size=count)
     right = (left + rng.integers(1, len(parents), size=count)) % len(parents) if len(parents) > 1 else left
-    shape = (count, population.shape[1])
-    children = np.where(rng.random(shape) < .5, parents[left], parents[right])
-    children += rng.normal(0., sigma, size=shape)
+    weight = rng.uniform(*CROSSOVER_WEIGHT_RANGE, size=(count, 1))
+    primary = parents[left]
+    children = primary + weight * (parents[right] - primary)
+    children += rng.normal(0., sigma, size=children.shape)
     if wide_count:
         children = np.vstack((children, _wide_mutants(rng, parents[0], wide_count, sigma)))
     return np.vstack((elites, children))
@@ -351,7 +354,8 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                                win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT,
                                activation_rejection_target=[MIN_ACTIVATION_REJECTION, MAX_ACTIVATION_REJECTION],
                                activation_rejection_weight=ACTIVATION_REJECTION_WEIGHT),
-        mutation_policy=dict(wide_fraction=WIDE_MUTATION_FRACTION, wide_per_generation=wide_count,
+        mutation_policy=dict(regular_crossover='weighted_arithmetic', crossover_weight_range=CROSSOVER_WEIGHT_RANGE,
+                             wide_fraction=WIDE_MUTATION_FRACTION, wide_per_generation=wide_count,
                              wide_sigma_multiplier=WIDE_MUTATION_SIGMA_MULTIPLIER,
                              wide_sigma_floor=WIDE_MUTATION_SIGMA_FLOOR,
                              wide_parent='incumbent', wide_selection='higher_score_no_block_or_gate_regression'),
