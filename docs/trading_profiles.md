@@ -244,31 +244,36 @@ confianza de Monte Carlo, volatilidad y sesión pueden influir mediante
 los pesos de la política. Las reglas de caja, huecos, reembolsos y stop
 al 20% se aplican al liquidar. Las horas incluyen todo el tramo observable.
 
-Cada individuo recibe un puntaje finito. Sean `w` el acierto sin
-reembolsos, `f` los contratos por hora y `d` el drawdown como fracción.
-La aptitud suma `w` y el término de PF, ponderados por `min(1, f/1.2)`
-para dar menos peso a resultados de baja frecuencia. Se resta la distancia
-de `f` al rango [1,2–2,5], dividida por 1,2, el drawdown `d` y la
-penalización suave `0.5 × max(0, 0.56 − w)`. El término de PF es
-`PF/(1+PF)`, vale uno si hay ganancias sin pérdidas y cero si el ratio
-es indefinido. Un acierto indefinido aporta cero al cálculo.
+Cada individuo recibe un puntaje finito. El acierto sin reembolsos
+se pondera por `min(1, f/1.2)`, donde `f` es la frecuencia ejecutada
+sobre todas las horas observables. La distancia por debajo de 1,2 pesa
+el doble que por encima de 2,5. Se resta el drawdown como fracción y un
+castigo exponencial desde el 12%, con un máximo de 0,50 para ese término.
+El acierto también tiene una penalización suave por quedar por debajo
+del objetivo efectivo del payout. Con stake fijo y payout del 80%,
+un PF de 1,20 equivale al 60% de acierto sin reembolsos. La aptitud
+usa ese objetivo para penalizar el acierto y el gate comprueba PF por
+separado.
 
 El primer 75% de validación cronológica se divide en cuatro bloques
 consecutivos de tamaño similar. Cada bloque empieza con saldo propio y
-liquida sus contratos dentro de sus límites. La aptitud combina 50%
-del puntaje económico del tramo completo, 25% de la media de los
-bloques y 25% del peor bloque. Luego resta cuatro veces la varianza
-poblacional del acierto sin reembolsos entre bloques. Un bloque con
-acierto indefinido aporta cero al cálculo de la varianza.
+liquida sus contratos dentro de sus límites. Cada transición toma 25%
+del puntaje anterior y 75% del posterior y descuenta el 25% del exceso
+de deterioro sobre 0,05 puntos. La aptitud pondera el tramo completo
+al 25%, la media de transiciones al 37,5% y la peor al 37,5%.
+La varianza de acierto se registra para diagnóstico. Los cuatro bloques
+pertenecen a la búsqueda y la confirmación se aplica al campeón congelado.
 
 En búsqueda también se resta 0,15 veces la distancia de la proporción
 de señales descartadas por el umbral al rango de 20% a 30%. Se mide
 sobre las señales que propondría el mismo genoma con umbral cero,
-antes de aplicar el stop. La frecuencia del gate usa los contratos
-ejecutados y las horas observables del tramo.
+antes de aplicar el stop. El reporte separa las señales admitidas por
+el umbral de las que quedan sin ejecutar por el stop. La frecuencia del
+gate usa los contratos ejecutados y las horas observables del tramo.
 
 El grupo de padres conserva el tamaño del 20% superior redondeado hacia
-arriba. El mejor individuo elegible pasa intacto a la generación siguiente
+arriba. La aptitud ordena candidatos y el PnL por hora desempata.
+El mejor individuo elegible pasa intacto a la generación siguiente
 como padre de referencia. Entre los demás padres, quienes terminan en
 positivo con drawdown menor al 15% en los cuatro bloques también pasan
 como élites. Para cada descendiente ordinario, el motor elige dos padres
@@ -302,7 +307,9 @@ Gen 20 de la PR #18. El ZIP original y su SHA256 se conservan en
 `config/evolution_m5_seed_gen20.json`. Los pesos de contexto y el
 ajuste direccional del fundador parten en cero. Se ajusta la
 normalización del contexto exclusivamente en train durante la migración.
-El resto de la población inicial nace por mutación del fundador.
+Cada corrida reevalúa al fundador con la aptitud y los bloques vigentes
+antes de generar la población inicial. El resto de la población nace
+por mutación del fundador.
 [Corrida de la PR #18](https://github.com/Asriel550/Forex/actions/runs/42421933732)
 
 Actions guarda el campeón de búsqueda y el estado evolutivo en
