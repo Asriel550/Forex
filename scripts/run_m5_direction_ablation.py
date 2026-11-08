@@ -31,7 +31,7 @@ PR25_DIRECTION_SHA256 = 'f28cd91e37a927e6f67bed82b668b6bde99a4ef544db1fb7a2cd3ed
 FROZEN_MARCH_ADMISSIONS_SHA256 = '4c02cfbc1ff86d6ff2e6422ecb03be2633b8473deada1d23b1780da970e0dfe6'
 
 
-def load_features(raw_dir, periods, quant, *, end=None):
+def load_minutes(raw_dir, periods, *, end=None):
     sources = json.loads(Path('datasets/eurusd/manifest.json').read_text(encoding='utf-8'))['sources']
     archives = [source for source in sources if source['period'] in periods]
     if {source['period'] for source in archives} != set(periods):
@@ -42,11 +42,17 @@ def load_features(raw_dir, periods, quant, *, end=None):
         if not (raw_dir / source['zip_file']).is_file():
             acquire(raw_dir, int(period[:4]), int(period[4:]) if len(period) > 4 else None)
     minutes, _ = read_native_minutes(raw_dir, archives)
-    if end is not None:
-        minutes = minutes.loc[minutes.timestamp < end]
+    return minutes if end is None else minutes.loc[minutes.timestamp < end]
+
+
+def m5_features(minutes, quant, *, end=None):
     m5 = aggregate(minutes, 1, 'M5', now=end)
     features = enrich_features(m5, quant, timeframe='M5', expiry_candles=1)
     return features.dropna(subset=FEATURES).reset_index(drop=True)
+
+
+def load_features(raw_dir, periods, quant, *, end=None):
+    return m5_features(load_minutes(raw_dir, periods, end=end), quant, end=end)
 
 
 def report_metrics(metrics, simulation, proposed, payout):

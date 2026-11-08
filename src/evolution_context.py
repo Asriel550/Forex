@@ -20,6 +20,8 @@ CONTEXT_FEATURES = (
     'm5_realized_volatility', 'm5_volatility_available', 'm5_range_fraction',
     'ny_rollover', 'tokyo_early',
 )
+M15_TACTICAL = ('m15_realized_volatility', 'm15_atr_fraction')
+H1_STRUCTURAL = ('h1_ema_slope', 'h1_range_fraction')
 CONTEXT_SETTINGS = dict(
     trend=dict(fast_span=FAST_SPAN, slow_span=SLOW_SPAN, range_span=RANGE_SPAN,
                max_age_minutes_exclusive={'H1': 60, 'H4': 240}),
@@ -28,6 +30,11 @@ CONTEXT_SETTINGS = dict(
                           end_local=f'{end // 60:02d}:{end % 60:02d}')
                      for name, zone, start, end in SESSION_WINDOWS],
 )
+
+
+def _closed_bar_index(opens, market, decisions):
+    closes = pd.DatetimeIndex(opens + market.step)
+    return closes.get_indexer(decisions, method='pad', tolerance=market.step - M5_STEP)
 
 
 def closed_trend_bias(frame, timeframe):
@@ -49,8 +56,7 @@ def closed_trend_bias(frame, timeframe):
     scale = average_range.to_numpy()
     bias = np.divide(gap.to_numpy(), scale, out=np.zeros(len(scale)), where=scale > 0.)
     bias[gap.isna() | average_range.isna()] = np.nan
-    closes = pd.DatetimeIndex(candles.timestamp + market.step)
-    last = closes.get_indexer(decisions, method='pad', tolerance=market.step - M5_STEP)
+    last = _closed_bar_index(candles.timestamp, market, decisions)
     available = last >= 0
     result[available] = bias[last[available]]
     return result
@@ -60,6 +66,33 @@ def m15_direction_bias(frame):
     """Sesgo M15 causal, en sus propias unidades y neutral cuando no está disponible."""
     bias = np.nan_to_num(closed_trend_bias(frame, 'M15'), nan=0.)
     return pd.Series(np.clip(bias, -M15_DIRECTION_CLIP, M15_DIRECTION_CLIP), index=frame.timestamp)
+
+
+def native_direction_context(minutes, decisions, *, end):
+    """Alinea indicadores de M15 y H1 completos, agregados desde el M1 nativo."""
+    m15 = aggregate(minutes, 1, 'M15', now=end)
+    h1 = aggregate(minutes, 1, 'H1', now=end)
+    consecutive = m15.timestamp.diff().eq(MarketConfig('M15').step)
+    returns = np.log(m15.close).diff().where(consecutive)
+    realized = np.sqrt(returns.pow(2).rolling(8, min_periods=8).sum())
+    previous = m15.close.shift().where(consecutive)
+    true_range = pd.concat((m15.high - m15.low, (m15.high - previous).abs(),
+                            (m15.low - previous).abs()), axis=1).max(axis=1)
+    atr = true_range.ewm(alpha=1 / RANGE_SPAN, min_periods=RANGE_SPAN, adjust=False).mean()
+    ema = h1.close.ewm(span=SLOW_SPAN, min_periods=SLOW_SPAN, adjust=False).mean()
+    hourly_range = (h1.high - h1.low).ewm(span=RANGE_SPAN, min_periods=RANGE_SPAN, adjust=False).mean()
+
+    result = pd.DataFrame(index=decisions)
+    for candles, timeframe, names, values in (
+        (m15, 'M15', M15_TACTICAL, (realized, atr / m15.close)),
+        (h1, 'H1', H1_STRUCTURAL, (ema.diff() / h1.close, hourly_range / h1.close)),
+    ):
+        last = _closed_bar_index(candles.timestamp, MarketConfig(timeframe), decisions)
+        aligned = np.full((len(last), len(names)), np.nan)
+        ready = last >= 0
+        aligned[ready] = np.column_stack(values)[last[ready]]
+        result[list(names)] = aligned
+    return result
 
 
 def session_observations(bar_opens):

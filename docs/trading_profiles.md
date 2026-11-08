@@ -427,3 +427,35 @@ features. Es una observación corta para la prueba de repetibilidad.
 
 La comparación mide señal direccional. Un replay con abstención,
 stop y gate requiere una ventaja repetible en bloques posteriores.
+
+### Ablación multiescala de las Gen 315 a 335
+
+El workflow manual **Ablación multiescala de dirección Scalping M5**
+conserva el checkpoint Gen 268 para la admisión y proyecta las variables
+tácticas del control Gen 294 en la primera de ocho neuronas tanh. Las
+tres ramas tienen el mismo genoma y activan M5, M5+M15 o M5+M15+H1.
+El puntaje de salida determina CALL o PUT.
+
+M15 aporta volatilidad realizada de ocho velas y ATR relativo de
+Wilder de 14 velas. H1 aporta la inclinación relativa de la EMA 24
+y el rango horario medio relativo. Ambos bloques se agregan desde M1
+completo y usan el último cierre disponible en el instante de decisión.
+Los valores ausentes toman el centro de la escala ajustada en marzo.
+
+Las semillas 42, 43 y 44 recorren 21 poblaciones de 128 individuos
+por rama. Se comprueba el hash de las 2.859 admisiones de marzo.
+Enero y febrero aportan el historial causal de los indicadores. La
+selección y la escala usan exclusivamente las admisiones de marzo.
+
+El fitness pondera 45 % el retorno global por admisión y 55 % el peor
+sub-bloque. Resta 0,20 veces la desviación de log PF, regularizado con
+cinco stakes a cada lado. Se usan cuatro bloques cronológicos, cada
+uno separado por el percentil 67 de GARCH de marzo cuando ambos
+estratos tienen al menos 64 admisiones. Tienen prioridad los genomas
+con retorno positivo y mejora frente a Monte Carlo en cada sub-bloque.
+
+El artefacto de marzo contiene el hash y los pesos de un campeón por
+rama. El workflow lo publica antes de preparar el diagnóstico conocido
+de abril. El replay exige el hash de las 278 admisiones de la PR #27
+y termina en la frontera protegida del 7 de abril a las 15:15 UTC.
+Los dos reportes puntúan el retorno direccional antes del stop.
