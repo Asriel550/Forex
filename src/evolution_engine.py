@@ -5,6 +5,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from itertools import chain
 import json
 import logging
 import math
@@ -27,9 +28,10 @@ from .train import chronological_market_split, write_json
 LOG = logging.getLogger(__name__)
 MAX_POPULATION_SIZE = 128
 SEARCH_BLOCKS = 4
-OVERALL_SCORE_WEIGHT = .5
-WORST_BLOCK_WEIGHT = .5
-WIN_RATE_VARIANCE_WEIGHT = 4.
+OVERALL_SCORE_WEIGHT = .25
+WORST_FORWARD_WEIGHT = .5
+FORWARD_REFERENCE_WEIGHT = .25
+FORWARD_DROP_TOLERANCE = .05
 ELITE_FRACTION = .20
 CROSSOVER_WEIGHT_RANGE = (.25, .75)
 WIDE_MUTATION_FRACTION = .1875
@@ -39,7 +41,12 @@ MIN_WIN_RATE = .56
 WIN_RATE_SHORTFALL_WEIGHT = .5
 MIN_PROFIT_FACTOR = 1.20
 MAX_DRAWDOWN_PCT = 15.
+DRAWDOWN_SOFT_START_PCT = 12.
+DRAWDOWN_EXP_STEP_PCT = 3.
+DRAWDOWN_EXP_WEIGHT = .04
+DRAWDOWN_EXP_CAP = .50
 MIN_TRADES_HOUR, MAX_TRADES_HOUR = 1.2, 2.5
+LOW_FREQUENCY_WEIGHT = 2.
 MIN_ACTIVATION_REJECTION, MAX_ACTIVATION_REJECTION = .20, .30
 ACTIVATION_REJECTION_WEIGHT = .15
 
@@ -98,7 +105,8 @@ class M5Simulation:
         entries = (scores[:, 0] > 0.) & (margin > 0.)
         proposed = np.flatnonzero(entries & (margin > activation_threshold))
         signals = int(entries.sum())
-        rejected = signals - len(proposed)
+        accepted = len(proposed)
+        rejected = signals - accepted
         side = np.sign(direction[proposed])
         actions = np.where(side > 0., 2, 0)
         change = self.change[proposed]
@@ -127,13 +135,18 @@ class M5Simulation:
                       trades_per_observed_hour=len(trades) / self.observed_hours,
                       activation_threshold=activation_threshold, signals_before_activation=signals,
                       activation_rejections=rejected, activation_rejection_rate=rejected / max(1, signals),
+                      signals_after_activation=accepted, signals_unfilled_due_to_stop=accepted - len(trades),
                       calls=int((actions == 2).sum()), puts=int((actions == 0).sum()),
                       risk_stop=bool(stops.size))
         return result
 
 
-def assess_fitness(metrics):
-    """Puntúa a toda la población. Los checks describen el gate del campeón."""
+def _effective_win_target(payout):
+    return max(MIN_WIN_RATE, MIN_PROFIT_FACTOR / (MIN_PROFIT_FACTOR + payout))
+
+
+def assess_fitness(metrics, *, payout=.8):
+    """Puntúa actividad, acierto y riesgo. El gate también comprueba PF estricto."""
     win = metrics['win_rate_excluding_refunds']
     pf = metrics['profit_factor']
     no_losses = metrics['profit_factor_status'] == 'infinite_no_losses'
@@ -145,32 +158,42 @@ def assess_fitness(metrics):
         frequency=MIN_TRADES_HOUR <= rate <= MAX_TRADES_HOUR,
         drawdown=drawdown < MAX_DRAWDOWN_PCT,
     )
-    pf_term = 1. if no_losses else pf / (1 + pf) if pf is not None else 0.
     win_term = win if win is not None else 0.
     activity_weight = min(1., rate / MIN_TRADES_HOUR)
-    distance = max(0., MIN_TRADES_HOUR - rate, rate - MAX_TRADES_HOUR)
-    win_shortfall = WIN_RATE_SHORTFALL_WEIGHT * max(0., MIN_WIN_RATE - win_term)
-    score = activity_weight * (win_term + pf_term) - distance / MIN_TRADES_HOUR - drawdown / 100 - win_shortfall
-    return dict(checks=checks, passed=all(checks.values()), score=score)
+    frequency_penalty = (LOW_FREQUENCY_WEIGHT * max(0., MIN_TRADES_HOUR - rate)
+                         + max(0., rate - MAX_TRADES_HOUR)) / MIN_TRADES_HOUR
+    dd_excess = max(0., drawdown - DRAWDOWN_SOFT_START_PCT) / DRAWDOWN_EXP_STEP_PCT
+    drawdown_penalty = drawdown / 100 + min(DRAWDOWN_EXP_CAP, DRAWDOWN_EXP_WEIGHT * math.expm1(dd_excess))
+    win_shortfall = WIN_RATE_SHORTFALL_WEIGHT * max(0., _effective_win_target(payout) - win_term)
+    score = activity_weight * win_term - frequency_penalty - drawdown_penalty - win_shortfall
+    return dict(checks=checks, passed=all(checks.values()), score=score,
+                penalties=dict(frequency=frequency_penalty, drawdown=drawdown_penalty, win_rate=win_shortfall))
 
 
-def assess_search_fitness(metrics, blocks):
-    """Combina actividad y rendimiento del tramo completo con estabilidad por bloque."""
-    fitness = assess_fitness(metrics)
-    scores = [assess_fitness(block)['score'] for block in blocks]
-    block_score = (1 - WORST_BLOCK_WEIGHT) * float(np.mean(scores)) + WORST_BLOCK_WEIGHT * min(scores)
+def assess_search_fitness(metrics, blocks, *, payout=.8):
+    """Puntúa al mismo genoma en transiciones cronológicas internas de búsqueda."""
+    fitness = assess_fitness(metrics, payout=payout)
+    scores = [assess_fitness(block, payout=payout)['score'] for block in blocks]
+    forward_scores, forward_penalties = [], []
+    for previous, following in zip(scores, scores[1:]):
+        penalty = FORWARD_REFERENCE_WEIGHT * max(0., previous - following - FORWARD_DROP_TOLERANCE)
+        forward_penalties.append(penalty)
+        forward_scores.append(FORWARD_REFERENCE_WEIGHT * previous
+                              + (1 - FORWARD_REFERENCE_WEIGHT) * following - penalty)
+    forward_score = ((1 - WORST_FORWARD_WEIGHT) * float(np.mean(forward_scores))
+                     + WORST_FORWARD_WEIGHT * min(forward_scores))
     win_rates = [block['win_rate_excluding_refunds'] or 0. for block in blocks]
     win_rate_variance = float(np.var(win_rates))
     rejection = metrics.get('activation_rejection_rate', 0.)
     rejection_distance = max(0., MIN_ACTIVATION_REJECTION - rejection, rejection - MAX_ACTIVATION_REJECTION)
-    score = (OVERALL_SCORE_WEIGHT * fitness['score'] + (1 - OVERALL_SCORE_WEIGHT) * block_score
-             - WIN_RATE_VARIANCE_WEIGHT * win_rate_variance
+    score = (OVERALL_SCORE_WEIGHT * fitness['score'] + (1 - OVERALL_SCORE_WEIGHT) * forward_score
              - ACTIVATION_REJECTION_WEIGHT * rejection_distance)
     fitness['checks']['block_consistency'] = all(
         block['net_profit'] > 0 and block['max_drawdown_pct'] < MAX_DRAWDOWN_PCT for block in blocks
     )
     return dict(fitness, score=score, passed=all(fitness['checks'].values()),
-                block_scores=scores, block_win_rate_variance=win_rate_variance)
+                block_scores=scores, forward_scores=forward_scores, forward_penalties=forward_penalties,
+                block_win_rate_variance=win_rate_variance)
 
 
 def improves_on_parent(candidate, parent):
@@ -231,12 +254,14 @@ def save_candidate(path, genome, normalizer, manifest):
 
 def write_summary(path, report):
     lineage = report['lineage']
+    baseline = report['founder_evaluation']
     lines = [
         '# Evolución Scalping M5 binario', '',
         'Se conserva el mejor genoma y las élites adicionales cumplen consistencia por bloque.',
         'Solo el campeón pasa por confirmación.',
         f"Genoma fundador de la generación {lineage['source_generation']}. "
         f"Corrida de la generación {lineage['first_generation']} a la {lineage['last_generation']}.",
+        f"Aptitud reevaluada del fundador {baseline['fitness']['score']:.4f}.",
         'Holdout histórico reservado.', '',
         '| Fase | Generación | Aptitud | Contratos | Acierto sin reembolsos | PF | Contratos/h | DD | Cumple límites |',
         '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
@@ -260,13 +285,14 @@ def write_summary(path, report):
     lines.extend(['', f"Mutación amplia. {wide_eligible} de {wide_total} descendientes superaron a su padre.", '',
                   f"Gate de la corrida **{status}**. Campeón preseleccionado en generación "
                       f"{report['champion']['generation']}.", '',
-                  '| Tramo | Entradas evaluables | Umbral | Señales previas | Descartes por umbral | CALL ejecutados | PUT ejecutados |',
-                  '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'])
+                  '| Tramo | Entradas evaluables | Umbral | Señales previas | Descartes por umbral | Sin ejecutar por stop | CALL ejecutados | PUT ejecutados |',
+                  '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'])
     for row in (report['champion'], report['confirmation']):
         metrics = row['metrics']
         lines.append(f"| {row['phase']} | {metrics['decision_opportunities']} | "
                      f"{metrics['activation_threshold']:.4f} | {metrics['signals_before_activation']} | "
                      f"{metrics['activation_rejections']} ({metrics['activation_rejection_rate']:.2%}) | "
+                     f"{metrics['signals_unfilled_due_to_stop']} | "
                      f"{metrics['calls']} | {metrics['puts']} |")
     lines.extend(['', '## Bloques del campeón', '',
                   '| Bloque | Entradas evaluables | Contratos | PnL USD | DD |',
@@ -322,11 +348,12 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
 
     simulation = simulate(search)
     block_sims = [simulate(block) for block in blocks]
+    payout = simulation.account.payout
 
     def evaluate(genome):
         metrics = simulation.evaluate(genome)
         by_block = [sim.evaluate(genome) for sim in block_sims]
-        return metrics, by_block, assess_search_fitness(metrics, by_block)
+        return metrics, by_block, assess_search_fitness(metrics, by_block, payout=payout)
 
     root.mkdir(parents=True, exist_ok=True)
     if any(root.iterdir()):
@@ -347,11 +374,18 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
         fitness_limits=dict(min_win_rate=MIN_WIN_RATE, exclusive_min_profit_factor=MIN_PROFIT_FACTOR,
                             trades_per_hour=[MIN_TRADES_HOUR, MAX_TRADES_HOUR],
                             exclusive_max_drawdown_pct=MAX_DRAWDOWN_PCT),
-        fitness_selection=dict(method='economic_chronological_blocks_v5', blocks=SEARCH_BLOCKS,
+        fitness_selection=dict(method='economic_walk_forward_v6', blocks=SEARCH_BLOCKS,
                                overall_score_weight=OVERALL_SCORE_WEIGHT,
-                               worst_block_weight=WORST_BLOCK_WEIGHT,
-                               win_rate_variance_weight=WIN_RATE_VARIANCE_WEIGHT,
+                               worst_forward_weight=WORST_FORWARD_WEIGHT,
+                               forward_reference_weight=FORWARD_REFERENCE_WEIGHT,
+                               forward_drop_tolerance=FORWARD_DROP_TOLERANCE,
+                               effective_win_target=_effective_win_target(payout),
                                win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT,
+                               low_frequency_weight=LOW_FREQUENCY_WEIGHT,
+                               drawdown_soft_start_pct=DRAWDOWN_SOFT_START_PCT,
+                               drawdown_exp_step_pct=DRAWDOWN_EXP_STEP_PCT,
+                               drawdown_exp_weight=DRAWDOWN_EXP_WEIGHT,
+                               drawdown_exp_cap=DRAWDOWN_EXP_CAP,
                                activation_rejection_target=[MIN_ACTIVATION_REJECTION, MAX_ACTIVATION_REJECTION],
                                activation_rejection_weight=ACTIVATION_REJECTION_WEIGHT),
         mutation_policy=dict(regular_crossover='weighted_arithmetic', crossover_weight_range=CROSSOVER_WEIGHT_RANGE,
@@ -369,33 +403,46 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 for name, frame in (('train', train), ('search', search),
                                     ('confirmation', confirmation))},
     )
+    LOG.info('Linaje M5. Fundador gen %d. Generaciones %d a %d',
+             founder.provenance['source_generation'], first_generation, last_generation)
+    founder_result = evaluate(founder.genome)
+    founder_metrics, founder_blocks, founder_fitness = founder_result
+    founder_evaluation = dict(generation=founder.provenance['source_generation'],
+                              metrics=founder_metrics, blocks=founder_blocks, fitness=founder_fitness)
+    LOG.info('Aptitud reevaluada del fundador: %.4f', founder_fitness['score'])
     rng = np.random.default_rng([config.seed, first_generation])
     sigma = founder.mutation_sigma
     population = seeded_population(rng, founder.genome, config.population_size, sigma, wide_count=wide_count)
     elite_count = math.ceil(ELITE_FRACTION * len(population))
     history, candidate_rows = [], []
     champion = champion_genome = None
-    LOG.info('Linaje M5. Fundador gen %d. Generaciones %d a %d',
-             founder.provenance['source_generation'], first_generation, last_generation)
     with ThreadPoolExecutor(max_workers=config.workers) as executor:
         for generation in range(first_generation, last_generation + 1):
             # Refleja mutaciones negativas del umbral para mantener una escala no negativa.
             population[:, -1] = np.abs(population[:, -1])
-            metrics, by_block, fitness = zip(*executor.map(evaluate, population))
+            if generation == first_generation:
+                evaluations = chain((founder_result,), executor.map(evaluate, population[1:]))
+            else:
+                evaluations = executor.map(evaluate, population)
+            metrics, by_block, fitness = zip(*evaluations)
             # La primera posición conserva al padre de los exploradores, incluso si falló el gate.
             eligible = [i < wide_start or improves_on_parent(f, fitness[0]) for i, f in enumerate(fitness)]
-            parents = sorted((i for i, admitted in enumerate(eligible) if admitted), key=lambda i: fitness[i]['score'],
+            ranks = [(f['score'], m['net_profit'] / m['observed_hours']) for m, f in zip(metrics, fitness)]
+            parents = sorted((i for i, admitted in enumerate(eligible) if admitted), key=ranks.__getitem__,
                              reverse=True)[:elite_count]
             best = parents[0]
             elites = [best, *(i for i in parents[1:] if fitness[i]['checks']['block_consistency'])]
             name = f'bundle_scalping_gen_{generation}.zip'
             record = dict(phase='Búsqueda', generation=generation, candidate=best, bundle=name,
                           metrics=metrics[best], blocks=by_block[best], fitness=fitness[best],
+                          net_profit_per_observed_hour=ranks[best][1],
                           elites=len(elites), parents=len(parents),
                           wide_eligible=sum(eligible[wide_start:]),
                           wide_parents=sum(i >= wide_start for i in parents),
                           qualified_candidates=sum(f['passed'] for f in fitness))
-            improved = champion is None or fitness[best]['score'] > champion['fitness']['score']
+            improved = champion is None or ranks[best] > (
+                champion['fitness']['score'], champion['net_profit_per_observed_hour'],
+            )
             if generation > first_generation:
                 sigma = max(.025, sigma * .85) if improved else min(.35, sigma * 1.25)
             record['mutation_sigma'] = sigma if generation < last_generation else None
@@ -409,14 +456,17 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 generation=generation, candidate=i, fitness=f['score'], elite=i in elites,
                 wide_mutation=i >= wide_start, selection_eligible=eligible[i],
                 block_win_rate_variance=f['block_win_rate_variance'],
+                net_profit_per_observed_hour=ranks[i][1],
                 parent=i in parents, founder=generation == first_generation and i == 0,
                 passed=f['passed'], **{f'pass_{k}': v for k, v in f['checks'].items()},
                 **{f'block_{j}_score': score for j, score in enumerate(f['block_scores'], start=1)},
+                **{f'forward_to_{j}_penalty': penalty for j, penalty in enumerate(f['forward_penalties'], start=2)},
                 **{k: m[k] for k in ('total_trades', 'win_rate_excluding_refunds', 'profit_factor',
                                      'profit_factor_status', 'trades_per_observed_hour', 'max_drawdown_pct',
                                      'net_profit', 'risk_stop', 'calls', 'puts', 'decision_opportunities',
                                      'activation_threshold', 'signals_before_activation', 'activation_rejections',
-                                     'activation_rejection_rate')},
+                                     'activation_rejection_rate', 'signals_after_activation',
+                                     'signals_unfilled_due_to_stop')},
                 **{f'block_{j}_{key}': block[key] for j, block in enumerate(candidate_blocks, start=1)
                    for key in ('net_profit', 'max_drawdown_pct', 'total_trades')},
             ) for i, (m, f, candidate_blocks) in enumerate(zip(metrics, fitness, by_block)))
@@ -431,11 +481,12 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
     confirm_sim = simulate(confirmation)
     confirmed = confirm_sim.evaluate(champion_genome)
     final = dict(phase='Confirmación', generation=champion['generation'],
-                 metrics=confirmed, fitness=assess_fitness(confirmed))
+                 metrics=confirmed, fitness=assess_fitness(confirmed, payout=payout))
     lineage_state = dict(last_completed_generation=last_generation, next_mutation_sigma=sigma)
     lineage_digest = save_candidate(root/'lineage.zip', champion_genome, normalizer,
                                     dict(metadata, selection=champion, lineage_state=lineage_state))
-    report = dict(metadata, generations=history, champion=champion, confirmation=final,
+    report = dict(metadata, founder_evaluation=founder_evaluation, generations=history, champion=champion,
+                  confirmation=final,
                   lineage_state=lineage_state, lineage_bundle_sha256=lineage_digest,
                   qualified=champion['fitness']['passed'] and final['fitness']['passed'])
     write_json(root/'evolution.json', report)

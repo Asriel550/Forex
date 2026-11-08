@@ -91,6 +91,9 @@ def test_vectorized_execution_matches_m5_env_with_gaps_ties_and_stop(tie_policy)
     assert actual['decision_opportunities'] == len(env._eligible)
     assert actual['signals_before_activation'] > actual['total_trades']
     assert actual['activation_rejections'] == 0
+    assert actual['signals_after_activation'] == actual['signals_before_activation']
+    assert actual['signals_unfilled_due_to_stop'] == actual['signals_after_activation'] - actual['total_trades']
+    assert actual['trades_per_observed_hour'] == pytest.approx(actual['total_trades'] / sim.observed_hours)
 
 
 def test_activation_threshold_rejects_weak_call_and_put_signals_before_stop():
@@ -108,6 +111,8 @@ def test_activation_threshold_rejects_weak_call_and_put_signals_before_stop():
     assert filtered['signals_before_activation'] == baseline['signals_before_activation']
     assert filtered['activation_rejections'] == rejected
     assert filtered['activation_rejection_rate'] == pytest.approx(rejected / len(sim.entries))
+    assert filtered['signals_after_activation'] == filtered['total_trades']
+    assert filtered['signals_unfilled_due_to_stop'] == 0
     assert 0 < filtered['calls'] < baseline['calls'] and 0 < filtered['puts'] < baseline['puts']
 
 
@@ -130,13 +135,26 @@ def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
     scores = [assess_fitness(metrics | dict(win_rate_excluding_refunds=p))['score']
               for p in (.48, .52, .538, .562)]
     assert all(a < b for a, b in zip(scores, scores[1:]))
-    near_cutoff = [assess_fitness(metrics | dict(win_rate_excluding_refunds=.56 + offset))['score']
-                   for offset in (-1e-6, 1e-6)]
-    assert 0 < near_cutoff[1] - near_cutoff[0] < 3e-6
+    below, target, above = [assess_fitness(metrics | dict(win_rate_excluding_refunds=w))['score']
+                            for w in (.59, .60, .61)]
+    assert target - below > above - target > 0
+    assert assess_fitness(metrics | dict(win_rate_excluding_refunds=.59), payout=.90)['penalties']['win_rate'] == 0.
+    assert assess_fitness(metrics | dict(profit_factor=.9))['score'] == assess_fitness(metrics)['score']
     empty = assess_fitness(dict(win_rate_excluding_refunds=None, profit_factor=None,
                                 profit_factor_status='no_trades', trades_per_observed_hour=0.,
                                 max_drawdown_pct=0.))
     assert not empty['passed'] and np.isfinite(empty['score'])
+
+
+def test_fitness_doubles_low_frequency_penalty_and_caps_exponential_drawdown_penalty():
+    metrics = dict(win_rate_excluding_refunds=.60, profit_factor=1.20, profit_factor_status='finite',
+                   trades_per_observed_hour=1.0, max_drawdown_pct=12.)
+    penalties = assess_fitness(metrics)['penalties']
+    assert penalties['frequency'] == pytest.approx(2 * (.2 / 1.2))
+    dd = [assess_fitness(metrics | dict(max_drawdown_pct=d))['penalties']['drawdown']
+          for d in (12., 13., 15., 16., 30.)]
+    assert dd[3] - dd[2] > dd[1] - dd[0] > 0.
+    assert dd[-1] == pytest.approx(.30 + .50)
 
 
 def test_search_fitness_penalizes_unstable_win_rates_and_low_or_high_activity():
@@ -168,6 +186,21 @@ def test_search_fitness_penalizes_unstable_win_rates_and_low_or_high_activity():
         neutral | dict(activation_rejection_rate=.25), [neutral] * SEARCH_BLOCKS,
     )
     assert not inactive_with_rejections['passed']
+
+
+def test_walk_forward_penalizes_degradation_instead_of_late_recovery():
+    strong = dict(win_rate_excluding_refunds=.64, profit_factor=1.42, profit_factor_status='finite',
+                  trades_per_observed_hour=1.8, max_drawdown_pct=10., net_profit=10.)
+    weak = strong | dict(win_rate_excluding_refunds=.52, profit_factor=.87, net_profit=-10.)
+    degraded = assess_search_fitness(strong, [strong, strong, strong, weak])
+    recovered = assess_search_fitness(strong, [weak, strong, strong, strong])
+    assert degraded['block_win_rate_variance'] == pytest.approx(recovered['block_win_rate_variance'])
+    assert degraded['forward_penalties'][:2] == [0., 0.]
+    assert degraded['forward_penalties'][-1] > 0.
+    assert recovered['forward_penalties'] == [0., 0., 0.]
+    assert degraded['score'] < recovered['score']
+    small_drop = assess_search_fitness(strong, [strong, strong, strong, strong | dict(win_rate_excluding_refunds=.63)])
+    assert small_drop['forward_penalties'] == [0., 0., 0.]
 
 
 @pytest.mark.parametrize('timeframe,width', [('H1', 12), ('H4', 48)])
@@ -308,9 +341,10 @@ def test_evolution_preserves_best_and_other_consistent_elites(
                     win_rate_excluding_refunds=.52 + .03 * float(np.tanh(genome[-2])),
                     profit_factor=1.1 if profitable else .9, profit_factor_status='finite',
                     trades_per_observed_hour=1.5, max_drawdown_pct=10.,
-                    net_profit=5. if profitable else -5., risk_stop=False,
+                    net_profit=5. if profitable else -5., risk_stop=False, observed_hours=self.observed_hours,
                     activation_threshold=genome[-1], signals_before_activation=100,
-                    activation_rejections=0, activation_rejection_rate=0.)
+                    activation_rejections=0, activation_rejection_rate=0.,
+                    signals_after_activation=100, signals_unfilled_due_to_stop=0)
 
     monkeypatch.setattr(M5Simulation, 'evaluate', evaluate)
     output = tmp_path/'run'
@@ -368,6 +402,7 @@ def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_
                            EvolutionConfig(population_size=6, generations=2, workers=2), seed_bundle=legacy_seed)
     assert first['champion']['generation'] == second['champion']['generation']
     assert first['champion']['metrics'] == second['champion']['metrics']
+    assert first['founder_evaluation'] == second['founder_evaluation']
     assert first['confirmation']['metrics'] != second['confirmation']['metrics']
     assert len(pd.read_csv(output/'evolution.csv')) == 18
     assert (output/'evolution.md').is_file()
@@ -430,6 +465,8 @@ def test_next_run_keeps_search_champion_and_continues_after_last_generation(tmp_
     assert [g['generation'] for g in report['generations']] == [24, 25, 26]
     assert report['lineage']['source_generation'] == first['champion']['generation']
     assert report['lineage']['bundle_sha256'] == first['lineage_bundle_sha256']
+    assert report['founder_evaluation']['generation'] == first['champion']['generation']
+    assert report['founder_evaluation']['fitness'] == first['champion']['fitness']
     founder_rows = pd.read_csv(resumed/'evolution.csv').query('founder')
     assert len(founder_rows) == 1
     assert founder_rows.fitness.iloc[0] == pytest.approx(first['champion']['fitness']['score'])
