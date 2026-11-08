@@ -213,6 +213,7 @@ def assess_search_fitness(metrics, blocks, *, payout=.8):
 TEMPORAL_MEAN_WEIGHT = .40
 TEMPORAL_WORST_WEIGHT = .60
 TEMPORAL_DISPERSION_WEIGHT = .50
+TEMPORAL_VARIANCE_WEIGHT = .25
 TEMPORAL_MAX_DRAWDOWN_WEIGHT = .40
 TEMPORAL_MEAN_DRAWDOWN_WEIGHT = .20
 TEMPORAL_LOSS_WEIGHT = .12
@@ -246,12 +247,14 @@ def assess_temporal_multiregime_fitness(blocks, *, stake, direction_loss):
     avg_return = float(returns.mean())
     worst_return = float(returns.min())
     dispersion = float(returns.std())
+    variance = float(returns.var())
     max_dd, avg_dd = float(dd.max()), float(dd.mean())
     shortfall = float(np.maximum(0., MIN_TRADES_HOUR - rates).mean() / MIN_TRADES_HOUR)
     stop_fraction = float(stopped.mean())
 
     penalty = (
         TEMPORAL_DISPERSION_WEIGHT * dispersion
+        + TEMPORAL_VARIANCE_WEIGHT * variance
         + TEMPORAL_MAX_DRAWDOWN_WEIGHT * max_dd
         + TEMPORAL_MEAN_DRAWDOWN_WEIGHT * avg_dd
         + TEMPORAL_LOSS_WEIGHT * direction_loss
@@ -274,7 +277,7 @@ def assess_temporal_multiregime_fitness(blocks, *, stake, direction_loss):
             sum(b['pnl_usd'] for b in blocks) / (stake * sum(b['admissions'] for b in blocks))
         ),
         worst_quarter_return=worst_return,
-        quarter_return_std=dispersion,
+        quarter_return_std=dispersion, quarter_return_variance=variance,
         max_quarter_drawdown_pct=100. * max_dd,
         mean_quarter_drawdown_pct=100. * avg_dd,
         min_quarter_frequency=float(rates.min()),
