@@ -1,8 +1,6 @@
 name: Benchmark supervisado de dirección Scalping M5
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/m5-direction-predictability]
 permissions:
   contents: read
 jobs:
