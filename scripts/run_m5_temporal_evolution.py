@@ -24,7 +24,7 @@ from scripts.run_m5_semester_replay import (
 from src.adaptive_gate import CONVICTION_WINDOW, MASTERY_ACCURACY, rolling_conviction_admissions
 from src.artifacts import file_sha256
 from src.evolution_context import native_direction_context
-from src.evolution_engine import assess_temporal_multiregime_fitness
+from src.evolution_engine import assess_temporal_multiregime_fitness, temporal_fitness_weights
 from src.evolution_lineage import MARKET
 from src.evolution_multiscale import (
     FEATURE_NAMES, M5_TACTICAL, POPULATION, SEEDS, arm_inputs, direction_scores,
@@ -283,7 +283,7 @@ def run(*, generations=MAX_GENERATIONS, seeds=SEEDS, percentiles=PERCENTILES,
         selection_requires_both_quarters=True,
         high_volatility_training_cutoff_from_q1=sample['vol_cut'],
         hash_audit=sample['hashes'],
-        fitness_calibration=__import__('src.evolution_engine', fromlist=['temporal_fitness_weights']).temporal_fitness_weights(),
+        fitness_calibration=temporal_fitness_weights(),
         is_snapshot_sha256=(file_sha256(snapshot_path) if snapshot_path is not None else None),
         interpretation='research: never promote a non-qualifying champion',
         replicas=replicas,
