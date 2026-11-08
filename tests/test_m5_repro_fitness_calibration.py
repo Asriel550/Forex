@@ -108,3 +108,16 @@ def test_drawdown_still_penalizes_and_qualification_is_strict():
     b = assess_temporal_multiregime_fitness(stopped, stake=10., direction_loss=.5)
     assert a['score'] > b['score']
     assert not b['qualifies']
+
+
+def test_calibrated_fitness_all_fields_can_enter_vectorized_population():
+    """El pipeline heredado llama .tolist() en cada campo del candidato."""
+    stats = assess_temporal_multiregime_fitness(
+        [block(), block()], stake=10., direction_loss=.8
+    )
+    assert not any(isinstance(value, dict) for value in stats.values())
+    for value in stats.values():
+        arr = np.asarray([value, value])
+        assert arr[0].tolist() is not None
+    assert stats['penalty_frequency'] >= 0.
+    assert stats['penalty_max_dd'] > 0.
