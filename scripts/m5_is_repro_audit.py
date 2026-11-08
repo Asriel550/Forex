@@ -25,6 +25,11 @@ from src.reproducibility import array_sha256
 SCHEMA = "pr34_m5_is_frozen_v1"
 EXPECTED = {"row_times_ns", "outcome", "cond_volatility", "inputs",
             "high_volatility", "volatility_cutoff"}
+# Snapshot exitoso de dos runners auditados: reproducía el hash canónico
+# de 2.859 aperturas; el otro runner retuvo GARCH en fila 16.928 y no lo hacía.
+GOLDEN_SNAPSHOT_SHA256 = '7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504'
+GOLDEN_GARCH_MC_SHA256 = '7e796d512ad12d5a546e8b6dacf94e72dd2c23ff7639efc65737687cbe037ef6'
+
 
 
 def save_verified_snapshot(sample, path, report_path):
@@ -73,6 +78,9 @@ def load_verified_snapshot(path, report_path):
         raise ValueError("Es obligatorio proporcionar el manifiesto SHA256 del snapshot")
     path, report_path = Path(path), Path(report_path)
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    if (report.get('snapshot_sha256') != GOLDEN_SNAPSHOT_SHA256
+            or report.get('fingerprints', {}).get('garch_and_mc', {}).get('values_sha256') != GOLDEN_GARCH_MC_SHA256):
+        raise ValueError('Solo se permite el snapshot cuantitativo canónico de 2.859 propuestas')
     if (report.get("schema") != SCHEMA or report.get("snapshot_sha256") != file_sha256(path)
             or report.get("oos_accessed") is not False
             or tuple(report.get("sources", [])) != PERIODS
@@ -159,12 +167,81 @@ def compare_independent_builds(one_path, two_path):
     return a["snapshot_sha256"]
 
 
+
+def verify_frozen_feeds(snapshot_path, manifest_path, output_path):
+    """Rehace M1 y M5, pero NUNCA vuelve a ajustar el GARCH congelado.
+
+    Ambas máquinas verifican los ZIP oficiales con hashes, la huella OHLCV
+    M5 y el snapshot cuantitativo archivado antes de permitir Gen 376+.
+    """
+    from scripts.run_m5_direction_ablation import load_minutes
+    from scripts.run_m5_semester_replay import verify_source_periods
+    from src.reproducibility import market_frame_fingerprint
+    from src.resampling import aggregate
+    from scripts.run_m5_adaptive_gate import RAW
+    from importlib import metadata
+    assert_isolated(PERIODS)
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    sources = json.loads(SOURCE_MANIFEST.read_text(encoding="utf-8"))
+    verify_source_periods(sources)
+    if (file_sha256(snapshot_path) != GOLDEN_SNAPSHOT_SHA256
+            or manifest.get("snapshot_sha256") != GOLDEN_SNAPSHOT_SHA256
+            or manifest.get("fingerprints", {}).get("garch_and_mc", {}).get("values_sha256")
+            != GOLDEN_GARCH_MC_SHA256
+            or manifest.get("hashes", {}).get("march_mask_sha256") != MARCH_SIGNATURE[2]
+            or manifest.get("hashes", {}).get("source_manifest_sha256") != file_sha256(SOURCE_MANIFEST)
+            or tuple(manifest.get("sources", [])) != PERIODS
+            or manifest.get("oos_accessed") is not False):
+        raise ValueError("No es el snapshot IS cuantitativo canónico sellado")
+    raw = load_minutes(RAW, PERIODS, end=END)   # SHA256 de cada ZIP comprobado.
+    m5 = __import__('src.resampling', fromlist=['aggregate']).aggregate(
+        raw, 1, "M5", now=END
+    )
+    actual = dict(
+        m1=market_frame_fingerprint(raw, columns=('open','high','low','close','volume')),
+        m5=market_frame_fingerprint(m5, columns=('open','high','low','close','volume')),
+    )
+    pinned = manifest["fingerprints"]
+    for name in ("m1", "m5"):
+        if actual[name] != pinned[name]:
+            raise ValueError(f"El feed {name.upper()} no coincide con el snapshot sellado")
+    checked = dict(
+        schema="pr34_frozen_feeds_verified_v1",
+        sources=PERIODS, period_start=START.isoformat(),
+        period_end_exclusive=END.isoformat(),
+        snapshot_sha256=GOLDEN_SNAPSHOT_SHA256,
+        garch_mc_sha256=GOLDEN_GARCH_MC_SHA256,
+        fingerprints=actual,
+        versions={pkg: metadata.version(pkg) for pkg in ('numpy','pandas','scipy','arch')},
+        oos_accessed=False,
+    )
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(checked, indent=2, allow_nan=False) + "\\n", encoding="utf-8")
+    return checked
+
+
+def compare_frozen_feeds(one_path, two_path):
+    one = json.loads(Path(one_path).read_text(encoding="utf-8"))
+    two = json.loads(Path(two_path).read_text(encoding="utf-8"))
+    if one != two or one.get("schema") != "pr34_frozen_feeds_verified_v1":
+        differing = [k for k in set(one) | set(two) if one.get(k) != two.get(k)]
+        raise ValueError("Fuentes M1/M5 divergentes entre runners: " + ", ".join(sorted(differing)))
+    return one['snapshot_sha256']
+
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     sub = cli.add_subparsers(dest="action", required=True)
     build = sub.add_parser("build")
     build.add_argument("--snapshot", type=Path, required=True)
     build.add_argument("--manifest", type=Path, required=True)
+    source = sub.add_parser('source')
+    source.add_argument('--snapshot', type=Path, required=True)
+    source.add_argument('--manifest', type=Path, required=True)
+    source.add_argument('--report', type=Path, required=True)
+    pair = sub.add_parser('compare-sources')
+    pair.add_argument('--first', type=Path, required=True)
+    pair.add_argument('--second', type=Path, required=True)
     compare = sub.add_parser("compare")
     compare.add_argument("--first", type=Path, required=True)
     compare.add_argument("--second", type=Path, required=True)
@@ -182,6 +259,12 @@ def main():
             "fingerprints": result["fingerprints"],
             "oos_accessed": False,
         }, allow_nan=False), flush=True)
+    elif args.action == 'source':
+        record = verify_frozen_feeds(args.snapshot, args.manifest, args.report)
+        print('FROZEN_FEEDS ' + json.dumps(record, allow_nan=False), flush=True)
+    elif args.action == 'compare-sources':
+        sha = compare_frozen_feeds(args.first, args.second)
+        print('FROZEN_FEEDS_REPRODUCIBLE ' + sha, flush=True)
     else:
         sha = compare_independent_builds(args.first, args.second)
         print("IS_REPRODUCIBLE " + sha, flush=True)
