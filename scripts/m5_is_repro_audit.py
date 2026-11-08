@@ -56,6 +56,9 @@ def save_verified_snapshot(sample, path, report_path):
         snapshot_sha256=file_sha256(path),
         hashes=sample["hashes"], fingerprints=sample["fingerprints"],
         quarter_observed_hours={q["name"]: q["observed_hours"] for q in sample["quarters"]},
+        quarter_capacity_contracts_per_observed_hour={
+            q['name']: q['capacity_contracts_per_observed_hour'] for q in sample['quarters']
+        },
     )
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n",
@@ -127,6 +130,8 @@ def load_verified_snapshot(path, report_path):
     quarters = tuple(dict(
         name=name, rows=rows.loc[mask], mask=np.asarray(mask),
         observed_hours=float(report["quarter_observed_hours"][name]),
+        capacity_contracts_per_observed_hour=float(
+            report['quarter_capacity_contracts_per_observed_hour'][name]),
     ) for name, mask in zip(("Q1", "Q2"), masks, strict=True))
     if not all(q["observed_hours"] > 0 and not q["rows"].empty for q in quarters):
         raise ValueError("Horas de trimestre inválidas")
@@ -143,7 +148,8 @@ def compare_independent_builds(one_path, two_path):
     a = json.loads(Path(one_path).read_text(encoding="utf-8"))
     b = json.loads(Path(two_path).read_text(encoding="utf-8"))
     for key in ("schema", "sources", "period_start", "period_end_exclusive",
-                "hashes", "quarter_observed_hours", "fingerprints", "snapshot_sha256"):
+                "hashes", "quarter_observed_hours", "fingerprints", "snapshot_sha256",
+                "quarter_capacity_contracts_per_observed_hour"):
         if a[key] != b[key]:
             if key == "fingerprints":
                 fields = sorted(set(a[key]) | set(b[key]))
