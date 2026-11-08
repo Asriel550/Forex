@@ -461,3 +461,33 @@ rama. El workflow lo publica antes de preparar el diagnóstico conocido
 de abril. El replay exige el hash de las 278 admisiones de la PR #27
 y termina en la frontera protegida del 7 de abril a las 15:15 UTC.
 Los dos reportes puntúan el retorno direccional antes del stop.
+
+### Replay operativo Gen 333 y extensión hasta la Gen 355
+
+El workflow manual **Replay operativo Gen 333 y extensión Gen 336–355**
+verifica el sello de la Gen 333, semilla 42, y ambas máscaras archivadas.
+Sobre sus propuestas aplica el filtro M5 de Monte Carlo al lado elegido
+por el genoma. Usa probabilidad nominal superior al 57 %, Wilson con
+z de 2,24 y ventaja conservadora superior al 1 % del stake. Para este
+diagnóstico, también excluye la volatilidad superior al percentil 67
+fijado en marzo y admite hasta dos entradas por hora móvil.
+
+El stop de cuenta suspende nuevas operaciones al alcanzar un drawdown
+del 20 % desde el pico tras una liquidación. La corrida histórica
+liquida al vencimiento con stake fijo y payout archivado. El informe
+separa los descartes del gate de las entradas que quedan pendientes
+por stop, y el retorno sobre el stake total ejecutado del PnL en dólares.
+
+Para salidas por contrato, el comando de replay admite
+`--exit-quotes`, `--stop-loss` y `--take-profit` juntos. El CSV
+requiere `entry_utc`, `expiry_utc`, `quote_utc`, `side` (CALL/PUT)
+y `sell_proceeds_usd` netos para el mismo contrato y stake del replay.
+Los umbrales se expresan como fracción de stake. Se liquida en la primera
+cotización ejecutable que cruza el umbral. El histórico M1 del
+subyacente solo aporta liquidación por vencimiento.
+
+Tras el replay, las semillas 42, 43 y 44 arrancan de la misma Gen 333.
+Cada una evalúa 20 poblaciones de 128 individuos sobre el snapshot de
+marzo y la escala sellada. Conserva el fitness multirrégimen y guarda
+un genoma ganador con su hash por semilla. Abril termina en el corte
+protegido y sirve exclusivamente para el replay de la Gen 333.

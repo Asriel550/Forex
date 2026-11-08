@@ -148,9 +148,12 @@ def champion_key(result):
             result['worst_delta_vs_mc'], -result['pf_log_std'])
 
 
-def evolve_replica(inputs, founder, objective, arm, seed):
+def evolve_replica(inputs, founder, objective, arm, seed, *,
+                   first_generation=FIRST_GENERATION, last_generation=LAST_GENERATION):
     """Mantiene el mejor individuo y reutiliza cruce y mutación del motor M5."""
-    rng = np.random.default_rng([seed, FIRST_GENERATION])
+    if not 0 <= first_generation <= last_generation:
+        raise ValueError('Intervalo de generaciones inválido')
+    rng = np.random.default_rng([seed, first_generation])
     inputs = arm_inputs(inputs, arm)
     sigma = .12
     wide_count = round(WIDE_MUTATION_FRACTION * POPULATION)
@@ -158,7 +161,7 @@ def evolve_replica(inputs, founder, objective, arm, seed):
     population = seeded_population(rng, founder, POPULATION, sigma, wide_count=wide_count)
     history = []
     winner = genome = founder_fitness = None
-    for generation in range(FIRST_GENERATION, LAST_GENERATION + 1):
+    for generation in range(first_generation, last_generation + 1):
         sides = directions(inputs, population)
         fitness = objective.evaluate(sides)
         parents = np.lexsort((
@@ -166,15 +169,18 @@ def evolve_replica(inputs, founder, objective, arm, seed):
             fitness['return_per_admission'], fitness['score'], fitness['qualifies'],
         ))[-parents_count:][::-1]
         best = parents[0]
-        if generation == FIRST_GENERATION:
+        if generation == first_generation:
             founder_fitness = {name: values[0].tolist() for name, values in fitness.items()}
         record = dict(generation=generation, candidate=int(best),
                       **{name: values[best].tolist() for name, values in fitness.items()})
         improved = winner is None or champion_key(record) > champion_key(winner)
         if improved:
             winner, genome = record, population[best].copy()
-        history.append(dict(record, median_score=float(np.median(fitness['score'])), mutation_sigma=sigma))
-        if generation < LAST_GENERATION:
+        returns = fitness['return_per_admission']
+        history.append(dict(record, median_score=float(np.median(fitness['score'])), mutation_sigma=sigma,
+                            nonnegative_candidates=int((returns >= 0.).sum()),
+                            max_candidate_return=float(returns.max())))
+        if generation < last_generation:
             sigma = max(.025, sigma * .85) if improved else min(.35, sigma * 1.25)
             population = breed(rng, population, [best], parents, sigma, wide_count=wide_count)
     return dict(arm=arm, seed=seed, founder=founder_fitness, champion=winner, genome=genome.tolist(),

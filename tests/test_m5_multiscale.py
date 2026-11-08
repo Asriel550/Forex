@@ -7,7 +7,7 @@ from src.environment import AccountConfig
 from src.evolution_context import H1_STRUCTURAL, M15_TACTICAL, native_direction_context
 from src.evolution_multiscale import (
     ARM_WIDTHS, FEATURE_NAMES, GENOME_WIDTH, HIDDEN, MultiregimeFitness, arm_inputs,
-    directional_metrics, directions, fit_scale, project_founder, scale_inputs, volatility_groups,
+    directional_metrics, directions, evolve_replica, fit_scale, project_founder, scale_inputs, volatility_groups,
 )
 
 
@@ -68,3 +68,18 @@ def test_fitness_prefers_even_payoff_and_uses_the_fixed_denominator():
     train_groups, names, _ = volatility_groups(np.tile(np.arange(400), 4))
     assert len(names) == 8
     assert np.bincount(train_groups).min() >= 64
+
+
+def test_evolution_continues_numbering_and_rechecks_the_supplied_founder():
+    rng = np.random.default_rng(42)
+    inputs = rng.normal(size=(24, len(FEATURE_NAMES)))
+    founder = rng.normal(size=GENOME_WIDTH)
+    outcomes = np.tile([-1, 0, 1], 8)
+    mc = np.ones(24, dtype=int)
+    groups = np.repeat([0, 1], 12)
+    objective = MultiregimeFitness(outcomes, mc, groups, AccountConfig())
+    expected = objective.evaluate(directions(arm_inputs(inputs, 'm15'), [founder]))
+    result = evolve_replica(inputs, founder, objective, 'm15', 43, first_generation=336, last_generation=337)
+    assert [g['generation'] for g in result['generations']] == [336, 337]
+    assert result['evaluations'] == 256
+    assert result['founder']['score'] == pytest.approx(expected['score'][0])
