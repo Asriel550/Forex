@@ -33,7 +33,7 @@ from src.evolution_multiscale import (
 from src.model_training import directional_tanh_loss
 from src.reproducibility import market_frame_fingerprint, admissions_fingerprint, canonical_open_diff, array_sha256
 from src.resampling import aggregate
-from src.replay_engine import replay_contracts
+from src.replay_engine import apply_hourly_cap, replay_contracts
 from src.train import write_json
 
 
@@ -161,6 +161,11 @@ def prepare_is(*, audit_path=None, snapshot_path=None, snapshot_manifest=None):
     )
     if any(len(q['rows']) < CONVICTION_WINDOW or q['observed_hours'] <= 0 for q in quarters):
         raise ValueError('Q1 y Q2 requieren propuestas e historial suficientes')
+    for q in quarters:
+        allowed = apply_hourly_cap(q['rows'].index,
+                                   np.full(len(q['rows']), 'accepted'),
+                                   reference['gate']['hourly_cap']) == 'accepted'
+        q['capacity_contracts_per_observed_hour'] = float(allowed.sum() / q['observed_hours'])
     # Percentil de volatilidad fit en Q1 exclusivamente, nunca con etiquetas OOS.
     vols = rows.cond_volatility.to_numpy(dtype=float)
     if not np.isfinite(vols).all() or (vols < 0).any():
@@ -194,7 +199,12 @@ def score_individual(scores, sample, percentile):
             candidate_reasons=reasons[m],
         )
         quarterly.append(dict(**replay['operational'],
-                              admissions=len(q['rows']), observed_hours=q['observed_hours']))
+                              admissions=len(q['rows']), observed_hours=q['observed_hours'],
+                              gate_only_pnl_usd=replay['gate_only_at_expiry']['pnl_usd'],
+                              gate_only_contracts_per_observed_hour=(
+                                  replay['gate_only_at_expiry']['contracts_per_observed_hour']),
+                              capacity_contracts_per_observed_hour=(
+                                  q['capacity_contracts_per_observed_hour'])))
     loss = directional_tanh_loss(scores, rows.outcome.to_numpy(), sample['high_vol'])
     fitness = assess_temporal_multiregime_fitness(
         quarterly, stake=sample['account'].stake, direction_loss=loss['total']
@@ -213,7 +223,8 @@ def rank(fitness):
             -fitness['quarter_return_std'], fitness['min_quarter_frequency'])
 
 
-def run(*, generations=MAX_GENERATIONS, seeds=SEEDS, percentiles=PERCENTILES):
+def run(*, generations=MAX_GENERATIONS, seeds=SEEDS, percentiles=PERCENTILES,
+        snapshot_path=None, snapshot_manifest=None):
     if (type(generations) is not int or not 1 <= generations <= MAX_GENERATIONS
             or not seeds or not set(seeds).issubset(SEEDS)
             or len(seeds) != len(set(seeds))
@@ -225,7 +236,7 @@ def run(*, generations=MAX_GENERATIONS, seeds=SEEDS, percentiles=PERCENTILES):
                        else f'evolution-smoke-{generations}g-{len(seeds)}s-{len(percentiles)}p.json')
     if output.exists():
         raise ValueError('El archivo de la ejecución ya existe; no sobrescribir el sello')
-    sample = prepare_is()
+    sample = prepare_is(snapshot_path=snapshot_path, snapshot_manifest=snapshot_manifest)
     replicas = []
     for seed in seeds:
         for percentile in percentiles:
@@ -269,6 +280,7 @@ def run(*, generations=MAX_GENERATIONS, seeds=SEEDS, percentiles=PERCENTILES):
         selection_requires_both_quarters=True,
         high_volatility_training_cutoff_from_q1=sample['vol_cut'],
         hash_audit=sample['hashes'],
+        is_snapshot_sha256=(file_sha256(snapshot_path) if snapshot_path is not None else None),
         interpretation='research: never promote a non-qualifying champion',
         replicas=replicas,
     )
@@ -292,5 +304,8 @@ if __name__ == '__main__':
     parser.add_argument('--generations', type=int, default=MAX_GENERATIONS)
     parser.add_argument('--seeds', nargs='+', type=int, default=list(SEEDS))
     parser.add_argument('--percentiles', nargs='+', type=float, default=list(PERCENTILES))
+    parser.add_argument('--snapshot', type=Path)
+    parser.add_argument('--snapshot-manifest', type=Path)
     args = parser.parse_args()
-    run(generations=args.generations, seeds=tuple(args.seeds), percentiles=tuple(args.percentiles))
+    run(generations=args.generations, seeds=tuple(args.seeds), percentiles=tuple(args.percentiles),
+        snapshot_path=args.snapshot, snapshot_manifest=args.snapshot_manifest)
