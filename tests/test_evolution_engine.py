@@ -160,10 +160,14 @@ def test_search_fitness_penalizes_unstable_win_rates_and_low_or_high_activity():
     inactive = assess_search_fitness(neutral, [neutral] * SEARCH_BLOCKS)
     assert inactive['block_win_rate_variance'] == 0.
     assert inactive['score'] < stable['score']
-    in_range = search(overall | dict(activation_rejection_rate=.25), blocks)
+    in_range = assess_search_fitness(overall | dict(activation_rejection_rate=.25), blocks)
     assert in_range['score'] > stable['score']
-    assert in_range['score'] > search(overall | dict(activation_rejection_rate=.40), blocks)['score']
-    assert not search(neutral | dict(activation_rejection_rate=.25), [neutral] * SEARCH_BLOCKS)['passed']
+    excessive = assess_search_fitness(overall | dict(activation_rejection_rate=.40), blocks)
+    assert in_range['score'] > excessive['score']
+    inactive_with_rejections = assess_search_fitness(
+        neutral | dict(activation_rejection_rate=.25), [neutral] * SEARCH_BLOCKS,
+    )
+    assert not inactive_with_rejections['passed']
 
 
 @pytest.mark.parametrize('timeframe,width', [('H1', 12), ('H4', 48)])
