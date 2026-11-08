@@ -245,9 +245,9 @@ al 20% se aplican al liquidar. Las horas incluyen todo el tramo observable.
 
 Cada individuo recibe un puntaje finito. Sean `w` el acierto sin
 reembolsos, `f` los contratos por hora y `d` el drawdown como fracción.
-La aptitud suma `w` y el término de PF, ponderados por `min(1, f/1.5)`
+La aptitud suma `w` y el término de PF, ponderados por `min(1, f/1.2)`
 para dar menos peso a resultados de baja frecuencia. Se resta la distancia
-de `f` al rango [1,5–3,0], dividida por 1,5, el drawdown `d` y la
+de `f` al rango [1,2–2,5], dividida por 1,2, el drawdown `d` y la
 penalización suave `0.5 × max(0, 0.56 − w)`. El término de PF es
 `PF/(1+PF)`, vale uno si hay ganancias sin pérdidas y cero si el ratio
 es indefinido. Un acierto indefinido aporta cero al cálculo.
@@ -255,20 +255,23 @@ es indefinido. Un acierto indefinido aporta cero al cálculo.
 El primer 75% de validación cronológica se divide en cuatro bloques
 consecutivos de tamaño similar. Cada bloque empieza con saldo propio y
 liquida sus contratos dentro de sus límites. La aptitud combina 50%
-del puntaje económico medio y 50% del peor bloque.
+del puntaje económico del tramo completo, 25% de la media de los
+bloques y 25% del peor bloque. Luego resta cuatro veces la varianza
+poblacional del acierto sin reembolsos entre bloques. Un bloque con
+acierto indefinido aporta cero al cálculo de la varianza.
 
 El grupo de padres conserva el tamaño del 20% superior redondeado
-hacia arriba. Da prioridad a quienes terminan en positivo con drawdown
-menor al 15% en los cuatro bloques. Solo esos individuos pasan intactos
-como élites. Las plazas restantes permiten que candidatos con menor
-consistencia aporten genes a descendientes mutados. El CSV distingue
-padres, élites y resultados de cada bloque.
+hacia arriba según el puntaje. Entre esos padres, quienes terminan en
+positivo con drawdown menor al 15% en los cuatro bloques pasan intactos
+como élites. Todos los padres pueden aportar genes a descendientes
+mutados. El CSV distingue padres, élites, varianza y resultados de cada
+bloque.
 
 La evaluación de búsqueda completa transporta el saldo entre bloques
 para medir el riesgo de todo el tramo. Tras una vela de purga, se evalúa
 una sola vez al campeón preseleccionado en confirmación. El gate final
 exige consistencia en los cuatro bloques y, en búsqueda completa y
-confirmación, acierto sin reembolsos ≥56%, PF >1,20, 1,5–3,0 contratos por
+confirmación, acierto sin reembolsos ≥56%, PF >1,20, 1,2–2,5 contratos por
 hora y drawdown <15%. El holdout histórico queda reservado.
 
 ### Continuidad del linaje
@@ -285,7 +288,7 @@ El resto de la población inicial nace por mutación del fundador.
 Actions guarda el campeón de búsqueda y el estado evolutivo en
 `forex-evolution-lineage-v4` antes de aplicar el gate de validación.
 La siguiente ejecución manual en la rama por defecto recupera el
-checkpoint disponible más reciente del mismo workflow, incluidos los
+checkpoint disponible más reciente por fecha de creación del mismo workflow, incluidos los
 de corridas rechazadas por el gate. Continúa después de la última
 generación evaluada, aunque el campeón se haya seleccionado antes.
 Al faltar un checkpoint vigente, Actions parte del fundador archivado.

@@ -280,9 +280,9 @@ jobs:
             const candidates = await github.paginate(github.rest.actions.listArtifactsForRepo,
               {owner, repo, name: 'forex-evolution-lineage-v4', per_page: 100});
             // El checkpoint se publica al completar la evolución, antes del gate.
-            // Ordenar por artefacto mantiene el linaje si se reintenta una corrida anterior.
+            // Los IDs de artefacto pueden llegar fuera de orden cronológico.
             const previous = candidates.filter(a => !a.expired && a.workflow_run?.head_branch === branch)
-              .sort((a, b) => b.id - a.id);
+              .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
             for (const artifact of previous) {
               const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id: artifact.workflow_run.id});
               if (run.event !== 'workflow_dispatch' || run.head_repository?.full_name !== `${owner}/${repo}` ||

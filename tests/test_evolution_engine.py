@@ -91,13 +91,14 @@ def test_vectorized_execution_matches_m5_env_with_gaps_ties_and_stop(tie_policy)
 
 def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
     metrics = dict(win_rate_excluding_refunds=.56, profit_factor=1.21, profit_factor_status='finite',
-                   trades_per_observed_hour=1.5, max_drawdown_pct=14.99)
+                   trades_per_observed_hour=1.2, max_drawdown_pct=14.99)
     assert assess_fitness(metrics)['passed']
-    assert assess_fitness(metrics | dict(trades_per_observed_hour=3.))['passed']
+    assert assess_fitness(metrics | dict(trades_per_observed_hour=2.5))['passed']
     for update, failed in (
         (dict(win_rate_excluding_refunds=.5599), 'win_rate'),
         (dict(profit_factor=1.20), 'profit_factor'),
-        (dict(trades_per_observed_hour=3.001), 'frequency'),
+        (dict(trades_per_observed_hour=1.199), 'frequency'),
+        (dict(trades_per_observed_hour=2.501), 'frequency'),
         (dict(max_drawdown_pct=15.), 'drawdown'),
     ):
         result = assess_fitness(metrics | update)
@@ -114,6 +115,29 @@ def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
                                 profit_factor_status='no_trades', trades_per_observed_hour=0.,
                                 max_drawdown_pct=0.))
     assert not empty['passed'] and np.isfinite(empty['score'])
+
+
+def test_search_fitness_penalizes_unstable_win_rates_and_low_or_high_activity():
+    overall = dict(win_rate_excluding_refunds=.56, profit_factor=1.25, profit_factor_status='finite',
+                   trades_per_observed_hour=1.8, max_drawdown_pct=10., net_profit=10.)
+    blocks = [overall] * SEARCH_BLOCKS
+    stable = assess_search_fitness(overall, blocks)
+    volatile = assess_search_fitness(overall, [
+        overall | dict(win_rate_excluding_refunds=win) for win in (.46, .56, .56, .66)
+    ])
+    assert stable['block_win_rate_variance'] == 0.
+    assert volatile['block_win_rate_variance'] == pytest.approx(.005)
+    assert volatile['score'] < stable['score']
+
+    for rate in (0., .6, 3.):
+        # La baja actividad del tramo completo importa aunque los bloques operen.
+        candidate = assess_search_fitness(overall | dict(trades_per_observed_hour=rate), blocks)
+        assert candidate['score'] < stable['score']
+    neutral = dict(win_rate_excluding_refunds=None, profit_factor=None, profit_factor_status='no_trades',
+                   trades_per_observed_hour=0., max_drawdown_pct=0., net_profit=0.)
+    inactive = assess_search_fitness(neutral, [neutral] * SEARCH_BLOCKS)
+    assert inactive['block_win_rate_variance'] == 0.
+    assert inactive['score'] < stable['score']
 
 
 @pytest.mark.parametrize('timeframe,width', [('H1', 12), ('H4', 48)])
@@ -368,7 +392,7 @@ def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
     parent = next(s for s in steps if s.get('id') == 'evolution-parent')
     assert parent['if'] == "inputs.mode == 'evolution'"
     assert 'a.workflow_run?.head_branch === branch' in parent['with']['script']
-    assert 'b.id - a.id' in parent['with']['script']
+    assert 'Date.parse(b.created_at) - Date.parse(a.created_at)' in parent['with']['script']
     assert 'run.conclusion' not in parent['with']['script']
     download = next(s for s in steps if s.get('name') == 'Download previous M5 research lineage')
     assert download['with']['artifact-ids'] == '${{ steps.evolution-parent.outputs.artifact_id }}'
