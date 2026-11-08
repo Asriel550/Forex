@@ -6,7 +6,7 @@ import pytest
 from scripts.run_m5_adaptive_gate import GEN354_SHA256
 from scripts.run_m5_multiscale import genome_hash
 from scripts.run_m5_semester_replay import (
-    END, OOS_END, PERIODS, START, assert_isolated, frozen_models, tested_metrics,
+    END, OOS_END, PERIODS, START, assert_isolated, frozen_models, tested_metrics as measure_targets,
     verify_source_periods,
 )
 
@@ -57,8 +57,8 @@ def test_target_checks_are_strict_for_pf_and_drawdown():
     outcome = dict(operational=dict(profit_factor=1.20,
                                    contracts_per_observed_hour=1.2,
                                    max_drawdown_pct=15.0))
-    stats = tested_metrics(outcome)
+    stats = measure_targets(outcome)
     assert not stats['meets_pf'] and stats['meets_density'] and not stats['meets_drawdown']
     outcome['operational'].update(profit_factor=1.201, max_drawdown_pct=14.99)
-    stats = tested_metrics(outcome)
+    stats = measure_targets(outcome)
     assert all(stats[key] for key in ('meets_pf', 'meets_density', 'meets_drawdown'))
