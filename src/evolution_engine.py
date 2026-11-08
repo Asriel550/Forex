@@ -21,18 +21,20 @@ from .evolution_context import CONTEXT_SETTINGS, build_observations
 from .evolution_lineage import FORMAT, MARKET, MARKET_FEATURES, genome_payload, load_founder
 from .market import PROTECTED_HOLDOUT_START
 from .metrics import _atomic_write, calculate_metrics
-from .trading_profiles import SCALPING_TARGET_PER_HOUR, resolve_profile
+from .trading_profiles import resolve_profile
 from .train import chronological_market_split, write_json
 
 LOG = logging.getLogger(__name__)
 SEARCH_BLOCKS = 4
+OVERALL_SCORE_WEIGHT = .5
 WORST_BLOCK_WEIGHT = .5
+WIN_RATE_VARIANCE_WEIGHT = 4.
 ELITE_FRACTION = .20
 MIN_WIN_RATE = .56
 WIN_RATE_SHORTFALL_WEIGHT = .5
 MIN_PROFIT_FACTOR = 1.20
 MAX_DRAWDOWN_PCT = 15.
-MIN_TRADES_HOUR, MAX_TRADES_HOUR = SCALPING_TARGET_PER_HOUR['M5']
+MIN_TRADES_HOUR, MAX_TRADES_HOUR = 1.2, 2.5
 
 
 @dataclass(frozen=True)
@@ -139,18 +141,19 @@ def assess_fitness(metrics):
 
 
 def assess_search_fitness(metrics, blocks):
-    """Exige rentabilidad y drawdown controlado en cada bloque para ser élite."""
+    """Combina actividad y rendimiento del tramo completo con estabilidad por bloque."""
     fitness = assess_fitness(metrics)
     scores = [assess_fitness(block)['score'] for block in blocks]
-    score = (1 - WORST_BLOCK_WEIGHT) * float(np.mean(scores)) + WORST_BLOCK_WEIGHT * min(scores)
+    block_score = (1 - WORST_BLOCK_WEIGHT) * float(np.mean(scores)) + WORST_BLOCK_WEIGHT * min(scores)
+    win_rates = [block['win_rate_excluding_refunds'] or 0. for block in blocks]
+    win_rate_variance = float(np.var(win_rates))
+    score = (OVERALL_SCORE_WEIGHT * fitness['score'] + (1 - OVERALL_SCORE_WEIGHT) * block_score
+             - WIN_RATE_VARIANCE_WEIGHT * win_rate_variance)
     fitness['checks']['block_consistency'] = all(
         block['net_profit'] > 0 and block['max_drawdown_pct'] < MAX_DRAWDOWN_PCT for block in blocks
     )
-    return dict(fitness, score=score, passed=all(fitness['checks'].values()), block_scores=scores)
-
-
-def selection_rank(fitness):
-    return fitness['checks']['block_consistency'], fitness['score']
+    return dict(fitness, score=score, passed=all(fitness['checks'].values()),
+                block_scores=scores, block_win_rate_variance=win_rate_variance)
 
 
 def seeded_population(rng, founder, count, sigma):
@@ -299,8 +302,10 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
         fitness_limits=dict(min_win_rate=MIN_WIN_RATE, exclusive_min_profit_factor=MIN_PROFIT_FACTOR,
                             trades_per_hour=[MIN_TRADES_HOUR, MAX_TRADES_HOUR],
                             exclusive_max_drawdown_pct=MAX_DRAWDOWN_PCT),
-        fitness_selection=dict(method='economic_chronological_blocks_v3', blocks=SEARCH_BLOCKS,
+        fitness_selection=dict(method='economic_chronological_blocks_v4', blocks=SEARCH_BLOCKS,
+                               overall_score_weight=OVERALL_SCORE_WEIGHT,
                                worst_block_weight=WORST_BLOCK_WEIGHT,
+                               win_rate_variance_weight=WIN_RATE_VARIANCE_WEIGHT,
                                win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT),
         context_observations=CONTEXT_SETTINGS,
         search_blocks=[dict(block=i, rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
@@ -323,7 +328,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
     with ThreadPoolExecutor(max_workers=config.workers) as executor:
         for generation in range(first_generation, last_generation + 1):
             metrics, by_block, fitness = zip(*executor.map(evaluate, population))
-            parents = sorted(range(len(population)), key=lambda i: selection_rank(fitness[i]),
+            parents = sorted(range(len(population)), key=lambda i: fitness[i]['score'],
                              reverse=True)[:elite_count]
             elites = [i for i in parents if fitness[i]['checks']['block_consistency']]
             best = parents[0]
@@ -332,7 +337,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                           metrics=metrics[best], blocks=by_block[best], fitness=fitness[best],
                           elites=len(elites), parents=len(parents),
                           qualified_candidates=sum(f['passed'] for f in fitness))
-            improved = champion is None or selection_rank(fitness[best]) > selection_rank(champion['fitness'])
+            improved = champion is None or fitness[best]['score'] > champion['fitness']['score']
             if generation > first_generation:
                 sigma = max(.025, sigma * .85) if improved else min(.35, sigma * 1.25)
             record['mutation_sigma'] = sigma if generation < last_generation else None
@@ -344,6 +349,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 champion, champion_genome = record, population[best].copy()
             candidate_rows.extend(dict(
                 generation=generation, candidate=i, fitness=f['score'], elite=i in elites,
+                block_win_rate_variance=f['block_win_rate_variance'],
                 parent=i in parents, founder=generation == first_generation and i == 0,
                 passed=f['passed'], **{f'pass_{k}': v for k, v in f['checks'].items()},
                 **{k: m[k] for k in ('total_trades', 'win_rate_excluding_refunds', 'profit_factor',
