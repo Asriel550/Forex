@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scripts.run_m5_multiscale import load_control
+from scripts.run_m5_multiscale import archived_march_opens, load_control
 from src.environment import AccountConfig
 from src.evolution_context import H1_STRUCTURAL, M15_TACTICAL, native_direction_context
 from src.evolution_multiscale import (
@@ -31,6 +31,7 @@ def test_native_indicators_use_closed_complete_minutes_and_expire_on_a_gap():
 
 
 def test_projected_founder_and_inactive_features_share_the_topology():
+    assert len(archived_march_opens()) == 2859
     rng = np.random.default_rng(12)
     raw = rng.normal(size=(64, len(FEATURE_NAMES)))
     mean, std = fit_scale(raw)
