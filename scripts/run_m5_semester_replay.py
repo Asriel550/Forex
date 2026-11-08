@@ -32,6 +32,8 @@ Q2_START = pd.Timestamp('2026-04-01T00:00:00Z')
 END = pd.Timestamp('2026-07-01T00:00:00Z')
 OOS_END = pd.Timestamp('2026-10-01T00:00:00Z')
 QUARTERS = (('Q1', START, Q2_START), ('Q2', Q2_START, END))
+BOUNDARIES = pd.date_range(START, END, freq='MS')
+MONTHS = tuple((PERIODS[i], BOUNDARIES[i], BOUNDARIES[i + 1]) for i in range(6))
 MIN_PF, MIN_DENSITY, MAX_DRAWDOWN = 1.20, 1.20, 15.0
 
 
@@ -102,15 +104,20 @@ def run():
     # Únicamente seis ZIP M1 (enero-junio); julio-septiembre nunca se descarga.
     minutes = load_minutes(RAW, PERIODS, end=END)
     data = m5_features(minutes, quant, end=END)
-    windows, _ = admission_blocks(data, founder, QUARTERS, evaluation_limit=END)
-    rows = pd.concat((windows['Q1'].rows, windows['Q2'].rows))
+    # Meses independientes para conservar la elegibilidad exacta de marzo:
+    # una partición Q1 única pierde la primera propuesta del mes.
+    windows, _ = admission_blocks(data, founder, MONTHS, evaluation_limit=END)
+    quarter_rows = {
+        'Q1': pd.concat([windows[period].rows for period in PERIODS[:3]]),
+        'Q2': pd.concat([windows[period].rows for period in PERIODS[3:]]),
+    }
+    rows = pd.concat((quarter_rows['Q1'], quarter_rows['Q2']))
     if (rows.empty or not rows.index.is_monotonic_increasing or not rows.index.is_unique
             or rows.index.min() < START or rows.index.max() >= END):
         raise ValueError('Propuestas fuera de IS semestral o mal ordenadas')
 
     # Auditoría contra la misma máscara de marzo usada en la PR #30/#31.
-    march = rows.loc[(rows.index >= pd.Timestamp('2026-03-01T00:00:00Z'))
-                     & (rows.index < Q2_START)]
+    march = windows['202603'].rows
     march_opens = (march.index - MARKET.step).as_unit('ns')
     march_hash = sha256(march_opens.asi8.tobytes()).hexdigest()
     march_matches = len(march) == MARCH_SIGNATURE[1] and march_hash == MARCH_SIGNATURE[2]
@@ -120,11 +127,14 @@ def run():
     native = native_direction_context(minutes, rows.index, end=END)
     features = rows.loc[:, list(M5_TACTICAL)].join(native).loc[:, list(FEATURE_NAMES)]
     inputs = arm_inputs(scale_inputs(features.to_numpy(dtype=float), mean, std), ARM)
-    hours = {name: block.observed_hours for name, block in windows.items()}
+    hours = {period: windows[period].observed_hours for period in PERIODS}
+    hours['Q1'] = sum(hours[period] for period in PERIODS[:3])
+    hours['Q2'] = sum(hours[period] for period in PERIODS[3:])
     hours['semester'] = hours['Q1'] + hours['Q2']
     cap = reference['gate']['hourly_cap']
     reports, traces = {}, []
-    capacities = {name: capacity(block.rows, hours[name], cap) for name, block in windows.items()}
+    capacities = {period: capacity(windows[period].rows, hours[period], cap) for period in PERIODS}
+    capacities.update({name: capacity(quarter_rows[name], hours[name], cap) for name, _, _ in QUARTERS})
     capacities['semester'] = capacity(rows, hours['semester'], cap)
 
     for model_name, model in models.items():
@@ -136,7 +146,7 @@ def run():
         for percentile in PERCENTILES:
             gate = simulate_admission(rows, scores, (), percentile=percentile, elastic=True)
             results = {}
-            for name, start, end in (*QUARTERS, ('semester', START, END)):
+            for name, start, end in (*MONTHS, *QUARTERS, ('semester', START, END)):
                 selected = (rows.index >= start) & (rows.index < end)
                 window = rows.loc[selected]
                 state = gate.loc[selected]
@@ -177,6 +187,7 @@ def run():
         targets=dict(profit_factor_gt=MIN_PF, contracts_per_hour_gte=MIN_DENSITY,
                      drawdown_pct_lt=MAX_DRAWDOWN),
         capacities=capacities, models=reports,
+        monthly_risk_policy='account reset per month; exact March admission mask',
         quarter_risk_policy='account reset per quarter; gate state continuous',
         semester_risk_policy='single account throughout Jan-Jun; gate state continuous',
     )
