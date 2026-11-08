@@ -194,9 +194,7 @@ def verify_frozen_feeds(snapshot_path, manifest_path, output_path):
             or manifest.get("oos_accessed") is not False):
         raise ValueError("No es el snapshot IS cuantitativo canónico sellado")
     raw = load_minutes(RAW, PERIODS, end=END)   # SHA256 de cada ZIP comprobado.
-    m5 = __import__('src.resampling', fromlist=['aggregate']).aggregate(
-        raw, 1, "M5", now=END
-    )
+    m5 = aggregate(raw, 1, 'M5', now=END)
     actual = dict(
         m1=market_frame_fingerprint(raw, columns=('open','high','low','close','volume')),
         m5=market_frame_fingerprint(m5, columns=('open','high','low','close','volume')),
@@ -217,7 +215,7 @@ def verify_frozen_feeds(snapshot_path, manifest_path, output_path):
     )
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(checked, indent=2, allow_nan=False) + "\\n", encoding="utf-8")
+    path.write_text(json.dumps(checked, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     return checked
 
 
