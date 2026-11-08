@@ -14,6 +14,7 @@ SESSION_WINDOWS = (
     ('tokyo_early', 'Asia/Tokyo', 8 * 60, 10 * 60),
 )
 VOLATILITY_WINDOW = 12
+M15_DIRECTION_CLIP = 3.
 CONTEXT_FEATURES = (
     'h1_bias', 'h1_available', 'h4_bias', 'h4_available',
     'm5_realized_volatility', 'm5_volatility_available', 'm5_range_fraction',
@@ -30,7 +31,7 @@ CONTEXT_SETTINGS = dict(
 
 
 def closed_trend_bias(frame, timeframe):
-    """Diferencia de EMA en unidades del rango de una vela completa H1/H4."""
+    """Diferencia de EMA en unidades del rango de una vela completa."""
     market = MarketConfig(timeframe)
     timestamp = frame.timestamp
     result = np.full(len(frame), np.nan)
@@ -53,6 +54,12 @@ def closed_trend_bias(frame, timeframe):
     available = last >= 0
     result[available] = bias[last[available]]
     return result
+
+
+def m15_direction_bias(frame):
+    """Sesgo M15 causal, en sus propias unidades y neutral cuando no está disponible."""
+    bias = np.nan_to_num(closed_trend_bias(frame, 'M15'), nan=0.)
+    return pd.Series(np.clip(bias, -M15_DIRECTION_CLIP, M15_DIRECTION_CLIP), index=frame.timestamp)
 
 
 def session_observations(bar_opens):

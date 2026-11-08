@@ -18,9 +18,10 @@ from src.artifacts import file_sha256
 from src.decision import RiskConfig
 from src.environment import AccountConfig, BinaryOptionsEnv, market_feature_names
 from src.evolution_context import (
-    CONTEXT_FEATURES, build_observations, closed_trend_bias, realized_volatility, session_observations,
+    CONTEXT_FEATURES, build_observations, closed_trend_bias, m15_direction_bias,
+    realized_volatility, session_observations,
 )
-from src.evolution_direction import FrozenDirectionSimulation, direction_genes, with_direction
+from src.evolution_direction import FrozenDirectionSimulation, direction_genes, frozen_simulation, with_direction
 from src.evolution_engine import (
     MARKET, SEARCH_BLOCKS, EvolutionConfig, M5Simulation, assess_fitness, assess_search_fitness,
     breed, improves_on_parent, run_evolution, seeded_population,
@@ -140,6 +141,31 @@ def test_direction_ablation_keeps_admissions_and_scores_all_eligible_bars():
     assert frozen.evaluate(opposite)['signals_after_activation'] == result['signals_after_activation']
 
 
+def test_m15_anchor_is_high_volatility_only_and_keeps_frozen_admissions():
+    frame = candles(1.1 + np.arange(24) * .00001, .6)
+    frame['cond_volatility'] = np.tile([.0001, .0003], 12)
+    env = BinaryOptionsEnv(frame, market=MARKET, lookback=1, indicator_period=1,
+                           risk=RiskConfig(enabled=False))
+    simulation = M5Simulation(env)
+    width = simulation.features.shape[1]
+    founder = np.r_[np.zeros(width), 1., np.zeros(width), .5, .25]
+    frame = frame.loc[frame.timestamp.isin(env._times)]
+    bias = pd.Series(-1., index=frame.timestamp)
+    frozen = FrozenDirectionSimulation(simulation, founder)
+    feature = frozen_simulation(simulation, founder, frame, bias,
+                                dict(anchor_weight=0., high_volatility_cutoff=.0002))
+    anchor = frozen_simulation(simulation, founder, frame, bias,
+                               dict(anchor_weight=12., high_volatility_cutoff=.0002))
+    base, _ = frozen.direction_scores(founder)
+    regular, _ = feature.direction_scores(founder, m15_weight=2.)
+    strong, _ = anchor.direction_scores(founder, m15_weight=2.)
+    high = frame.cond_volatility.to_numpy()[simulation.entries] > .0002
+    np.testing.assert_allclose(regular, base - 2.)
+    np.testing.assert_allclose(strong, regular - 12. * high)
+    np.testing.assert_array_equal(anchor.proposed, frozen.proposed)
+    np.testing.assert_array_equal(feature.proposed, frozen.proposed)
+
+
 def test_gate_enforces_all_strict_cutoffs_without_nullifying_fitness():
     metrics = dict(win_rate_excluding_refunds=.56, profit_factor=1.21, profit_factor_status='finite',
                    trades_per_observed_hour=1.2, max_drawdown_pct=14.99)
@@ -227,7 +253,7 @@ def test_walk_forward_penalizes_degradation_instead_of_late_recovery():
     assert small_drop['forward_penalties'] == [0., 0., 0.]
 
 
-@pytest.mark.parametrize('timeframe,width', [('H1', 12), ('H4', 48)])
+@pytest.mark.parametrize('timeframe,width', [('M15', 3), ('H1', 12), ('H4', 48)])
 def test_higher_trend_uses_only_complete_candles_and_expires_at_next_close(timeframe, width):
     frame = candles(1.1 + np.arange(width * 30) * .00001)
     trend = closed_trend_bias(frame, timeframe)
@@ -236,7 +262,7 @@ def test_higher_trend_uses_only_complete_candles_and_expires_at_next_close(timef
     prefix = frame.iloc[:first + 4]
     np.testing.assert_allclose(closed_trend_bias(prefix, timeframe), trend[:len(prefix)])
 
-    with_gap = frame.drop(index=width * 24 + 2)
+    with_gap = frame.drop(index=width * 24)
     aligned = pd.Series(closed_trend_bias(with_gap, timeframe), index=with_gap.index)
     assert aligned.loc[width * 25 - 2] == trend[first]
     assert np.isnan(aligned.loc[width * 25 - 1])
@@ -246,6 +272,15 @@ def test_higher_trend_uses_only_complete_candles_and_expires_at_next_close(timef
     assert closed_trend_bias(down, timeframe)[-1] < 0.
     assert closed_trend_bias(lateral, timeframe)[-1] == 0.
     assert np.isnan(closed_trend_bias(frame.iloc[:6], timeframe)).all()
+
+
+def test_m15_direction_feature_is_causal_and_in_its_own_range_units():
+    frame = candles(1.1 + np.arange(120) * .00001)
+    full = m15_direction_bias(frame)
+    assert full.iloc[:71].eq(0.).all() and full.iloc[71] > 0.
+    assert full.abs().le(3.).all()
+    pd.testing.assert_series_equal(full.iloc[:100], m15_direction_bias(frame.iloc[:100]))
+    assert list(build_observations(frame).columns) == list(CONTEXT_FEATURES)
 
 
 def test_policy_can_trade_all_valid_entries_and_learn_context_and_direction():
@@ -538,6 +573,26 @@ def test_direction_only_evolution_freezes_entry_genes_and_isolates_checkpoint(tm
     assert winner.genome[-1] == 0.
     np.testing.assert_array_equal(winner.genome[:len(direction_genes(winner.genome))-1], 0.)
     assert winner.genome[len(direction_genes(winner.genome))-1] == .3
+
+
+def test_m15_arms_continue_from_same_direction_seed(tmp_path, legacy_seed):
+    source = tmp_path/'m5.parquet'
+    candles(1.1 + np.arange(816) * .00001).to_parquet(source)
+    config = EvolutionConfig(population_size=4, generations=1, workers=1)
+    prior = tmp_path/'prior'
+    original = run_evolution(source, prior, config, seed_bundle=legacy_seed, direction_only=True)
+    for arm in ('control', 'feature', 'anchor'):
+        output = tmp_path/arm
+        report = run_evolution(source, output, config, seed_bundle=legacy_seed, direction_only=True,
+                               direction_seed_bundle=prior/'lineage.zip', m15_arm=arm)
+        assert report['lineage']['first_generation'] == 23
+        assert report['lineage']['source_generation'] == original['champion']['generation']
+        assert report['direction_ablation']['frozen_entry_bundle_sha256'] == file_sha256(legacy_seed)
+        assert report['direction_ablation']['m15']['arm'] == arm
+        assert report['champion']['metrics']['signals_after_activation'] == original['champion']['metrics']['signals_after_activation']
+        with ZipFile(output/'lineage.zip') as archive:
+            manifest = json.loads(archive.read('manifest.json'))
+        assert manifest['selection']['m15_weight'] == report['champion']['m15_weight']
 
 
 def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):

@@ -1,0 +1,61 @@
+name: Comparación direccional M15 en Scalping M5
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONHASHSEED: '42'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install research dependencies
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+      - uses: actions/cache/restore@v6
+        with:
+          path: data/histdata_scalping
+          key: histdata-scalping-2025-${{ hashFiles('datasets/eurusd/manifest.json') }}
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13605260077
+          run-id: 42448607949
+          github-token: ${{ github.token }}
+          path: data/direction-founder
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13606329244
+          run-id: 42453720772
+          github-token: ${{ github.token }}
+          path: data/direction-pr25
+          merge-multiple: true
+      - name: Evolve the three arms and replay frozen March admissions
+        run: >-
+          python -m scripts.run_m5_direction_ablation
+          --seed-bundle data/direction-founder/lineage.zip
+          --direction-seed-bundle data/direction-pr25/lineage.zip
+          --m15-arm control --m15-arm feature --m15-arm anchor
+          --output-dir reports/direction-m15
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: m5-direction-m15
+          path: |
+            reports/direction-m15/*/evolution.*
+            reports/direction-m15/*/march.json
+            reports/direction-m15/*/lineage.zip
+          if-no-files-found: warn
