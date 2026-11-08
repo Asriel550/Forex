@@ -30,6 +30,9 @@ OVERALL_SCORE_WEIGHT = .5
 WORST_BLOCK_WEIGHT = .5
 WIN_RATE_VARIANCE_WEIGHT = 4.
 ELITE_FRACTION = .20
+WIDE_MUTATION_FRACTION = .1875
+WIDE_MUTATION_SIGMA_MULTIPLIER = 3.
+WIDE_MUTATION_SIGMA_FLOOR = .35
 MIN_WIN_RATE = .56
 WIN_RATE_SHORTFALL_WEIGHT = .5
 MIN_PROFIT_FACTOR = 1.20
@@ -168,22 +171,41 @@ def assess_search_fitness(metrics, blocks):
                 block_scores=scores, block_win_rate_variance=win_rate_variance)
 
 
-def seeded_population(rng, founder, count, sigma):
+def improves_on_parent(candidate, parent):
+    """Un salto amplio debe mejorar la aptitud sin ceder terreno por bloque."""
+    block_scores = zip(candidate['block_scores'], parent['block_scores'], strict=True)
+    return (
+        candidate['score'] > parent['score']
+        and all(child >= base for child, base in block_scores)
+        and all(not passed or candidate['checks'][key] for key, passed in parent['checks'].items())
+    )
+
+
+def _wide_mutants(rng, parent, count, sigma):
+    wide_sigma = max(WIDE_MUTATION_SIGMA_FLOOR, WIDE_MUTATION_SIGMA_MULTIPLIER * sigma)
+    return parent + rng.normal(0., wide_sigma, size=(count, parent.size))
+
+
+def seeded_population(rng, founder, count, sigma, *, wide_count=0):
     population = np.repeat(founder[None, :], count, axis=0)
-    population[1:] += rng.normal(0., sigma, size=population[1:].shape)
+    regular = population[1:count - wide_count]
+    regular += rng.normal(0., sigma, size=regular.shape)
+    population[count - wide_count:] = _wide_mutants(rng, founder, wide_count, sigma)
     return population
 
 
-def breed(rng, population, elite_indices, parent_indices, sigma):
-    """Copia las élites y rellena la población por cruce uniforme y mutación."""
+def breed(rng, population, elite_indices, parent_indices, sigma, *, wide_count=0):
+    """Copia las élites, cruza padres y explora con saltos desde el mejor padre."""
     elites = population[elite_indices]
     parents = population[parent_indices]
-    count = len(population) - len(elites)
+    count = len(population) - len(elites) - wide_count
     left = rng.integers(len(parents), size=count)
     right = (left + rng.integers(1, len(parents), size=count)) % len(parents) if len(parents) > 1 else left
     shape = (count, population.shape[1])
     children = np.where(rng.random(shape) < .5, parents[left], parents[right])
     children += rng.normal(0., sigma, size=shape)
+    if wide_count:
+        children = np.vstack((children, _wide_mutants(rng, parents[0], wide_count, sigma)))
     return np.vstack((elites, children))
 
 
@@ -208,7 +230,8 @@ def write_summary(path, report):
     lineage = report['lineage']
     lines = [
         '# Evolución Scalping M5 binario', '',
-        'Las élites cumplen consistencia en todos los bloques. Solo el campeón pasa por confirmación.',
+        'Se conserva el mejor genoma y las élites adicionales cumplen consistencia por bloque.',
+        'Solo el campeón pasa por confirmación.',
         f"Genoma fundador de la generación {lineage['source_generation']}. "
         f"Corrida de la generación {lineage['first_generation']} a la {lineage['last_generation']}.",
         'Holdout histórico reservado.', '',
@@ -229,7 +252,10 @@ def write_summary(path, report):
                      f"{m['total_trades']} | {wr} | {pf} | "
                      f"{m['trades_per_observed_hour']:.3f} | {m['max_drawdown_pct']:.2f}% | {gate} |")
     status = 'cumplido' if report['qualified'] else 'rechazado'
-    lines.extend(['', f"Gate de la corrida **{status}**. Campeón preseleccionado en generación "
+    wide_eligible = sum(row['wide_eligible'] for row in report['generations'])
+    wide_total = report['mutation_policy']['wide_per_generation'] * len(report['generations'])
+    lines.extend(['', f"Mutación amplia. {wide_eligible} de {wide_total} descendientes superaron a su padre.", '',
+                  f"Gate de la corrida **{status}**. Campeón preseleccionado en generación "
                       f"{report['champion']['generation']}.", '',
                   '| Tramo | Entradas evaluables | Umbral | Señales previas | Descartes por umbral | CALL ejecutados | PUT ejecutados |',
                   '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'])
@@ -305,6 +331,8 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
 
     first_generation = founder.next_generation
     last_generation = first_generation + config.generations
+    wide_count = max(1, round(WIDE_MUTATION_FRACTION * config.population_size))
+    wide_start = config.population_size - wide_count
     metadata = dict(
         format=FORMAT, profile='scalping', market=asdict(MARKET),
         policy='positive entry head and absolute adjusted direction margin above inherited activation threshold',
@@ -323,6 +351,10 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                                win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT,
                                activation_rejection_target=[MIN_ACTIVATION_REJECTION, MAX_ACTIVATION_REJECTION],
                                activation_rejection_weight=ACTIVATION_REJECTION_WEIGHT),
+        mutation_policy=dict(wide_fraction=WIDE_MUTATION_FRACTION, wide_per_generation=wide_count,
+                             wide_sigma_multiplier=WIDE_MUTATION_SIGMA_MULTIPLIER,
+                             wide_sigma_floor=WIDE_MUTATION_SIGMA_FLOOR,
+                             wide_parent='incumbent', wide_selection='higher_score_no_block_or_gate_regression'),
         context_observations=CONTEXT_SETTINGS,
         search_blocks=[dict(block=i, rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
                             end=frame.timestamp.iloc[-1].isoformat())
@@ -335,7 +367,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
     )
     rng = np.random.default_rng([config.seed, first_generation])
     sigma = founder.mutation_sigma
-    population = seeded_population(rng, founder.genome, config.population_size, sigma)
+    population = seeded_population(rng, founder.genome, config.population_size, sigma, wide_count=wide_count)
     elite_count = math.ceil(ELITE_FRACTION * len(population))
     history, candidate_rows = [], []
     champion = champion_genome = None
@@ -346,14 +378,18 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
             # Refleja mutaciones negativas del umbral para mantener una escala no negativa.
             population[:, -1] = np.abs(population[:, -1])
             metrics, by_block, fitness = zip(*executor.map(evaluate, population))
-            parents = sorted(range(len(population)), key=lambda i: fitness[i]['score'],
+            # La primera posición conserva al padre de los exploradores, incluso si falló el gate.
+            eligible = [i < wide_start or improves_on_parent(f, fitness[0]) for i, f in enumerate(fitness)]
+            parents = sorted((i for i, admitted in enumerate(eligible) if admitted), key=lambda i: fitness[i]['score'],
                              reverse=True)[:elite_count]
-            elites = [i for i in parents if fitness[i]['checks']['block_consistency']]
             best = parents[0]
+            elites = [best, *(i for i in parents[1:] if fitness[i]['checks']['block_consistency'])]
             name = f'bundle_scalping_gen_{generation}.zip'
             record = dict(phase='Búsqueda', generation=generation, candidate=best, bundle=name,
                           metrics=metrics[best], blocks=by_block[best], fitness=fitness[best],
                           elites=len(elites), parents=len(parents),
+                          wide_eligible=sum(eligible[wide_start:]),
+                          wide_parents=sum(i >= wide_start for i in parents),
                           qualified_candidates=sum(f['passed'] for f in fitness))
             improved = champion is None or fitness[best]['score'] > champion['fitness']['score']
             if generation > first_generation:
@@ -367,9 +403,11 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 champion, champion_genome = record, population[best].copy()
             candidate_rows.extend(dict(
                 generation=generation, candidate=i, fitness=f['score'], elite=i in elites,
+                wide_mutation=i >= wide_start, selection_eligible=eligible[i],
                 block_win_rate_variance=f['block_win_rate_variance'],
                 parent=i in parents, founder=generation == first_generation and i == 0,
                 passed=f['passed'], **{f'pass_{k}': v for k, v in f['checks'].items()},
+                **{f'block_{j}_score': score for j, score in enumerate(f['block_scores'], start=1)},
                 **{k: m[k] for k in ('total_trades', 'win_rate_excluding_refunds', 'profit_factor',
                                      'profit_factor_status', 'trades_per_observed_hour', 'max_drawdown_pct',
                                      'net_profit', 'risk_stop', 'calls', 'puts', 'decision_opportunities',
@@ -378,10 +416,12 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 **{f'block_{j}_{key}': block[key] for j, block in enumerate(candidate_blocks, start=1)
                    for key in ('net_profit', 'max_drawdown_pct', 'total_trades')},
             ) for i, (m, f, candidate_blocks) in enumerate(zip(metrics, fitness, by_block)))
-            LOG.info('Generación %d. Aptitud %.4f, élites %d, padres %d, candidatos dentro de límites %d',
-                     generation, fitness[best]['score'], len(elites), len(parents), record['qualified_candidates'])
+            LOG.info('Generación %d. Aptitud %.4f, élites %d, padres %d, candidatos dentro de límites %d, '
+                     'mutantes amplios elegibles %d/%d',
+                     generation, fitness[best]['score'], len(elites), len(parents), record['qualified_candidates'],
+                     record['wide_eligible'], wide_count)
             if generation < last_generation:
-                population = breed(rng, population, elites, parents, sigma)
+                population = breed(rng, population, elites, parents, sigma, wide_count=wide_count)
 
     # El genoma queda congelado antes de construir el evaluador de confirmación.
     confirm_sim = simulate(confirmation)

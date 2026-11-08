@@ -267,12 +267,22 @@ sobre las señales que propondría el mismo genoma con umbral cero,
 antes de aplicar el stop. La frecuencia del gate usa los contratos
 ejecutados y las horas observables del tramo.
 
-El grupo de padres conserva el tamaño del 20% superior redondeado
-hacia arriba según el puntaje. Entre esos padres, quienes terminan en
-positivo con drawdown menor al 15% en los cuatro bloques pasan intactos
-como élites. Todos los padres pueden aportar genes a descendientes
-mutados. El CSV distingue padres, élites, varianza y resultados de cada
-bloque.
+El grupo de padres conserva el tamaño del 20% superior redondeado hacia
+arriba. El mejor individuo elegible pasa intacto a la generación siguiente
+como padre de referencia. Entre los demás padres, quienes terminan en
+positivo con drawdown menor al 15% en los cuatro bloques también pasan
+como élites. Todos los padres pueden aportar genes por cruce y mutación.
+
+Cada generación reserva aproximadamente el 18,75% de la población para
+saltos directos desde el mejor padre, con redondeo al entero más próximo
+y un mínimo de un individuo. Con 64 individuos se reservan 12 plazas.
+El salto aplica ruido gaussiano a los pesos y al umbral, con desviación
+estándar de tres veces la mutación ordinaria y un mínimo de 0,35. Estos
+descendientes pueden reproducirse o quedar como campeones si superan la
+aptitud global del padre, igualan o mejoran su puntaje económico en cada
+bloque de búsqueda y conservan los criterios del gate que ya cumplía.
+El CSV distingue estas mutaciones y su elegibilidad, con puntajes por
+bloque para revisar la comparación.
 
 La evaluación de búsqueda completa transporta el saldo entre bloques
 para medir el riesgo de todo el tramo. Tras una vela de purga, se evalúa

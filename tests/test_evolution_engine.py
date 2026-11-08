@@ -22,7 +22,7 @@ from src.evolution_context import (
 )
 from src.evolution_engine import (
     MARKET, SEARCH_BLOCKS, EvolutionConfig, M5Simulation, assess_fitness, assess_search_fitness,
-    breed, run_evolution,
+    breed, improves_on_parent, run_evolution, seeded_population,
 )
 from src.evolution_lineage import (
     CONTEXT_FORMAT, FORMAT, LEGACY_FORMAT, MARKET_FEATURES, PINNED_SEED, load_founder,
@@ -267,8 +267,29 @@ def test_breeding_retains_elites_and_uses_only_their_genes_before_mutation():
     assert not np.array_equal(mutated[2:], crossed[2:])
 
 
+def test_wide_mutation_changes_weights_and_threshold_in_reserved_slots():
+    founder = np.linspace(-3., 5.6, 71)
+    population = np.repeat(founder[None, :], 64, axis=0)
+    seeded = seeded_population(np.random.default_rng(5), founder, 64, .35, wide_count=12)
+    bred = breed(np.random.default_rng(5), population, [0], [0, 1], .35, wide_count=12)
+    for candidates in (seeded, bred):
+        assert candidates.shape == (64, 71)
+        np.testing.assert_array_equal(candidates[0], founder)
+        regular, wide = candidates[1:52] - founder, candidates[52:] - founder
+        assert np.std(wide) > 2.5 * np.std(regular)
+        assert (wide[:, -1] != 0.).all()
+
+
+def test_wide_mutant_requires_strict_gain_and_no_regression():
+    parent = dict(score=.85, block_scores=[.9, .8, .85, .85], checks=dict(win_rate=True, frequency=True))
+    assert improves_on_parent(dict(parent, score=.86), parent)
+    assert not improves_on_parent(parent, parent)
+    assert not improves_on_parent(dict(parent, score=.89, block_scores=[.98, .79, .89, .9]), parent)
+    assert not improves_on_parent(dict(parent, score=.89, checks=dict(win_rate=True, frequency=False)), parent)
+
+
 @pytest.mark.parametrize('profitable', [True, False])
-def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path, monkeypatch, legacy_seed, profitable):
+def test_evolution_preserves_best_and_other_consistent_elites(tmp_path, monkeypatch, legacy_seed, profitable):
     source = tmp_path/'m5.parquet'
     candles(1.1 + np.arange(816) * .00001).to_parquet(source)
     calls = []
@@ -291,7 +312,12 @@ def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path,
     scores = pd.read_csv(output/'evolution.csv')
     assert scores.fitness.notna().all()
     assert scores.groupby('generation').parent.sum().eq(2).all()
-    assert scores.groupby('generation').elite.sum().eq(2 if profitable else 0).all()
+    assert scores.groupby('generation').elite.sum().eq(2 if profitable else 1).all()
+    assert scores.groupby('generation').wide_mutation.sum().eq(1).all()
+    assert not scores.loc[~scores.selection_eligible, ['parent', 'elite']].any().any()
+    for _, group in scores.groupby('generation'):
+        incumbent, explorer = group.iloc[0], group.iloc[-1]
+        assert explorer.selection_eligible == (explorer.fitness > incumbent.fitness)
     assert all(g['qualified_candidates'] == 0 for g in report['generations'])
     assert len(calls) == 6 * 3 * (1 + SEARCH_BLOCKS) + 1
     generations = np.asarray(calls[:-1:1 + SEARCH_BLOCKS]).reshape(3, 6, -1)
@@ -302,10 +328,11 @@ def test_evolution_clones_only_consistent_elites_and_preserves_parents(tmp_path,
         if profitable:
             np.testing.assert_array_equal(after[:2], before[selected])
         else:
-            assert not any(np.array_equal(child, parent) for child in after for parent in before)
+            np.testing.assert_array_equal(after[0], before[selected[0]])
+            assert not any(np.array_equal(child, parent) for child in after[1:] for parent in before)
     winner = report['champion']
     np.testing.assert_array_equal(calls[-1], generations[winner['generation'] - start, winner['candidate']])
-    assert winner['fitness']['score'] == pytest.approx(scores.fitness.max())
+    assert winner['fitness']['score'] == pytest.approx(scores.loc[scores.selection_eligible, 'fitness'].max())
 
 
 def test_evolution_saves_each_generation_and_selection_ignores_confirmation_and_holdout(tmp_path, legacy_seed):
