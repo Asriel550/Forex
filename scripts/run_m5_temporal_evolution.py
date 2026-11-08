@@ -31,6 +31,8 @@ from src.evolution_multiscale import (
     evolve_population, scale_inputs,
 )
 from src.model_training import directional_tanh_loss
+from src.reproducibility import market_frame_fingerprint, admissions_fingerprint, canonical_open_diff, array_sha256
+from src.resampling import aggregate
 from src.replay_engine import replay_contracts
 from src.train import write_json
 
@@ -80,8 +82,16 @@ def causal_reasons(rows, scores, percentile):
     return reasons
 
 
-def prepare_is():
-    """Q1+Q2 en IS, normalizador original; jamás solicita Q3."""
+def prepare_is(*, audit_path=None, snapshot_path=None, snapshot_manifest=None):
+    """Q1+Q2 en IS, normalizador original; jamás solicita Q3.
+
+    Con snapshot sellado se omite completamente M1/M5/GARCH y se verifica el
+    SHA256 antes de evaluar una sola propuesta.
+    """
+    if snapshot_path is not None:
+        from scripts.m5_is_repro_audit import load_verified_snapshot
+        return load_verified_snapshot(snapshot_path, snapshot_manifest)
+
     assert_isolated(PERIODS)
     manifest = json.loads(SOURCE_MANIFEST.read_text(encoding='utf-8'))
     verify_source_periods(manifest)
@@ -92,7 +102,17 @@ def prepare_is():
     parent = frozen_gen375(GEN354_SHA256, evolution)
 
     minutes = load_minutes(RAW, PERIODS, end=END)
+    m5_candles = aggregate(minutes, 1, 'M5', now=END)
+    fingerprints = dict(
+        m1=market_frame_fingerprint(minutes, columns=('open', 'high', 'low', 'close', 'volume')),
+        m5=market_frame_fingerprint(m5_candles, columns=('open', 'high', 'low', 'close', 'volume')),
+        source_zip_sha256={source['period']: source['sha256']
+                           for source in manifest['sources'] if source['period'] in PERIODS},
+    )
     features = m5_features(minutes, quant, end=END)
+    fingerprints['garch_and_mc'] = market_frame_fingerprint(
+        features, columns=('cond_volatility', 'mc_prob_up', 'mc_prob_down', 'mc_prob_tie'))
+    fingerprints['garch_retained_refits'] = features.attrs.get('garch_retained_refits', [])
     windows, _ = admission_blocks(features, founder, MONTHS, evaluation_limit=END)
     rows = pd.concat([windows[period].rows for period in PERIODS])
     if (rows.empty or not rows.index.is_monotonic_increasing or not rows.index.is_unique
@@ -100,12 +120,36 @@ def prepare_is():
         raise ValueError('Datos IS fuera de enero-junio o sin orden')
     march = windows['202603'].rows
     march_hash = sha256((march.index - MARKET.step).as_unit('ns').asi8.tobytes()).hexdigest()
-    if len(march) != MARCH_SIGNATURE[1] or march_hash != MARCH_SIGNATURE[2]:
-        raise ValueError('Máscara de marzo incompatible con el linaje')
+    fingerprints['month_admissions'] = {
+        period: admissions_fingerprint(windows[period].rows, step=MARKET.step)
+        for period in PERIODS
+    }
+    fingerprints['march_audit'] = dict(
+        canonical_proposals=MARCH_SIGNATURE[1], canonical_sha256=MARCH_SIGNATURE[2],
+        matched=len(march) == MARCH_SIGNATURE[1] and march_hash == MARCH_SIGNATURE[2],
+    )
+    if not fingerprints['march_audit']['matched']:
+        from scripts.run_m5_multiscale import archived_march_opens
+        fingerprints['march_audit']['divergence'] = canonical_open_diff(
+            march.index - MARKET.step, archived_march_opens()
+        )
+    if audit_path is not None:
+        import importlib.metadata
+        fingerprints['versions'] = {pkg: importlib.metadata.version(pkg)
+                                    for pkg in ('numpy', 'pandas', 'scipy', 'arch')}
+        dest = Path(audit_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(fingerprints, indent=2, allow_nan=False) + '\n', encoding='utf-8')
+    if not fingerprints['march_audit']['matched']:
+        raise ValueError('Máscara de marzo incompatible con el linaje: '
+                         + json.dumps(fingerprints['march_audit'], allow_nan=False))
 
     native = native_direction_context(minutes, rows.index, end=END)
     raw = rows.loc[:, list(M5_TACTICAL)].join(native).loc[:, list(FEATURE_NAMES)]
     inputs = arm_inputs(scale_inputs(raw.to_numpy(dtype=float), mean, std), ARM)
+    fingerprints['model_inputs_sha256'] = array_sha256(inputs)
+    fingerprints['outcomes_sha256'] = array_sha256(rows.outcome.to_numpy(), dtype='<i1')
+    fingerprints['model_row_times_sha256'] = array_sha256(rows.index.as_unit('ns').asi8, dtype='<i8')
     q1 = rows.index < Q2_START
     quarters = (
         dict(name='Q1', rows=rows.loc[q1],
@@ -130,6 +174,7 @@ def prepare_is():
         hashes=dict(march_mask_sha256=march_hash, source_manifest_sha256=file_sha256(SOURCE_MANIFEST),
                     gen375_evolution_sha256=file_sha256(archive_path),
                     founding_genome_sha256=genome_hash(parent)),
+        fingerprints=fingerprints,
     )
 
 
