@@ -12,35 +12,49 @@ Esto no prueba una carrera; los ZIP originales M1 ya se verifican por SHA256
 y el Monte Carlo usa una semilla local. Un refit GARCH/entorno numérico o una
 diferencia de reconstrucción son hipótesis que requieren huellas por etapa.
 
-## Auditoría obligatoria antes de nuevas generaciones
+## Causa raíz confirmada por reconstrucciones forenses
 
-El workflow `PR34 audit IS independiente y fitness calibrado` ejecuta
-**dos runners limpios** que reconstruyen enero-junio 2026 a partir de los
-mismos seis ZIP M1 por SHA256, con versiones fijadas de NumPy, SciPy,
-pandas y arch y un único hilo BLAS. Cada runner registra:
+La [corrida 42535814697](https://github.com/Asriel550/Forex/actions/runs/42535814697)
+ejecutó dos procesos independientes con los mismos paquetes y fuentes.
+Encontramos **idénticos SHA256 de los valores M1 y M5**, pero diferente
+resultado en GARCH/Monte Carlo:
 
-- SHA256 de los seis ZIP origen y de los valores/timestamps del feed M1.
-- SHA256 de timestamps y OHLCV M5 **agrupado desde M1 completo**, sin
-  inventar velas.
-- SHA256 de la serie GARCH/Monte Carlo (volatilidad y probabilidades),
-  versiones y reajustes GARCH retenidos.
-- Cantidades y hashes de las admisiones por mes; en marzo exactamente
-  **2.859 propuestas** y hash congelado. Ante discrepancias se enumeran
-  timestamps faltantes y nuevos.
-- SHA256 de los inputs normalizados que consume la red y sus outcomes.
+- Runner A: GARCH/MC `7e796d512a...`, **ningún refit retenido**, 2.859
+  propuestas de marzo (hash exacto del linaje).
+- Runner B: GARCH/MC `1683798b3c...`: el optimizador GARCH no convergió
+  en la **fila 16.928**, reutilizó los parámetros anteriores y rechazó
+  la propuesta M5 abierta **2026-03-16 11:55 UTC**. Resultado: 2.858.
+- Por tanto **la variación no nació en los ZIP ni en las velas M5**; la
+  diferencia es un refit GARCH numéricamente inestable. No se ha probado
+  una race condition en los datos, y el lock de adquisición ahora evita
+  escrituras concurrentes del mismo ZIP.
 
-El primer paso que diverja permitirá ubicar la causa. El flujo aborta antes
-de entrenar si hay una diferencia, incluso si coincidieran PnL finales.
+## Política de congelación y doble comprobación
 
-Los archivos `a.npz`/`b.npz` y manifiestos `a.json`/`b.json`
-quedan guardados como artefactos. Son **snapshots IS con SHA256 verificado**:
-la evolución los lee sin volver a ajustar GARCH. La descarga de cada ZIP
-se protege con un lock entre procesos y una sustitución atómica; la auditoría
-sigue verificando SHA256 incluso para archivos recuperados de caché.
-Por diseño no se accede a Q3 (julio-septiembre).
+Se preservó el snapshot IS de la reconstrucción A como único input
+cuantitativo para la evolución temporal:
 
-El código original de admisiones mantiene el antiguo cutoff protegido por
-defecto; solo los diagnósticos IS declaran el cutoff junio 2026.
+- [Artefacto canónico de Actions](https://github.com/Asriel550/Forex/actions/runs/42535814697/artifacts/13639251699).
+- SHA256 binario `7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504`.
+- SHA256 del bloque GARCH/MC `7e796d512ad12d5a546e8b6dacf94e72dd2c23ff7639efc65737687cbe037ef6`.
+
+**Cada runner nuevo reconstruye M1 y M5 independientemente** desde los seis
+ZIP oficiales comprobados por SHA256 y compara timestamps y OHLCV con ese
+snapshot. **No vuelve a ajustar GARCH ni a regenerar los inputs neuronales**.
+La evolución solo puede arrancar cuando ambos informes de fuentes coinciden
+y el archivo binario verifica su hash. Esto elimina la dependencia del éxito
+aleatorio del reajuste GARCH durante esta búsqueda, sin afirmar haber
+resuelto el algoritmo numérico para futuras fechas.
+
+Las 2.859 aperturas históricas de marzo, su hash, el genoma fundador y el
+intervalo IS (enero-junio) se verifican antes de entrenar. Q3
+(julio-septiembre) permanece fuera del pipeline. El cutoff protegido
+de tareas anteriores sigue siendo el predeterminado.
+
+**Retención:** el snapshot proviene de un artefacto de Actions temporal.
+Antes de depender de él a largo plazo debe archivarse de forma duradera,
+preservando los mismos hashes; no reoptimizar usando otro snapshot sin
+abrir un protocolo experimental distinto.
 
 ## Diagnóstico del problema de densidad
 
