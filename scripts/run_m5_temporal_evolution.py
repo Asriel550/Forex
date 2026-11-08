@@ -167,6 +167,9 @@ def prepare_is(*, audit_path=None, snapshot_path=None, snapshot_manifest=None):
         raise ValueError('Volatilidad IS inválida')
     vol_cut = float(np.quantile(vols[q1], 2/3))
     high_vol = vols > vol_cut
+    if audit_path is not None:
+        Path(audit_path).write_text(json.dumps(fingerprints, indent=2, allow_nan=False) + '\n',
+                                    encoding='utf-8')
     return dict(
         rows=rows, inputs=inputs, quarters=quarters, high_vol=high_vol,
         vol_cut=vol_cut, parent=parent, account=founder.account, risk=risk,
