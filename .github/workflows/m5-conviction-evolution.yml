@@ -1,8 +1,6 @@
 name: Gate de convicción pura y Gen 355–375
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/m5-conviction-evolution-gen375]
 permissions:
   contents: read
   actions: read
