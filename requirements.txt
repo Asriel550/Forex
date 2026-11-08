@@ -6,6 +6,7 @@ requests>=2.32,<3
 filelock>=3.16,<5
 # Modelado cuantitativo
 scipy>=1.13,<2
+scikit-learn>=1.6,<2
 arch>=7.2,<9
 numba>=0.61,<1
 # Entrenamiento PPO y simulación

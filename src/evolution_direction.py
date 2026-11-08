@@ -21,6 +21,12 @@ def with_direction(genome, genes):
     return candidate
 
 
+def unit_payoff(side, change, account):
+    """Liquida el lado elegido con stake unitario y la política de empates."""
+    return np.where((side == 0.) | ((change == 0.) & (account.tie_policy == 'refund')), 0.,
+                    np.where(side == change, account.payout, -1.))
+
+
 def frozen_simulation(simulation, founder, frame, m15_bias=None, m15_config=None):
     """Prepara el término M15 en las mismas velas elegibles que la simulación."""
     if m15_bias is None:
@@ -54,7 +60,7 @@ class FrozenDirectionSimulation:
         self.target_ranks = _centered_ranks(simulation.change[self.resolved])
         self.target_norm = float(np.linalg.norm(self.target_ranks))
         self.mc_rho = self._spearman(simulation.mc_margin)
-        self.mc_payoff = self._unit_payoff(self.mc_side)
+        self.mc_payoff = unit_payoff(self.mc_side, simulation.change, simulation.account)
         self.mc_hits = (self.mc_side == simulation.change) & self.resolved
         self.m15_bias = m15_bias
         self.m15_anchor = m15_anchor
@@ -63,12 +69,6 @@ class FrozenDirectionSimulation:
         ranks = _centered_ranks(direction[self.resolved])
         scale = float(np.linalg.norm(ranks)) * self.target_norm
         return float(np.dot(ranks, self.target_ranks) / scale) if scale else None
-
-    def _unit_payoff(self, side):
-        change = self.simulation.change
-        account = self.simulation.account
-        return np.where((side == 0.) | ((change == 0.) & (account.tie_policy == 'refund')), 0.,
-                        np.where(side == change, account.payout, -1.))
 
     def direction_scores(self, genome, *, m15_weight=0.):
         _, raw_direction = self.simulation.decision_scores(genome)
@@ -89,7 +89,8 @@ class FrozenDirectionSimulation:
         disagree = (side != self.mc_side) & self.resolved
         count = int(disagree.sum())
         rho = self._spearman(raw_direction)
-        paired_gain = float(np.mean(self._unit_payoff(side) - self.mc_payoff))
+        paired_gain = float(np.mean(unit_payoff(side, self.simulation.change, self.simulation.account)
+                                    - self.mc_payoff))
         # Un acuerdo aporta cero al diferencial de payout.
         score = DISAGREEMENT_WEIGHT * paired_gain + SPEARMAN_WEIGHT * ((rho or 0.) - (self.mc_rho or 0.))
         metrics['directional'] = dict(

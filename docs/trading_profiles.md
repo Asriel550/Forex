@@ -396,3 +396,34 @@ y se comprueba el hash de la misma
 máscara de marzo. El reporte también reproduce a cada campeón con
 su término M15 apagado y cuenta cambios de lado y aciertos en las
 primeras 101 admisiones. La comparación de marzo es retrospectiva.
+
+### Benchmark supervisado de dirección M5
+
+El workflow manual **Benchmark supervisado de dirección Scalping M5**
+verifica los SHA256 de los checkpoints Gen 268 y Gen 306 archivados
+en `config/m5-direction-benchmark/`. Provienen de la
+[corrida #84](https://github.com/Asriel550/Forex/actions/runs/42448607949)
+y de la [ablación M15](https://github.com/Asriel550/Forex/actions/runs/42455178389).
+La Gen 268 determina todas las admisiones y la Gen 306 aporta una
+referencia de dirección.
+
+Una regresión logística multinomial regularizada aprende PUT, empate
+y CALL al cierre M5 siguiente, con las observaciones causales ya
+disponibles. El ajuste usa datos de 2025 hasta el 26 de noviembre a las
+00:00 UTC. El resto de 2025 calibra por separado las probabilidades de
+la logística y de Monte Carlo. Los contratos liquidan dentro de cada
+ventana. Antes de cargar 2026 se fijan ambos calibradores y el
+percentil 67 de GARCH del ajuste.
+
+El reporte compara Monte Carlo original, Monte Carlo recalibrado,
+logística calibrada y Gen 306 sobre cada admisión, incluidas las que
+hubiera cortado el stop. El retorno por admisión se expresa en unidades
+de stake y el intervalo del diferencial pareado remuestrea días UTC.
+El informe presenta los regímenes de volatilidad por separado y
+calcula intervalos para grupos con al menos diez días. Enero, febrero
+y marzo son retrospectivos. El tramo nuevo de abril termina en la
+frontera protegida del 7 de abril a las 15:15 UTC, antes de construir
+features. Es una observación corta para la prueba de repetibilidad.
+
+La comparación mide señal direccional. Un replay con abstención,
+stop y gate requiere una ventaja repetible en bloques posteriores.

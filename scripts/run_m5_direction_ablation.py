@@ -31,7 +31,7 @@ PR25_DIRECTION_SHA256 = 'f28cd91e37a927e6f67bed82b668b6bde99a4ef544db1fb7a2cd3ed
 FROZEN_MARCH_ADMISSIONS_SHA256 = '4c02cfbc1ff86d6ff2e6422ecb03be2633b8473deada1d23b1780da970e0dfe6'
 
 
-def load_features(raw_dir, periods, quant):
+def load_features(raw_dir, periods, quant, *, end=None):
     sources = json.loads(Path('datasets/eurusd/manifest.json').read_text(encoding='utf-8'))['sources']
     archives = [source for source in sources if source['period'] in periods]
     if {source['period'] for source in archives} != set(periods):
@@ -42,7 +42,9 @@ def load_features(raw_dir, periods, quant):
         if not (raw_dir / source['zip_file']).is_file():
             acquire(raw_dir, int(period[:4]), int(period[4:]) if len(period) > 4 else None)
     minutes, _ = read_native_minutes(raw_dir, archives)
-    m5 = aggregate(minutes, 1, 'M5')
+    if end is not None:
+        minutes = minutes.loc[minutes.timestamp < end]
+    m5 = aggregate(minutes, 1, 'M5', now=end)
     features = enrich_features(m5, quant, timeframe='M5', expiry_candles=1)
     return features.dropna(subset=FEATURES).reset_index(drop=True)
 
@@ -68,18 +70,24 @@ def direction_changes(simulation, indices, before, after):
                 refunds=int((flipped & ~resolved).sum()))
 
 
-def march_comparison(data, founder, candidate, *, direction_seed=None, m15_config=None, m15_weight=0.):
-    prepared = prepare_market_data(data, market=MARKET)
-    prepared = prepared.loc[prepared.timestamp + MARKET.step <= pd.Timestamp('2026-04-01T00:00:00Z')]
-    if prepared.timestamp.iloc[-1] + MARKET.step > PROTECTED_HOLDOUT_START:
-        raise ValueError('La comparación invade el holdout protegido')
+def founder_observations(prepared, founder):
+    """Construye el mismo contexto bruto y normalizado de las entradas congeladas."""
     context = build_observations(prepared)
     normalizer = founder.normalizer
     width = len(MARKET_FEATURES)
     market_normalizer = {key: normalizer[key][:width] for key in ('features', 'mean', 'std')}
     market_normalizer['clip'] = normalizer['clip']
-    context = ((context - np.asarray(normalizer['mean'][width:]))
-               / np.asarray(normalizer['std'][width:])).clip(-normalizer['clip'], normalizer['clip'])
+    normalized = ((context - np.asarray(normalizer['mean'][width:]))
+                  / np.asarray(normalizer['std'][width:])).clip(-normalizer['clip'], normalizer['clip'])
+    return context, normalized, market_normalizer
+
+
+def march_comparison(data, founder, candidate, *, direction_seed=None, m15_config=None, m15_weight=0.):
+    prepared = prepare_market_data(data, market=MARKET)
+    prepared = prepared.loc[prepared.timestamp + MARKET.step <= pd.Timestamp('2026-04-01T00:00:00Z')]
+    if prepared.timestamp.iloc[-1] + MARKET.step > PROTECTED_HOLDOUT_START:
+        raise ValueError('La comparación invade el holdout protegido')
+    _, context, market_normalizer = founder_observations(prepared, founder)
 
     def environment(month):
         return BinaryOptionsEnv(
