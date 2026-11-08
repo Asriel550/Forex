@@ -49,16 +49,21 @@ class AdmissionBlock:
     mask_sha256: str
 
 
-def admission_blocks(raw, founder, windows, *, anchor=None, fixed_opens=None):
-    """Reproduce la admisión original y liquida solo con el close M5 siguiente."""
-    if raw.empty or (raw.timestamp + MARKET.step > PROTECTED_HOLDOUT_START).any():
+def admission_blocks(raw, founder, windows, *, anchor=None, fixed_opens=None,
+                     evaluation_limit=PROTECTED_HOLDOUT_START):
+    """Reproduce la admisión causal; el límite histórico por defecto no cambia.
+
+    Una investigación posterior debe proporcionar explícitamente su límite temporal.
+    El llamador es responsable de aislar el OOS y de no reentrenar con él.
+    """
+    if raw.empty or (raw.timestamp + MARKET.step > evaluation_limit).any():
         raise ValueError('El benchmark requiere velas anteriores al holdout protegido')
     prepared = prepare_market_data(raw, market=MARKET)
     context, normalized, market_normalizer = founder_observations(prepared, founder)
     bias = m15_direction_bias(prepared)
     result = {}
     for name, start, end in windows:
-        if not start < end <= PROTECTED_HOLDOUT_START:
+        if not start < end <= evaluation_limit:
             raise ValueError(f'Ventana inválida para {name}')
         frame = prepared.loc[(prepared.timestamp >= start) & (prepared.timestamp + MARKET.step <= end)]
         env = BinaryOptionsEnv(frame, market=MARKET, prepared=True, account=founder.account,
