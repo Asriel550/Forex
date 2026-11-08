@@ -1,8 +1,6 @@
 name: Replay operativo Gen 333 y extensión Gen 336–355
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/m5-gen333-operational-extension]
 permissions:
   contents: read
   actions: read
