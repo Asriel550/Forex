@@ -36,6 +36,12 @@ def test_frozen_admissions_use_one_candle_and_respect_gaps_and_holdout():
         expected = np.sign(prices.loc[rows.index].to_numpy() - prices.loc[rows.index-step].to_numpy())
         np.testing.assert_array_equal(rows.outcome, expected)
         assert list(rows.columns[:len(MODEL_FEATURES)]) == list(MODEL_FEATURES)
+    fixed = {'early': early.index[::2] - step, 'late': late.index[1::2] - step}
+    subset, _ = admission_blocks(raw, founder, windows, fixed_opens=fixed)
+    pd.testing.assert_frame_equal(subset['early'].rows, early.iloc[::2])
+    pd.testing.assert_frame_equal(subset['late'].rows, late.iloc[1::2])
+    with pytest.raises(ValueError, match='aperturas elegibles'):
+        admission_blocks(raw, founder, windows, fixed_opens=fixed | {'early': times[[33]]})
     with pytest.raises(ValueError, match='anteriores al holdout'):
         admission_blocks(raw.assign(timestamp=raw.timestamp + step), founder, windows)
 

@@ -49,7 +49,7 @@ class AdmissionBlock:
     mask_sha256: str
 
 
-def admission_blocks(raw, founder, windows, *, anchor=None):
+def admission_blocks(raw, founder, windows, *, anchor=None, fixed_opens=None):
     """Reproduce la admisión original y liquida solo con el close M5 siguiente."""
     if raw.empty or (raw.timestamp + MARKET.step > PROTECTED_HOLDOUT_START).any():
         raise ValueError('El benchmark requiere velas anteriores al holdout protegido')
@@ -67,6 +67,10 @@ def admission_blocks(raw, founder, windows, *, anchor=None):
         sim = M5Simulation(env, normalized.loc[env._times])
         frozen = FrozenDirectionSimulation(sim, founder.genome)
         proposed = frozen.proposed
+        if fixed_opens is not None:
+            proposed = env._times[sim.entries].get_indexer(fixed_opens[name])
+            if (proposed < 0).any() or (np.diff(proposed) <= 0).any():
+                raise ValueError(f'La máscara archivada de {name} requiere aperturas elegibles y ordenadas')
         admitted = frame.iloc[sim.entries[proposed]]
         opens = env._times[sim.entries[proposed]]
         rows = pd.concat((admitted.set_index('timestamp').loc[:, list(MARKET_FEATURES)],

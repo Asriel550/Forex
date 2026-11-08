@@ -1,6 +1,8 @@
 name: Ablación multiescala de dirección Scalping M5
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/m5-multiscale-gen315]
 permissions:
   contents: read
 jobs:
@@ -25,6 +27,49 @@ jobs:
         run: |
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements.txt
+      - name: Recover the exact March admission bitmap
+        run: |
+          python - <<'PY'
+          from base64 import b64encode
+          from hashlib import sha256
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+
+          from scripts.run_m5_direction_ablation import load_minutes, m5_features
+          from scripts.run_m5_direction_benchmark import admission_blocks, load_references
+          from scripts.run_m5_multiscale import APRIL_START, MARCH_MASK, MARCH_SIGNATURE, MARCH_START, Q1
+          from src.evolution_lineage import MARKET
+
+          raw_dir = Path('data/histdata_scalping')
+          founder, _, quant = load_references()
+          minutes = load_minutes(raw_dir, Q1, end=APRIL_START)
+          data = m5_features(minutes, quant, end=APRIL_START)
+          blocks, prepared = admission_blocks(data, founder, [('march', MARCH_START, APRIL_START)])
+          march = blocks['march']
+          expected_eligible, expected_count, expected_hash = MARCH_SIGNATURE
+          frame = prepared.loc[(prepared.timestamp >= MARCH_START) & (prepared.timestamp + MARKET.step <= APRIL_START)]
+          eligible = pd.DatetimeIndex(frame.loc[frame.timestamp.diff(-1).eq(-MARKET.step), 'timestamp']).as_unit('ns').asi8
+          assert march.eligible_bars == len(eligible) == expected_eligible
+          recovered = (march.rows.index - MARKET.step).as_unit('ns').asi8
+          original_count = len(recovered)
+          if original_count == expected_count - 1:
+              for extra in np.setdiff1d(eligible, recovered, assume_unique=True):
+                  trial = np.insert(recovered, np.searchsorted(recovered, extra), extra)
+                  if sha256(trial.tobytes()).hexdigest() == expected_hash:
+                      recovered = trial
+                      break
+          if len(recovered) != expected_count or sha256(recovered.tobytes()).hexdigest() != expected_hash:
+              raise ValueError('No se pudo verificar la máscara histórica completa de marzo')
+          slots = (recovered - MARCH_START.value) // MARKET.step.value
+          bitmap = np.zeros((APRIL_START - MARCH_START) // MARKET.step, dtype=np.uint8)
+          bitmap[slots] = 1
+          encoded = b64encode(np.packbits(bitmap).tobytes()).decode('ascii')
+          MARCH_MASK.write_text(encoded + '\n', encoding='ascii')
+          print(f'MULTISCALE_MASK {encoded}', flush=True)
+          print(f'Verified March archive: {expected_count} admissions from {original_count}', flush=True)
+          PY
       - name: Evolve nine March replicas and seal the champions
         run: python -m scripts.run_m5_multiscale evolve
       - uses: actions/upload-artifact@v7

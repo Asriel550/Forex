@@ -1,6 +1,7 @@
 """Evoluciona la dirección en marzo y reproduce abril tras sellar los pesos."""
 
 import argparse
+from base64 import b64decode
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 import json
@@ -35,6 +36,7 @@ MARCH_SIGNATURE = (6258, 2859, FROZEN_MARCH_ADMISSIONS_SHA256)
 APRIL_SIGNATURE = (1264, 278, 'bf18f03b34dfe8f1b024516bb07bd4ccbacdb937ade87ffc8d6350cd3df444a8')
 CONTROL = Path('config/m5-multiscale/gen294.zip')
 CONTROL_SHA256 = 'c4a6939dd11d617ab3a1923286b1b83b5980895155d4af10c3e6f28edbb512a9'
+MARCH_MASK = CONTROL.with_name('march-admissions.b64')
 
 
 def load_control():
@@ -50,10 +52,21 @@ def load_control():
     return control
 
 
-def prepare_window(raw_dir, founder, quant, periods, start, end, signature):
+def archived_march_opens():
+    packed = b64decode(MARCH_MASK.read_text(encoding='ascii').strip(), validate=True)
+    slots = np.flatnonzero(np.unpackbits(np.frombuffer(packed, dtype=np.uint8)))
+    opens = pd.DatetimeIndex(MARCH_START + pd.to_timedelta(5 * slots, unit='min')).as_unit('ns')
+    if (len(opens) != MARCH_SIGNATURE[1] or opens[-1] >= APRIL_START
+            or sha256(opens.asi8.tobytes()).hexdigest() != MARCH_SIGNATURE[2]):
+        raise ValueError('La máscara archivada de marzo difiere de su hash histórico')
+    return opens
+
+
+def prepare_window(raw_dir, founder, quant, periods, start, end, signature, *, opens=None):
     minutes = load_minutes(raw_dir, periods, end=end)
     data = m5_features(minutes, quant, end=end)
-    windows, _ = admission_blocks(data, founder, [('window', start, end)])
+    windows, _ = admission_blocks(data, founder, [('window', start, end)],
+                                  fixed_opens={'window': opens} if opens is not None else None)
     window = windows['window']
     observed = (window.eligible_bars, len(window.rows), window.mask_sha256)
     if observed != signature:
@@ -73,7 +86,8 @@ def march_evolution(raw_dir, output):
         raise ValueError('Los campeones de esta salida ya están sellados')
     founder, _, quant = load_references()
     control = load_control()
-    window, raw_inputs = prepare_window(raw_dir, founder, quant, Q1, MARCH_START, APRIL_START, MARCH_SIGNATURE)
+    window, raw_inputs = prepare_window(raw_dir, founder, quant, Q1, MARCH_START, APRIL_START, MARCH_SIGNATURE,
+                                        opens=archived_march_opens())
     rows = window.rows
     outcomes, mc = rows.outcome.to_numpy(), rows.mc_side.to_numpy()
     mean, std = fit_scale(raw_inputs)

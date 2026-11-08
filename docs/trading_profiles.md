@@ -443,7 +443,9 @@ completo y usan el último cierre disponible en el instante de decisión.
 Los valores ausentes toman el centro de la escala ajustada en marzo.
 
 Las semillas 42, 43 y 44 recorren 21 poblaciones de 128 individuos
-por rama. Se comprueba el hash de las 2.859 admisiones de marzo.
+por rama. Las 2.859 aperturas de marzo se archivan como un bitmap de
+la cuadrícula UTC de M5. Se comprueba su hash histórico y se valida
+que cada apertura sigue siendo elegible en el histórico de entrada.
 Enero y febrero aportan el historial causal de los indicadores. La
 selección y la escala usan exclusivamente las admisiones de marzo.
 
