@@ -1,8 +1,6 @@
 name: Ablación direccional Scalping M5
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/m5-direction-ablation]
 permissions:
   contents: read
   actions: read
