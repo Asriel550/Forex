@@ -491,3 +491,30 @@ Cada una evalúa 20 poblaciones de 128 individuos sobre el snapshot de
 marzo y la escala sellada. Conserva el fitness multirrégimen y guarda
 un genoma ganador con su hash por semilla. Abril termina en el corte
 protegido y sirve exclusivamente para el replay de la Gen 333.
+
+### Gate adaptativo elástico de la Gen 354
+
+La ablación ejecuta el genoma sellado Gen 354/43 sobre la matriz
+canónica de marzo y el diagnóstico de abril. Compara el gate estático,
+convicción p85, convicción más volatilidad y la variante elástica.
+La convicción es el valor absoluto de tanh aplicado al puntaje de
+salida. El p85 usa las 500 propuestas anteriores, incluidos los
+descartes. Los empates con el corte se descartan. Febrero aporta las
+500 propuestas de arranque y el estado continúa de marzo a abril.
+
+El filtro de volatilidad compara la volatilidad realizada de la última
+vela M15 cerrada con el p80 de las 48 horas anteriores, con un mínimo de
+48 observaciones válidas. La comparación excluye el valor actual del
+cálculo del percentil. Se descartan las propuestas que pasan convicción
+cuando falta historial válido para la volatilidad.
+
+Para ampliar la admisión, la convicción media debe superar 0,80 y las
+últimas 500 propuestas resueltas deben alcanzar 95 % de acierto en
+cada uno de tres bloques y en ambos regímenes. Cada régimen exige
+40 resultados. Se observan también las propuestas descartadas cuando
+vence el contrato y se excluyen reembolsos. La política pasa de p85
+a p60, p30 y finalmente p0 tras cada 100 liquidaciones adicionales
+mientras mantiene esa evidencia. Si la pierde, regresa a p85. Con p0
+puede admitir propuestas con volatilidad extrema y datos válidos.
+El cupo horario y el stop de cuenta se aplican tras la decisión de
+admisión. El replay usa liquidación al vencimiento.
