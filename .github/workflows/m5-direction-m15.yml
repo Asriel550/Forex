@@ -1,8 +1,6 @@
 name: Comparación direccional M15 en Scalping M5
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/m5-direction-m15]
 permissions:
   contents: read
   actions: read
