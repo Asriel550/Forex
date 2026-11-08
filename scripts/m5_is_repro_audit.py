@@ -80,7 +80,7 @@ def load_verified_snapshot(path, report_path):
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if (report.get('snapshot_sha256') != GOLDEN_SNAPSHOT_SHA256
             or report.get('fingerprints', {}).get('garch_and_mc', {}).get('values_sha256') != GOLDEN_GARCH_MC_SHA256):
-        raise ValueError('Solo se permite el snapshot cuantitativo canónico de 2.859 propuestas')
+        raise ValueError('Solo se permite el snapshot cuantitativo canónico sellado de 2.859 propuestas')
     if (report.get("schema") != SCHEMA or report.get("snapshot_sha256") != file_sha256(path)
             or report.get("oos_accessed") is not False
             or tuple(report.get("sources", [])) != PERIODS
