@@ -221,7 +221,8 @@ generación inicial, para un total de 11 generaciones evaluadas.
 El genoma puntúa todas las entradas con vencimiento M5 consecutivo.
 Un vector de pesos decide si hay contrato. Otro ajusta el margen
 direccional `mc_prob_up - mc_prob_down`. El signo resultante decide
-CALL o PUT y un empate exacto produce NEUTRO. Las observaciones
+CALL o PUT si la magnitud supera el umbral de activación del genoma.
+Un margen igual o inferior al umbral produce NEUTRO. Las observaciones
 incluyen GARCH, Monte Carlo, indicadores técnicos y nueve variables
 de contexto.
 
@@ -260,6 +261,12 @@ bloques y 25% del peor bloque. Luego resta cuatro veces la varianza
 poblacional del acierto sin reembolsos entre bloques. Un bloque con
 acierto indefinido aporta cero al cálculo de la varianza.
 
+En búsqueda también se resta 0,15 veces la distancia de la proporción
+de señales descartadas por el umbral al rango de 20% a 30%. Se mide
+sobre las señales que propondría el mismo genoma con umbral cero,
+antes de aplicar el stop. La frecuencia del gate usa los contratos
+ejecutados y las horas observables del tramo.
+
 El grupo de padres conserva el tamaño del 20% superior redondeado
 hacia arriba según el puntaje. Entre esos padres, quienes terminan en
 positivo con drawdown menor al 15% en los cuatro bloques pasan intactos
@@ -291,12 +298,15 @@ La siguiente ejecución manual en la rama por defecto recupera el
 checkpoint disponible más reciente por fecha de creación del mismo workflow, incluidos los
 de corridas rechazadas por el gate. Continúa después de la última
 generación evaluada, aunque el campeón se haya seleccionado antes.
+Al recuperar un checkpoint v3 o v4, el umbral del fundador empieza
+en cero para reproducir sus decisiones. El umbral muta en los
+descendientes y se guarda junto con los pesos en el formato v5.
 Al faltar un checkpoint vigente, Actions parte del fundador archivado.
 La retención solicitada del checkpoint es de 90 días. Para recuperar
 una copia archivada localmente, el motor acepta `--seed-bundle lineage.zip`.
 
 El artefacto `forex-reports-*` contiene JSON, CSV por individuo y
-Markdown con entradas evaluables y contratos CALL/PUT. Cada generación
+Markdown con entradas evaluables, descartes por el umbral y contratos CALL/PUT. Cada generación
 publica su propio candidato `bundle_scalping_gen_X.zip` con genoma,
 normalizador y manifiesto con SHA256. Los artefactos de evolución se
 usan exclusivamente para investigación M5.

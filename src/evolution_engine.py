@@ -35,6 +35,8 @@ WIN_RATE_SHORTFALL_WEIGHT = .5
 MIN_PROFIT_FACTOR = 1.20
 MAX_DRAWDOWN_PCT = 15.
 MIN_TRADES_HOUR, MAX_TRADES_HOUR = 1.2, 2.5
+MIN_ACTIVATION_REJECTION, MAX_ACTIVATION_REJECTION = .20, .30
+ACTIVATION_REJECTION_WEIGHT = .15
 
 
 @dataclass(frozen=True)
@@ -83,10 +85,15 @@ class M5Simulation:
 
     def evaluate(self, genome):
         """El genoma decide entrada y dirección. Los retornos futuros solo liquidan."""
-        heads = genome.reshape(2, self.features.shape[1] + 1)
+        heads = genome[:-1].reshape(2, self.features.shape[1] + 1)
+        activation_threshold = float(genome[-1])
         scores = np.einsum('ij,kj->ik', self.features, heads[:, :-1]) + heads[:, -1]
         direction = self.mc_margin + scores[:, 1]
-        proposed = np.flatnonzero((scores[:, 0] > 0.) & (direction != 0.))
+        margin = np.abs(direction)
+        entries = (scores[:, 0] > 0.) & (margin > 0.)
+        proposed = np.flatnonzero(entries & (margin > activation_threshold))
+        signals = int(entries.sum())
+        rejected = signals - len(proposed)
         side = np.sign(direction[proposed])
         actions = np.where(side > 0., 2, 0)
         change = self.change[proposed]
@@ -113,6 +120,8 @@ class M5Simulation:
         result.update(return_basis='M5 equity including inactivity',
                       observed_hours=self.observed_hours, decision_opportunities=len(self.entries),
                       trades_per_observed_hour=len(trades) / self.observed_hours,
+                      activation_threshold=activation_threshold, signals_before_activation=signals,
+                      activation_rejections=rejected, activation_rejection_rate=rejected / max(1, signals),
                       calls=int((actions == 2).sum()), puts=int((actions == 0).sum()),
                       risk_stop=bool(stops.size))
         return result
@@ -147,8 +156,11 @@ def assess_search_fitness(metrics, blocks):
     block_score = (1 - WORST_BLOCK_WEIGHT) * float(np.mean(scores)) + WORST_BLOCK_WEIGHT * min(scores)
     win_rates = [block['win_rate_excluding_refunds'] or 0. for block in blocks]
     win_rate_variance = float(np.var(win_rates))
+    rejection = metrics.get('activation_rejection_rate', 0.)
+    rejection_distance = max(0., MIN_ACTIVATION_REJECTION - rejection, rejection - MAX_ACTIVATION_REJECTION)
     score = (OVERALL_SCORE_WEIGHT * fitness['score'] + (1 - OVERALL_SCORE_WEIGHT) * block_score
-             - WIN_RATE_VARIANCE_WEIGHT * win_rate_variance)
+             - WIN_RATE_VARIANCE_WEIGHT * win_rate_variance
+             - ACTIVATION_REJECTION_WEIGHT * rejection_distance)
     fitness['checks']['block_consistency'] = all(
         block['net_profit'] > 0 and block['max_drawdown_pct'] < MAX_DRAWDOWN_PCT for block in blocks
     )
@@ -219,11 +231,13 @@ def write_summary(path, report):
     status = 'cumplido' if report['qualified'] else 'rechazado'
     lines.extend(['', f"Gate de la corrida **{status}**. Campeón preseleccionado en generación "
                       f"{report['champion']['generation']}.", '',
-                  '| Tramo | Entradas evaluables | CALL ejecutados | PUT ejecutados |',
-                  '| --- | ---: | ---: | ---: |'])
+                  '| Tramo | Entradas evaluables | Umbral | Señales previas | Descartes por umbral | CALL ejecutados | PUT ejecutados |',
+                  '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'])
     for row in (report['champion'], report['confirmation']):
         metrics = row['metrics']
         lines.append(f"| {row['phase']} | {metrics['decision_opportunities']} | "
+                     f"{metrics['activation_threshold']:.4f} | {metrics['signals_before_activation']} | "
+                     f"{metrics['activation_rejections']} ({metrics['activation_rejection_rate']:.2%}) | "
                      f"{metrics['calls']} | {metrics['puts']} |")
     lines.extend(['', '## Bloques del campeón', '',
                   '| Bloque | Entradas evaluables | Contratos | PnL USD | DD |',
@@ -293,7 +307,7 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
     last_generation = first_generation + config.generations
     metadata = dict(
         format=FORMAT, profile='scalping', market=asdict(MARKET),
-        policy='positive entry head enables CALL/PUT by signed MC margin plus direction residual',
+        policy='positive entry head and absolute adjusted direction margin above inherited activation threshold',
         input_sha256=source_hash, quant_config=quant, account=asdict(simulation.account),
         risk=dict(drawdown_limit=risk.drawdown_limit), config=asdict(config), holdout_test_evaluated=False,
         protected_holdout_start=PROTECTED_HOLDOUT_START.isoformat(),
@@ -302,11 +316,13 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
         fitness_limits=dict(min_win_rate=MIN_WIN_RATE, exclusive_min_profit_factor=MIN_PROFIT_FACTOR,
                             trades_per_hour=[MIN_TRADES_HOUR, MAX_TRADES_HOUR],
                             exclusive_max_drawdown_pct=MAX_DRAWDOWN_PCT),
-        fitness_selection=dict(method='economic_chronological_blocks_v4', blocks=SEARCH_BLOCKS,
+        fitness_selection=dict(method='economic_chronological_blocks_v5', blocks=SEARCH_BLOCKS,
                                overall_score_weight=OVERALL_SCORE_WEIGHT,
                                worst_block_weight=WORST_BLOCK_WEIGHT,
                                win_rate_variance_weight=WIN_RATE_VARIANCE_WEIGHT,
-                               win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT),
+                               win_rate_shortfall_weight=WIN_RATE_SHORTFALL_WEIGHT,
+                               activation_rejection_target=[MIN_ACTIVATION_REJECTION, MAX_ACTIVATION_REJECTION],
+                               activation_rejection_weight=ACTIVATION_REJECTION_WEIGHT),
         context_observations=CONTEXT_SETTINGS,
         search_blocks=[dict(block=i, rows=len(frame), start=frame.timestamp.iloc[0].isoformat(),
                             end=frame.timestamp.iloc[-1].isoformat())
@@ -327,6 +343,8 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
              founder.provenance['source_generation'], first_generation, last_generation)
     with ThreadPoolExecutor(max_workers=config.workers) as executor:
         for generation in range(first_generation, last_generation + 1):
+            # Refleja mutaciones negativas del umbral para mantener una escala no negativa.
+            population[:, -1] = np.abs(population[:, -1])
             metrics, by_block, fitness = zip(*executor.map(evaluate, population))
             parents = sorted(range(len(population)), key=lambda i: fitness[i]['score'],
                              reverse=True)[:elite_count]
@@ -354,7 +372,9 @@ def run_evolution(input_path, output_dir, config=None, *, seed_bundle=None):
                 passed=f['passed'], **{f'pass_{k}': v for k, v in f['checks'].items()},
                 **{k: m[k] for k in ('total_trades', 'win_rate_excluding_refunds', 'profit_factor',
                                      'profit_factor_status', 'trades_per_observed_hour', 'max_drawdown_pct',
-                                     'net_profit', 'risk_stop', 'calls', 'puts', 'decision_opportunities')},
+                                     'net_profit', 'risk_stop', 'calls', 'puts', 'decision_opportunities',
+                                     'activation_threshold', 'signals_before_activation', 'activation_rejections',
+                                     'activation_rejection_rate')},
                 **{f'block_{j}_{key}': block[key] for j, block in enumerate(candidate_blocks, start=1)
                    for key in ('net_profit', 'max_drawdown_pct', 'total_trades')},
             ) for i, (m, f, candidate_blocks) in enumerate(zip(metrics, fitness, by_block)))

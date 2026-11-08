@@ -17,7 +17,8 @@ from .market import MarketConfig
 
 MARKET = MarketConfig('M5', 'binary', 1)
 LEGACY_FORMAT = 'forex_m5_evolution_candidate_v3'
-FORMAT = 'forex_m5_evolution_candidate_v4'
+CONTEXT_FORMAT = 'forex_m5_evolution_candidate_v4'
+FORMAT = 'forex_m5_evolution_candidate_v5'
 PINNED_SEED = Path(__file__).resolve().parents[1] / 'config/evolution_m5_seed_gen20.json'
 INITIAL_SIGMA = .12
 MARKET_FEATURES = market_feature_names()
@@ -36,10 +37,12 @@ class Founder:
 
 
 def genome_payload(genome):
-    entry, direction = np.asarray(genome, dtype=float).reshape(2, -1)
+    genome = np.asarray(genome, dtype=float)
+    entry, direction = genome[:-1].reshape(2, -1)
     return {
         'entry': dict(weights=entry[:-1].tolist(), bias=float(entry[-1])),
         'direction_residual': dict(weights=direction[:-1].tolist(), bias=float(direction[-1])),
+        'activation_threshold': float(genome[-1]),
     }
 
 
@@ -61,7 +64,7 @@ def _check_normalizer(normalizer, names):
 
 
 def load_founder(seed_bundle, context_train, train_end, search_end):
-    """La semilla v3 conserva su neurona de entrada. V4 conserva ambas."""
+    """Migra v3/v4 con umbral cero y conserva el umbral heredado de v5."""
     origin = {}
     if seed_bundle is None:
         pinned = json.loads(PINNED_SEED.read_text(encoding='utf-8'))
@@ -82,7 +85,7 @@ def load_founder(seed_bundle, context_train, train_end, search_end):
             contents[name] = json.loads(raw)
 
     version = manifest.get('format')
-    if (version not in (LEGACY_FORMAT, FORMAT) or manifest.get('market') != asdict(MARKET)
+    if (version not in (LEGACY_FORMAT, CONTEXT_FORMAT, FORMAT) or manifest.get('market') != asdict(MARKET)
             or manifest.get('profile') != 'scalping' or manifest.get('holdout_test_evaluated') is not False):
         raise ValueError('El fundador debe ser un candidato de investigación M5 binario compatible')
     for phase, cutoff in (('train', train_end), ('search', search_end)):
@@ -117,11 +120,14 @@ def load_founder(seed_bundle, context_train, train_end, search_end):
         entry, bias = _read_head(payload['entry'], width)
         direction, direction_bias = _read_head(payload['direction_residual'], width)
 
+    activation_threshold = float(payload['activation_threshold']) if version == FORMAT else 0.
+    if not np.isfinite(activation_threshold) or activation_threshold < 0.:
+        raise ValueError('Umbral de activación del linaje inválido')
     _check_normalizer(normalizer, OBSERVATION_FEATURES)
     limit = float(manifest['risk']['drawdown_limit'])
     if not 0. < limit <= 1.:
         raise ValueError('Límite de drawdown del linaje inválido')
     provenance = dict(origin, format=version, bundle_sha256=sha256(bundle).hexdigest(),
                       source_generation=generation, last_completed_generation=last)
-    return Founder(np.r_[entry, bias, direction, direction_bias], normalizer,
+    return Founder(np.r_[entry, bias, direction, direction_bias, activation_threshold], normalizer,
                    AccountConfig(**manifest['account']), limit, last + 1, sigma, provenance)
