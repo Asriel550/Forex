@@ -267,8 +267,12 @@ def assess_temporal_multiregime_fitness(blocks, *, stake, direction_loss):
     rates = np.array([b['contracts_per_observed_hour'] for b in blocks], dtype=float)
     gate_rates = np.array([b.get('gate_only_contracts_per_observed_hour',
                                  b['contracts_per_observed_hour']) for b in blocks], dtype=float)
-    capacities = np.array([b.get('capacity_contracts_per_observed_hour', MIN_TRADES_HOUR)
-                           for b in blocks], dtype=float)
+    capacities = np.array([
+        b.get('capacity_contracts_per_observed_hour', max(
+            MIN_TRADES_HOUR, b.get('gate_only_contracts_per_observed_hour',
+                                    b['contracts_per_observed_hour'])
+        )) for b in blocks
+    ], dtype=float)
     stopped = np.array([b.get('account_stop') is not None for b in blocks], dtype=bool)
     if not (np.isfinite(returns).all() and np.isfinite(dd).all()
             and np.isfinite(rates).all() and np.isfinite(gate_rates).all()
