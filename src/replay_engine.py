@@ -51,15 +51,30 @@ class ContractExits:
         return expiry, payoff_at_expiry, 'expiry'
 
 
-def gate_reasons(rows, sides, account, risk, *, n_paths, max_volatility, hourly_cap):
+def apply_hourly_cap(entries, reasons, hourly_cap):
     """Cuenta entradas aceptadas en la hora móvil anterior a cada decisión."""
-    if type(hourly_cap) is not int or hourly_cap < 1 or not np.isfinite(max_volatility) or max_volatility <= 0.:
-        raise ValueError('Cupo horario o techo de volatilidad inválido')
+    if type(hourly_cap) is not int or hourly_cap < 1:
+        raise ValueError('Cupo horario inválido')
     accepted = deque()
-    reasons = []
     hour = pd.Timedelta(hours=1)
-    for time, side, up, down, tie, sigma in zip(
-        rows.index, sides, rows.mc_prob_up, rows.mc_prob_down, rows.mc_prob_tie, rows.cond_volatility,
+    decisions = np.asarray(reasons, dtype='<U24').copy()
+    for i in np.flatnonzero(decisions == 'accepted'):
+        time = entries[i]
+        while accepted and accepted[0] <= time - hour:
+            accepted.popleft()
+        if len(accepted) >= hourly_cap:
+            decisions[i] = 'hourly_cap'
+        else:
+            accepted.append(time)
+    return decisions
+
+
+def gate_reasons(rows, sides, account, risk, *, n_paths, max_volatility, hourly_cap):
+    if max_volatility is None or not np.isfinite(max_volatility) or max_volatility <= 0.:
+        raise ValueError('Techo de volatilidad inválido')
+    reasons = []
+    for side, up, down, tie, sigma in zip(
+        sides, rows.mc_prob_up, rows.mc_prob_down, rows.mc_prob_tie, rows.cond_volatility,
         strict=True,
     ):
         decision = resolve_action(2 if side > 0 else 0, up, down, tie, payout=account.payout,
@@ -69,14 +84,8 @@ def gate_reasons(rows, sides, account, risk, *, n_paths, max_volatility, hourly_
         elif sigma > max_volatility:
             reasons.append('volatility')
         else:
-            while accepted and accepted[0] <= time - hour:
-                accepted.popleft()
-            if len(accepted) >= hourly_cap:
-                reasons.append('hourly_cap')
-            else:
-                accepted.append(time)
-                reasons.append('accepted')
-    return np.asarray(reasons)
+            reasons.append('accepted')
+    return apply_hourly_cap(rows.index, reasons, hourly_cap)
 
 
 def payoff_summary(profits, account, observed_hours):
@@ -98,18 +107,30 @@ def payoff_summary(profits, account, observed_hours):
     )
 
 
-def replay_contracts(rows, sides, account, risk, *, observed_hours, n_paths, max_volatility, hourly_cap, exits=None):
+def replay_contracts(rows, sides, account, risk, *, observed_hours, hourly_cap, n_paths=None,
+                     max_volatility=None, exits=None, candidate_reasons=None):
     entries = rows.index
     sides = np.asarray(sides)
     if (rows.empty or sides.shape != (len(rows),) or not np.isin(sides, [-1, 1]).all()
             or not isinstance(entries, pd.DatetimeIndex)
             or entries.tz is None or entries.hasnans or (np.diff(entries.as_unit('ns').asi8) < MARKET.step.value).any()
             or not np.isfinite(observed_hours) or observed_hours <= 0.
-            or not np.isfinite(rows.cond_volatility).all() or (rows.cond_volatility < 0.).any()
             or not rows.outcome.isin([-1, 0, 1]).all()):
         raise ValueError('El replay requiere decisiones M5 válidas, cronológicas y sin solapamiento')
-    reasons = gate_reasons(rows, sides, account, risk, n_paths=n_paths,
-                           max_volatility=max_volatility, hourly_cap=hourly_cap)
+    if candidate_reasons is None:
+        if not np.isfinite(rows.cond_volatility).all() or (rows.cond_volatility < 0.).any():
+            raise ValueError('La volatilidad de las decisiones debe ser válida')
+        reasons = gate_reasons(rows, sides, account, risk, n_paths=n_paths,
+                               max_volatility=max_volatility, hourly_cap=hourly_cap)
+        signal_rejections = ('confidence', 'expected_edge', 'volatility')
+        rejected_key = 'rejected_probability_or_volatility_pct'
+    else:
+        signal_rejections = ('conviction_warmup', 'conviction', 'volatility_warmup', 'volatility')
+        if (np.shape(candidate_reasons) != (len(entries),)
+                or not np.isin(candidate_reasons, ('accepted', *signal_rejections)).all()):
+            raise ValueError('El gate adaptativo debe decidir cada propuesta')
+        reasons = apply_hourly_cap(entries, candidate_reasons, hourly_cap)
+        rejected_key = 'rejected_signal_pct'
     accepted = reasons == 'accepted'
     expiry = entries + MARKET.step
     expiry_pnl = unit_payoff(sides, rows.outcome.to_numpy(), account) * account.stake
@@ -139,11 +160,10 @@ def replay_contracts(rows, sides, account, risk, *, observed_hours, n_paths, max
 
     counts = Counter(reasons)
     filters = dict(
-        rejected_by_reason={reason: counts[reason] for reason in ('confidence', 'expected_edge', 'volatility', 'hourly_cap')},
+        rejected_by_reason={reason: counts[reason] for reason in (*signal_rejections, 'hourly_cap')},
         accepted=counts['accepted'], rejected_pct=100 * (1 - counts['accepted'] / len(entries)),
-        rejected_probability_or_volatility_pct=100 * sum(counts[r] for r in ('confidence', 'expected_edge', 'volatility'))
-        / len(entries),
     )
+    filters[rejected_key] = 100 * sum(counts[r] for r in signal_rejections) / len(entries)
     executed = np.isfinite(profits)
     operational = payoff_summary(profits[executed], account, observed_hours)
     operational.update(account_stop=stop, unfilled_after_stop=int((accepted & ~executed).sum()),

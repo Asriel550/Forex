@@ -68,13 +68,18 @@ def m15_direction_bias(frame):
     return pd.Series(np.clip(bias, -M15_DIRECTION_CLIP, M15_DIRECTION_CLIP), index=frame.timestamp)
 
 
+def m15_realized_volatility(candles):
+    consecutive = candles.timestamp.diff().eq(MarketConfig('M15').step)
+    returns = np.log(candles.close).diff().where(consecutive)
+    return np.sqrt(returns.pow(2).rolling(8, min_periods=8).sum())
+
+
 def native_direction_context(minutes, decisions, *, end):
     """Alinea indicadores de M15 y H1 completos, agregados desde el M1 nativo."""
     m15 = aggregate(minutes, 1, 'M15', now=end)
     h1 = aggregate(minutes, 1, 'H1', now=end)
     consecutive = m15.timestamp.diff().eq(MarketConfig('M15').step)
-    returns = np.log(m15.close).diff().where(consecutive)
-    realized = np.sqrt(returns.pow(2).rolling(8, min_periods=8).sum())
+    realized = m15_realized_volatility(m15)
     previous = m15.close.shift().where(consecutive)
     true_range = pd.concat((m15.high - m15.low, (m15.high - previous).abs(),
                             (m15.low - previous).abs()), axis=1).max(axis=1)

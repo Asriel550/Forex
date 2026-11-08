@@ -65,7 +65,7 @@ def arm_inputs(inputs, arm):
     return values
 
 
-def directions(inputs, genomes):
+def direction_scores(inputs, genomes):
     """Puntúa la población en lote con la misma topología en cada rama."""
     genomes = np.asarray(genomes, dtype=float)
     count, width = len(genomes), inputs.shape[1]
@@ -77,6 +77,11 @@ def directions(inputs, genomes):
     np.tanh(hidden, out=hidden)
     scores = np.einsum('nph,ph->pn', hidden, genomes[:, -HIDDEN - 1:-1])
     scores += genomes[:, -1, None]
+    return scores
+
+
+def directions(inputs, genomes):
+    scores = direction_scores(inputs, genomes)
     return np.where(scores >= 0., 1, -1).astype(np.int8)
 
 
