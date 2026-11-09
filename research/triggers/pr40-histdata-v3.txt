@@ -1,0 +1,4 @@
+PR40 HistData diagnostics retry.
+The first live acquisition halted because expected HTML form fields were not matched.
+Re-run the same strict GBPUSD AUDUSD USDCAD 202601..202606 downloader with ONLY public form metadata diagnostics; do not expose tk values.
+No Q3, no M1 signals, no PR38 mutation. No financial backtest claims.
