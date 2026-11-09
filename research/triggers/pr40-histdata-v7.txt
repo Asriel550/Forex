@@ -1,0 +1,3 @@
+PR40 real HistData H1 acquisition v7, exact /get.php pair-match after removing unsafe standalone token fallback.
+Live webpage 202601 includes /get.php and /getStatus.php for same pair. Exact form selection must pass 7 tests.
+M1 source only to aggregate M5/M15, no model M1 features, 202601-202606 whitelist for GBPUSD AUDUSD USDCAD.
