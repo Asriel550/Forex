@@ -64,6 +64,9 @@ def evaluate(genome, problem, relaxation, gate_mode):
     )
     quality=float(result["score"])
     product_score,product=pf_frequency_objective(result)
+    if result["eligible"]<=500:
+        product_score=-1e6
+        product=0.
     result.update(
         qualifies=accepted(result),passes_all=accepted(result),
         score=float(product_score),original_fitness=quality,
@@ -116,15 +119,10 @@ def verify_pr38_parent(path,problem,seed):
         raise ValueError("Genoma PR38 alterado")
     prior,band=evaluate(genome,problem,0.0,"p85")
     champ=source["champion"]
-    for field,key in (
-        ("quarter_pf",["pf_q1","pf_q2"]),
-        ("quarter_rate",None),
-    ):
-        if field=="quarter_pf":
-            observed=prior[field]
-            expected=[champ[k] for k in key]
-            if not np.allclose(observed,expected,atol=1e-11,rtol=0):
-                raise ValueError("PF del campeón PR38 no reproducido")
+    if not np.allclose(prior["quarter_pf"],
+                       [champ["pf_q1"],champ["pf_q2"]],
+                       atol=1e-11,rtol=0):
+        raise ValueError("PF del campeón PR38 no reproducido")
     if (not np.isclose(prior["semester_rate"],champ["executed_hourly"],atol=1e-11,rtol=0)
             or not np.isclose(prior["semester_dd"],champ["semester_dd"],atol=1e-11,rtol=0)
             or not np.isclose(prior["quarter_pnl_usd"][0],champ["pnl_q1"],atol=1e-11,rtol=0)
