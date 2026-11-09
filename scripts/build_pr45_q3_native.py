@@ -151,7 +151,7 @@ def _check_frame(frame,step,start,end):
         or (v[:,2]>np.minimum(v[:,0],v[:,3])).any()):
         raise ValueError("Velas del proveedor inválidas")
     for a,b in zip(Q3_BOUNDARIES[:-1],Q3_BOUNDARIES[1:]):
-        if ((t>=a)&(t<b)).sum()<2500:
+        if ((t>=a)&(t<b)).sum()<(3500 if m==5 else 1000):
             raise ValueError("Mes Q3 sin historial suficiente")
     if t.min()>Q3_START+pd.Timedelta(hours=10) or t.max()<Q3_END-pd.Timedelta(days=2):
         raise ValueError("Falta inicio/final del trimestre Q3")
