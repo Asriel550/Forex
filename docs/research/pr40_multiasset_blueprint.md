@@ -16,7 +16,7 @@ Se conserva, sin entrenamiento ni recalibración, el campeón **`garch_regime` P
 
 Se conserva la red direccional Gen375/semilla43/p80 como parte interna original, la cabeza residual y upstream del genoma PR38 correspondiente a la semilla, el **Gate de Convicción Pura p85** con historia causal y calentamiento original, la banda GARCH **sin ensanchar (0%)**, expiración M5, payout supuesto +80%/−100%, stake y stops originales. No se transfieren los genomas ni el fitness de PR39; no se busca un nuevo campeón con resultados de los otros pares.
 
-**Solo temporalidades de señal M5 y M15 cerradas.** Ningún input, indicador ni decisión de M1. No alimentar las cabezas con precios M1 ni etiquetas de futuro. Si un proveedor usa datos M1 para agregación previa, debe demostrar cierre/continuidad de velas M5/M15 y no exponer M1 a inferencia; la fuente exigida para nuevos símbolos en PR40 son **OHLCV nativos M5 y M15**.
+**Solo temporalidades de señal M5 y M15 cerradas.** Ningún input, indicador ni decisión de M1. No alimentar las cabezas con precios M1 ni etiquetas de futuro. Si un proveedor usa datos M1 para agregación previa, debe demostrar cierre/continuidad de velas M5/M15 y no exponer M1 a inferencia; la fuente de PR40 es HistData **Generic ASCII M1 exclusivamente como materia prima**, reconstruida en velas OHLCV **M5 y M15 completas**. El modelo nunca recibe indicadores M1.
 
 ## 2. Cesta propuesta y realidad de los datos
 
@@ -145,3 +145,13 @@ financiera de cartera H1. Q3 seguirá fuera del flujo.
 ## 9. Adquisición HistData ejecutada a solicitud del usuario
 
 La implementación en `scripts/acquire_pr40_histdata.py` permite descargar los **18 ZIP oficiales mensuales** de GBPUSD/AUDUSD/USDCAD para los seis meses 202601–202606, valida par/mes/formato y SHA256, normaliza el huso del proveedor (EST fijo sin DST), excluye timestamps UTC posteriores o iguales a julio antes de construir las velas, descarta grupos incompletos M5 y M15, calcula huellas de OHLCV y publica un `ohlcv.npz` junto con los manifiestos y hashes. La Release se crea por par solo si los seis ZIP se recibieron y los controles pasaron; **no** inventa operaciones de cartera. El GARCH por par y los inputs normalizados PR38 son un paso posterior imprescindible para el backtest económico.
+
+## Adenda — adquisición HistData ejecutada
+
+Se implementó `scripts/acquire_pr40_histdata.py` y el workflow
+[PR40 — Acquire real HistData GBP AUD CAD](https://github.com/Asriel550/Forex/actions/workflows/pr40-acquire-histdata.yml).
+El proveedor distribuye únicamente archivos base **M1 o tick**, no velas M5/M15 ya cerradas. Para estos pares se descargan los seis ZIP HistData enero–junio, verificando nombre CSV, CRC, SHA256 y huecos, y de ahí se agregan M5 y M15; **M1 no se usa como rasgo de trading**.
+
+La descarga exige identificar `/get.php` en el HTML; HistData también ofrece `/getStatus.php` con campos muy similares. Los primeros reintentos fallaron por seleccionar ambos formularios; [CI actual de adquisición](https://github.com/Asriel550/Forex/actions/runs/42568580038) incluye la corrección y su test.
+
+El archivo `ohlcv.npz` tendrá ambas temporalidades, fingerprints OHLCV y fuentes firmadas. Es **solo un dataset de velas**, no una validación de la red ni de la cartera: GARCH por símbolo y construcción del universo neuronal siguen siendo fases distintas.
