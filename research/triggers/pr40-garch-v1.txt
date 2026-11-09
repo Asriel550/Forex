@@ -1,0 +1,5 @@
+PR40 stage2: Build causal per-asset GARCH/MC + frozen Gen375 normalized M5+M15 neural input universes.
+Input: three durable HistData H1 OHLCV Releases verified in run 42569048427 (GBPUSD AUDUSD USDCAD).
+Quant model: exact EURUSD original QuantConfig and M5 enrich_features causal GARCH, no refit original model genes.
+Decision: same original frozen Gen268 founder and Gen375 M15-arm weights, no M1 input, no H1 active direction features, Q3 Jan-Jun strict.
+Output: 8-array NPZ per new symbol, hash and immutable Release; no financial claims until 4-pair portfolio three-seed replay.
