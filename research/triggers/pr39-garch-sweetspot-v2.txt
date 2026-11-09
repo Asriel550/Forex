@@ -1,0 +1,4 @@
+PR39 corrected test rerun marker v2.
+Initial run 42560265962 stopped in test only (wrong comparison of different PF+frequency while checking DD penalty).
+Test fixed to compare DD at exactly the same PF and frequency; algorithm, data and 0/7.5/15/22.5/30%-band experimental protocol unchanged.
+Re-execute all A/B/C; seeds 42,43,44; population 128; B 12 generations; p85/p80/p75/causal regime gate; Q3 excluded.
