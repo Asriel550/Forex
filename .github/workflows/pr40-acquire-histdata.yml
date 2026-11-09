@@ -50,11 +50,24 @@ jobs:
       - name: Check strict 18-month whitelist across 3 symbols, no Q3 or M1 trading signals
         run: |
           python -m pytest -q tests/test_pr40_histdata_acquisition.py
-      - name: Acquire official HistData 6 monthly Generic ASCII ZIPs and aggregate full M5/M15
+      - name: Acquire official HistData or verify existing immutable per-pair Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIR: ${{ matrix.symbol }}
         run: |
-          python -m scripts.acquire_pr40_histdata --symbol ${{ matrix.symbol }} \
-            --raw-dir reports/pr40-histdata-raw \
-            --output-dir reports/pr40-histdata/${{ matrix.symbol }}
+          set -euo pipefail
+          target="reports/pr40-histdata/$PAIR"
+          tag="data-pr40-$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')-m5-m15-2026h1-v1"
+          mkdir -p "$target"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "HistData source already acquired and published; retrieve sealed bytes, no redundant source requests."
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern ohlcv.npz --pattern manifest.json \
+              --pattern source-manifest.json --dir "$target" --clobber
+          else
+            python -m scripts.acquire_pr40_histdata --symbol "$PAIR" \
+              --raw-dir reports/pr40-histdata-raw --output-dir "$target"
+          fi
       - name: Record source and derived candle fingerprints, bar count and timeframe
         env:
           PAIR: ${{ matrix.symbol }}
