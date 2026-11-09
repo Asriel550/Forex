@@ -1,0 +1,8 @@
+PR40 HistData H1 retrieval, 2026-11-09.
+EXPLICIT USER REQUEST: acquire real GBPUSD/AUDUSD/USDCAD candles from HistData.
+Allowed HistData monthly sources: 202601,202602,202603,202604,202605,202606 only, three symbols (18 official downloads).
+HistData offers M1 archives, used only as raw data for closed M5 and M15 aggregation. No M1 model features.
+Exclude any June-local source rows whose UTC timestamps reach July1 2026 before computing candles.
+Generate real H1 M5/M15 NPZ, SHA256 raw sources, manifest with actual gaps, and three durable per-pair GitHub Releases.
+No Q3 evaluation, no refit or alteration of EURUSD PR38 frozen genome.
+Do not claim measured multiasset portfolio PF, DD or capacity without later GARCH and model transfers.
