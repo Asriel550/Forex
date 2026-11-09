@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 
 from scripts.build_m5_full_is_universe import load_universe
-from scripts.run_m5_adaptive_gate import GEN354_SHA256, simulate_admission
+from scripts.run_m5_adaptive_gate import GEN354_SHA256
+from scripts.run_m5_temporal_evolution import causal_reasons
 from scripts.run_m5_conviction_evolution import OUTPUT as EVOLUTION_OUTPUT
 from scripts.run_m5_semester_replay import Q2_START, END, START, PERIODS, assert_isolated
 from scripts.run_m5_temporal_evolution import frozen_gen375
@@ -67,7 +68,7 @@ def load_problem(universe, manifest, golden, golden_manifest):
 
 def p85_reasons(rows, scores):
     """Gate exacto, ventanas y settlements causales; ningún filtro vol externo."""
-    return simulate_admission(rows, scores, (), percentile=PERCENTILE, elastic=True).reason.to_numpy()
+    return causal_reasons(rows, scores, PERCENTILE)
 
 
 def one_candidate(genes, problem, *, include_traces=False):
@@ -80,7 +81,7 @@ def one_candidate(genes, problem, *, include_traces=False):
     if len(idx) <= 500:
         return {"qualifies":False, "score":-1e6, "worst_quarter_return":-1e6,
                 "quarter_return_std":1e6, "min_gate_only_frequency":0.,
-                "eligible":int(len(idx)), "quarter_pnl_usd":[0.,0.],
+                "eligible":int(len(idx)), "return_per_admission":-1e6, "quarter_pnl_usd":[0.,0.],
                 "quarter_pf":[None,None], "quarter_rate":[0.,0.],
                 "quarter_gate_rate":[0.,0.], "quarter_dd":[0.,0.],
                 "semester_pnl_usd":0., "semester_pf":None,
@@ -98,7 +99,7 @@ def one_candidate(genes, problem, *, include_traces=False):
         if subset.empty:
             return {"qualifies":False, "score":-1e6, "worst_quarter_return":-1e6,
                     "quarter_return_std":1e6, "min_gate_only_frequency":0.,
-                    "eligible":int(len(idx)), "quarter_pnl_usd":[0.,0.],
+                    "eligible":int(len(idx)), "return_per_admission":-1e6, "quarter_pnl_usd":[0.,0.],
                     "quarter_pf":[None,None], "quarter_rate":[0.,0.],
                     "quarter_gate_rate":[0.,0.], "quarter_dd":[0.,0.],
                     "semester_pnl_usd":0., "semester_pf":None, "semester_rate":0.,
@@ -161,6 +162,7 @@ def one_candidate(genes, problem, *, include_traces=False):
         quarter_return_std=fit["quarter_return_std"],
         min_gate_only_frequency=fit["min_gate_only_frequency"],
         eligible=int(len(idx)),
+        return_per_admission=fit["return_per_admission"],
         quarter_pnl_usd=[q["pnl_usd"] for q in quarters],
         quarter_pf=[q["profit_factor"] for q in quarters],
         quarter_rate=[q["contracts_per_observed_hour"] for q in quarters],
