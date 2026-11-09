@@ -16,10 +16,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from scripts.acquire_pr40_histdata import (
-    BASE, TIMEZONE, parse_source_form as old_parse_form, verify_zip,
-    serialize_bars,
-)
+from scripts.acquire_pr40_histdata import BASE, TIMEZONE, verify_zip
 from scripts.build_histdata_dataset import read_native_minutes
 from scripts.build_pr40_garch_universe import m15_closed_context, read_candles
 from scripts.run_m5_conviction_evolution import setup
@@ -144,7 +141,7 @@ def acquire(*,symbol,raw_dir,output):
 def _check_frame(frame,step,start,end):
     t=pd.DatetimeIndex(frame.timestamp)
     m=int(step.total_seconds()/60)
-    if (len(frame)<10000 or t.tz is None or not t.is_monotonic_increasing or
+    if (len(frame)<(10000 if m==5 else 3500) or t.tz is None or not t.is_monotonic_increasing or
         not t.is_unique or t.min()<start or t.max()+step>end or
         not t.equals(t.floor(f"{m}min"))):
         raise ValueError("Velas OOS no ordenadas, incompletas o fuera de Q3")
@@ -298,6 +295,9 @@ def build(*,symbol,raw_dir,source_manifest,h1_ohlcv=None,
     q3_bars["m5_close_utc"]=q3_bars.timestamp+pd.Timedelta(minutes=5)
     q3_bars["garch_sigma_m5"]=enriched_values["cond_volatility"].reindex(
         pd.DatetimeIndex(q3_bars.timestamp)).to_numpy(dtype=float)
+    if (not np.isfinite(q3_bars["garch_sigma_m5"]).all()
+            or (q3_bars["garch_sigma_m5"]<0).any()):
+        raise ValueError("GARCH Q3 sin continuidad H1 válida")
     for label in SIGNAL_NAMES:
         q3_bars[label]=indicators[label].to_numpy(dtype=float)
     q3_bars=q3_bars.rename(columns={"timestamp":"m5_open_utc"})
@@ -325,11 +325,9 @@ def build(*,symbol,raw_dir,source_manifest,h1_ohlcv=None,
     original_h1_sha={
         "EURUSD":"05487661977ea0a612f7e717b81e84aadbb5e2071238ca6835d9944a06bc9be9",
         "GBPUSD":"2cc9ab95266cb3a87c2988ffd8006c79e9db68765d5ab54ded129c161fff4a0b",
-        "AUDUSD":"8d1f34d5bf38ce1c4beeb5079d374a7af9d07fc010d56b251b0eee",
+        "AUDUSD":"8d1f34d5bf38ce1c4beeb5079d374a7af1a9d07a8161d07fc010d56b251b0eee",
         "USDCAD":"bf866689bb549bf2d647d8600bd343148dfb44040fb51c9cbb2baa7738f4f8b9",
     }
-    if symbol=="AUDUSD":
-        original_h1_sha["AUDUSD"]="8d1f34d5bf38ce1c4beeb5079d374a7af1a9d07a8161d07fc010d56b251b0eee"
     meta=dict(schema=Q3_SCHEMA,symbol=symbol,
         provider="HistData.com",
         signal_timeframes=["M5","M15"],source_timeframes=["M5","M15"],
