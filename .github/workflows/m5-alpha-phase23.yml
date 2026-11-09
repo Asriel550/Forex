@@ -5,7 +5,7 @@ on:
     branches:
       - codex/m5-m15-alpha-research-pr38
     paths:
-      - research/triggers/pr38-phases23-v1.txt
+      - research/triggers/pr38-phases23-*.txt
   workflow_dispatch:
 
 permissions:
@@ -152,7 +152,9 @@ jobs:
             --golden-manifest reports/m5-is-canonical/a.json
           python -m scripts.build_m5_m15_alpha_targets --verify-only \
             --universe reports/m5-upstream-is/universe.npz \
-            --manifest reports/m5-upstream-is/manifest.json
+            --manifest reports/m5-upstream-is/manifest.json \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
       - uses: actions/download-artifact@v8
         with:
           artifact-ids: 13627574393
