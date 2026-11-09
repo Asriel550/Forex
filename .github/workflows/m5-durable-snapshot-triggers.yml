@@ -23,7 +23,19 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - name: Fetch exact sealed PR34 snapshot once for migration
+      - name: Detect existing immutable GARCH release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="data-m5-is-2026h1-garch-v1"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Fetch exact sealed PR34 snapshot only for first publication
+        if: steps.release.outputs.exists != 'true'
         uses: actions/download-artifact@v8
         with:
           artifact-ids: 13639251699
@@ -31,7 +43,8 @@ jobs:
           github-token: ${{ github.token }}
           path: reports/m5-is-source
           merge-multiple: true
-      - name: Validate source before durable publication
+      - name: Validate source before first durable publication
+        if: steps.release.outputs.exists != 'true'
         run: |
           python -m scripts.verify_m5_durable_snapshot \
             --snapshot reports/m5-is-source/a.npz \
@@ -41,7 +54,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="data-m5-is-2026h1-garch-v1"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [[ "${{ steps.release.outputs.exists }}" == "true" ]]; then
             echo "Pinned data release already exists; original assets unchanged"
           else
             gh release create "$TAG" \
@@ -53,8 +66,10 @@ jobs:
               --notes 'Private research data; Jan-Jun 2026 IS. Exact March mask 2859. No Q3. SHA256 verified on every use. Do not replace assets: create a new versioned release instead.'
           fi
           bash scripts/download_m5_release.sh reports/m5-is-release-proof
-          cmp reports/m5-is-source/a.npz reports/m5-is-release-proof/a.npz
-          cmp reports/m5-is-source/a.json reports/m5-is-release-proof/a.json
+          if [[ "${{ steps.release.outputs.exists }}" != "true" ]]; then
+            cmp reports/m5-is-source/a.npz reports/m5-is-release-proof/a.npz
+            cmp reports/m5-is-source/a.json reports/m5-is-release-proof/a.json
+          fi
       - name: Verify git commit points to a private repo
         env:
           GH_TOKEN: ${{ github.token }}
