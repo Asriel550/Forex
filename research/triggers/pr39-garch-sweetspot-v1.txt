@@ -1,0 +1,8 @@
+PR39 controlled EURUSD M5+M15 GARCH sweet-spot launch 2026-11-08/09.
+Data releases: canonical GARCH SHA256 7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504; expanded IS M5+M15 v2 SHA256 05487661977ea0a612f7e717b81e84aadbb5e2071238ca6835d9944a06bc9be9.
+Seeds: 42,43,44. Parent: PR38 phase3 garch_regime winners from run 42551086458.
+Phase A exact band expansion 0/7.5/15/22.5/30 percent with fixed parent and gate p85.
+Phase B fixed expansion +15%, 12 generations of population 128 per seed, geometric PF Q1/Q2 times executed-hourly fitness.
+Phase C fixed Phase B head and same band +15%, p85/p80/p75/dynamic-in-GARCH-band gate.
+Acceptance: PF>1.20 in both Q1/Q2, semester DD<12%, actual executed frequency >=0.50/hour, no stops, replicated by SAME variant in all seeds.
+No M1 signals and no Q3 (Jul-Sep 2026). No model promotion.
