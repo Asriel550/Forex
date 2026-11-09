@@ -135,6 +135,7 @@ def test_no_synthetic_fixture_can_claim_financial_acceptance():
 def test_missing_real_non_eurusd_data_blocks_all_portfolio_claims():
     readiness=validate_inventory(INVENTORY)
     assert readiness["verified_assets"]==["EURUSD"]
+    assert readiness["candle_assets_ready"]==["GBPUSD","AUDUSD","USDCAD"]
     assert readiness["missing_assets"]==["GBPUSD","AUDUSD","USDCAD"]
     assert readiness["ready_for_real_backtest"] is False
     assert readiness["portfolio_pf_q1"] is None
