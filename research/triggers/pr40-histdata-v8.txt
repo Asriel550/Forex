@@ -1,0 +1,8 @@
+PR40 HistData 2026H1 final consolidation retry v8.
+All 18 source ZIPs were successfully downloaded via /get.php in run 42568755753.
+Three releases created, individual jobs success:
+GBPUSD M5 36155 M15 11773 sha10a5d1aeecf9019134a6ed2b6c3131c6f48ca56dcb583df3dfca441690807b45
+AUDUSD M5 36238 M15 11844 sha0c728f5602bc622fca9f98553e80aaf9bde4c50f1ca9746bc04d4fddc3083db0
+USDCAD M5 36318 M15 11855 shac1f0b62d0b05cff5841185fe7803a7aa39ae9bea2287cbf1a6f51c1b21c6241c
+Only consolidator failed because upload artifact flattened symbol directory. Fixed manifest lookup by symbol.
+Rerun full pipeline to independently verify release asset bytes and cross-pair report; Q3 excluded, no M1 signals.
