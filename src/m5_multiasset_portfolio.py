@@ -22,7 +22,7 @@ def check_streams(streams):
     if not isinstance(streams,dict) or not streams or set(streams)-set(SYMBOLS):
         raise ValueError("Canasta de símbolos no autorizada")
     for symbol,rows in streams.items():
-        if not isinstance(rows,pd.DataFrame) or not {"side","outcome","gate_reason"}<=set(rows):
+        if not isinstance(rows,pd.DataFrame) or set(rows.columns)!={"side","outcome","gate_reason"}:
             raise ValueError("Stream M5 incompleto para "+symbol)
         times=rows.index
         if (not isinstance(times,pd.DatetimeIndex) or times.tz is None or
