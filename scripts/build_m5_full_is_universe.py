@@ -206,6 +206,17 @@ if __name__ == "__main__":
     p.add_argument("--golden-manifest", type=Path, required=True)
     p.add_argument("--universe", type=Path, default=OUTPUT / "universe.npz")
     p.add_argument("--manifest", type=Path, default=OUTPUT / "manifest.json")
+    p.add_argument("--verify-only", action="store_true",
+                   help="Verificar Release congelada; NUNCA vuelve a ajustar GARCH")
     a = p.parse_args()
-    prepare(golden_path=a.golden,golden_manifest=a.golden_manifest,
-            output_path=a.universe,manifest_path=a.manifest)
+    if a.verify_only:
+        archive, info = load_universe(a.universe, a.manifest, a.golden, a.golden_manifest)
+        print("FROZEN_FULL_IS_VERIFIED " + json.dumps({
+            "sha256":info["universe_sha256"],
+            "rows":len(archive["outcome"]),
+            "original_proposals":int(archive["legacy_mask"].sum()),
+            "oos_accessed":False,
+        }), flush=True)
+    else:
+        prepare(golden_path=a.golden,golden_manifest=a.golden_manifest,
+                output_path=a.universe,manifest_path=a.manifest)
