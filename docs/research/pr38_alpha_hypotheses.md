@@ -41,6 +41,25 @@ Smoke p75 de 2 generaciones ×128 candidatos ×3 semillas:
 - Seed44/G2: PF Q1 **0.789**, Q2 **0.932**, frecuencia operativa **0.0483/h**,
   DD **20.56%**.
 
+**Detalle de todas las variantes Phase1 (ganador de cada smoke, G1/G2):**
+
+- Seed42/p85/G2: PF 0.690/0.919, ejecutada 0.0327/h, DD semestre 20.42%.
+- Seed42/p80/G2: PF 0.738/0.903, ejecutada 0.0429/h, DD 20.19%.
+- Seed42/p75/G2: PF 0.760/0.939, ejecutada 0.0534/h, DD 20.00%.
+- Seed42/dynamic/G2: PF 0.808/0.900, ejecutada 0.0694/h, DD 20.32%.
+- Seed43/p85/G2: PF 0.698/0.916, ejecutada 0.0354/h, DD 20.42%.
+- Seed43/p80/G2: PF 0.756/0.898, ejecutada 0.0483/h, DD 20.16%.
+- Seed43/p75/G2: PF 0.780/0.927, ejecutada 0.0534/h, DD 20.42%.
+- Seed43/dynamic/G2: PF 0.732/0.933, ejecutada 0.0466/h, DD 20.12%.
+- Seed44/p85/G1: PF 0.649/0.931, ejecutada 0.0330/h, DD 20.82%.
+- Seed44/p80/G2: PF 0.780/0.928, ejecutada 0.0545/h, DD 20.00%.
+- Seed44/p75/G2: PF 0.789/0.932, ejecutada 0.0483/h, DD 20.56%.
+- Seed44/dynamic/G2: PF 0.738/0.973, ejecutada 0.0422/h, DD 20.61%.
+
+G1/G2 son generaciones locales del smoke, no Gen498/499 de la evolución
+original. PF se reporta Q1/Q2 y la frecuencia es semestral ejecutada tras stop.
+Ningún ganador alcanza PF>1.20, 1.0/h o DD<15% en el semestre.
+
 El p75 aumentó las propuestas admitidas sin recuperar el resultado tras
 stop. En Q1 de las tres semillas el PF sigue por debajo de 0.85, en Q2
 por debajo de 1.0. El gate dinámico también fracasa bajo los umbrales.
