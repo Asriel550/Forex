@@ -11,8 +11,8 @@ from pathlib import Path
 from zipfile import ZipFile
 
 RELEASE_TAG = "data-m5-is-2026h1-garch-v1"
-SNAPSHOT_NAME = "m5-is-2026h1-v1.npz"
-MANIFEST_NAME = "m5-is-2026h1-v1.json"
+SNAPSHOT_NAME = "a.npz"
+MANIFEST_NAME = "a.json"
 SNAPSHOT_SHA256 = "7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504"
 MANIFEST_SHA256 = "d115db5f4799aa3b6920d5d7539778c8b611452844211a98fc3e8ccc7f689f04"
 GARCH_MC_SHA256 = "7e796d512ad12d5a546e8b6dacf94e72dd2c23ff7639efc65737687cbe037ef6"
