@@ -52,7 +52,7 @@ def load_problem(universe, manifest, golden, golden_manifest):
     q1_hours = sum(float(hours[p]) for p in PERIODS[:3])
     q2_hours = sum(float(hours[p]) for p in PERIODS[3:])
     baseline, _ = dynamic_upstream(
-        data["entry"], data["margin"], data["micro"], data["volatility"],
+        data["entry"], data["margin"], data["timeframe"], data["volatility"],
         np.zeros(GENE_COUNT), float(founder.genome[-1])
     )
     if not np.array_equal(baseline, data["legacy_mask"]):
@@ -89,7 +89,7 @@ def rejected_candidate(eligible, thresholds):
 def one_candidate(genes, problem, *, include_traces=False):
     data = problem["data"]
     upstream, thresholds = dynamic_upstream(
-        data["entry"], data["margin"], data["micro"], data["volatility"],
+        data["entry"], data["margin"], data["timeframe"], data["volatility"],
         genes, problem["legacy_threshold"]
     )
     idx = np.flatnonzero(upstream)
