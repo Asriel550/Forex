@@ -1,9 +1,8 @@
-"""PR43: 100 FRESH genetic evolutions for each native M5/M15 Forex asset.
+"""PR43: add 100 genetic generations to EACH sealed PR42 champion.
 
-Run 20 generations * 128 independent genomes per seed, 100 seeds/asset.
-IS ONLY: 2026 Q1/Q2, Q3 never loaded or used. No shared account,
-cross-asset features, PR41 champion warm starts, or automatic promotion.
-One CI matrix shard runs exactly FIVE seeds for ONE symbol.
+This is seeded continuation of the champion phenotype/22 weights, NOT
+100 new initializations. Q1/Q2 IS only; Q3 never loaded. Original PR41/42
+genomes remain immutable and are replay-verified before exploration.
 """
 from __future__ import annotations
 
@@ -13,162 +12,173 @@ from pathlib import Path
 
 import numpy as np
 
+from scripts.run_m5_dynamic_upstream import key as pr41_rank
 from scripts.run_pr41_native_asset_evolution import (
-    GENE_COUNT_LOCAL, asset_head, evaluate_local, genome_sha,
-    result_summary, strict_asset_pass,
+    GENE_COUNT_LOCAL, evaluate_local, genome_sha, result_summary, strict_asset_pass,
 )
-from scripts.run_m5_dynamic_upstream import key as strict_key
-from scripts.run_pr42_isolated_silos import native_problem, SOURCE_SHA
+from scripts.run_pr42_isolated_silos import (
+    SEEDS, SYMBOLS, SOURCE_SHA, frozen_candidate, native_problem,
+)
 from src.evolution_multiscale import POPULATION, evolve_population
-from src.m5_multiasset_portfolio import SYMBOLS
 from src.train import write_json
 
-
-PROTOCOL = "PR43_100_fresh_per_asset_GARCH_H1_IS_v1"
-FIRST_SEED = 1000
-SEEDS_PER_ASSET = 100
-SEEDS_PER_SHARD = 5
-SHARDS = SEEDS_PER_ASSET // SEEDS_PER_SHARD
-FIRST_GENERATION, LAST_GENERATION = 1, 20
-EVALUATIONS_PER_SEED = (LAST_GENERATION - FIRST_GENERATION + 1) * POPULATION
-OUTPUT = Path("reports/pr43-100-native-trainings")
-ZERO = np.zeros(GENE_COUNT_LOCAL, dtype="<f8")
+PROTOCOL = "PR43_continue_PR42_champions_100_gen_H1_IS_v1"
+ADDITIONAL_GENERATIONS = 100
+FIRST_GENERATION = 21
+LAST_GENERATION = FIRST_GENERATION + ADDITIONAL_GENERATIONS - 1
+NEW_EVALUATIONS = ADDITIONAL_GENERATIONS * POPULATION
+OUTPUT = Path("reports/pr43-100-generation-continuations")
 
 
-def seeds_for_shard(shard):
-    if type(shard) is not int or not 0 <= shard < SHARDS:
-        raise ValueError("Shard fuera de los 20 bloques predeclarados")
-    return tuple(range(FIRST_SEED + shard * SEEDS_PER_SHARD,
-                       FIRST_SEED + (shard + 1) * SEEDS_PER_SHARD))
-
-
-def transport(value):
-    """Undefined PF gets NaN internally, never passes the strict qualification gate."""
+def _transport(value):
+    """None PF is internal NaN, never a valid financial pass."""
     if value is None:
         return float("nan")
     if isinstance(value, (list, tuple)):
-        return [transport(x) for x in value]
+        return [_transport(v) for v in value]
     return value
 
 
-def evaluate_batch(genomes, problem):
-    records = [evaluate_local(g, problem) for g in genomes]
-    return {name: np.asarray([transport(r[name]) for r in records])
-            for name in records[0]}
+def batch_fitness(population, problem):
+    results = [evaluate_local(g, problem) for g in population]
+    return {key: np.asarray([_transport(r[key]) for r in results])
+            for key in results[0]}
 
 
-def history_row(record):
-    def maybe(value):
-        return float(value) if value is not None and np.isfinite(value) else None
+def check_founder(frozen, founder, problem):
+    """Reject changed champion, input data, replay economics or IS policy."""
+    if frozen["input_universe_sha256"] != problem["is_snapshot_sha256"]:
+        raise ValueError("El campeón y GARCH local no pertenecen al mismo H1")
+    actual = evaluate_local(founder, problem)
+    expected = frozen["champion"]
+    if not strict_asset_pass(actual):
+        raise ValueError("Fundador PR42 no satisface su filtro IS")
+    comparisons = {
+        "pf_q1": actual["quarter_pf"][0],
+        "pf_q2": actual["quarter_pf"][1],
+        "dd_semester_pct": actual["semester_dd"],
+        "executed_hourly": actual["semester_rate"],
+        "pnl_q1": actual["quarter_pnl_usd"][0],
+        "pnl_q2": actual["quarter_pnl_usd"][1],
+        "pnl_semester": actual["semester_pnl_usd"],
+        "garch_lower": actual["regime_lower"],
+        "garch_upper": actual["regime_upper"],
+        "margin_threshold": actual["direction_margin_threshold"],
+    }
+    for name, value in comparisons.items():
+        if (name not in expected or value is None or expected[name] is None
+                or not np.isfinite(value) or not np.isfinite(expected[name])
+                or not np.isclose(value, expected[name], atol=1e-7, rtol=0)):
+            raise ValueError(f"Fundador no reproduce {name}")
+    return actual
+
+
+def _maybe_float(value):
+    return float(value) if value is not None and np.isfinite(value) else None
+
+
+def evolution_history(record):
     return dict(
         generation=int(record["generation"]),
         best_candidate=int(record["candidate"]),
         score=float(record["score"]),
         median_score=float(record["median_score"]),
-        pf_q1=maybe(record["quarter_pf"][0]),
-        pf_q2=maybe(record["quarter_pf"][1]),
-        dd_semester_pct=float(record["semester_dd"]),
-        executed_hourly=float(record["semester_rate"]),
         mutation_sigma=float(record["mutation_sigma"]),
-        qualified=bool(record["qualifies"]),
+        pf_q1=_maybe_float(record["quarter_pf"][0]),
+        pf_q2=_maybe_float(record["quarter_pf"][1]),
+        executed_hourly=float(record["semester_rate"]),
+        dd_semester_pct=float(record["semester_dd"]),
+        qualifies=bool(record["qualifies"]),
     )
 
 
-def train_seed(symbol, seed, problem, *, output=OUTPUT):
-    """Separate RNG and zero founder for EVERY training, no previous winner as input."""
-    if symbol not in SYMBOLS or type(seed) is not int or not FIRST_SEED <= seed < FIRST_SEED + SEEDS_PER_ASSET:
-        raise ValueError("Semilla fuera de las 100 nuevas corridas IS")
-    if problem["symbol"] != symbol or problem["is_snapshot_sha256"] != SOURCE_SHA[symbol]:
-        raise ValueError("Invasión de datos de otro mercado")
-    initial_genome = ZERO.copy()
-    # Stream separation across assets, even though jobs and data are disjoint.
-    rng_seed = seed + 10000 * SYMBOLS.index(symbol)
-    evo = evolve_population(
-        lambda pop: evaluate_batch(pop, problem), initial_genome,
-        f"pr43_{symbol}_native_H1", rng_seed,
-        first_generation=FIRST_GENERATION, last_generation=LAST_GENERATION,
-        ranking=strict_key,
-    )
-    if evo["evaluations"] != EVALUATIONS_PER_SEED:
-        raise ValueError("Evolución incompleta, no publicar resultados parciales")
-    champion = np.asarray(evo["genome"], dtype="<f8")
-    measured = evaluate_local(champion, problem)
-    if (champion.shape != (GENE_COUNT_LOCAL,) or
-            not np.isclose(measured["score"], evo["champion"]["score"], rtol=0., atol=1e-10) or
-            bool(measured["qualifies"]) != bool(evo["champion"]["qualifies"])):
-        raise ValueError("No reproduce genoma/aptitud del vencedor")
-    history = [history_row(row) for row in evo["generations"]]
-    if [r["generation"] for r in history] != list(range(1, LAST_GENERATION + 1)):
-        raise ValueError("Faltan generaciones IS")
-    summary = result_summary(measured)
-    if summary["qualified"] != strict_asset_pass(measured):
-        raise ValueError("El filtro PF/DD original fue modificado")
-    record = dict(
-        protocol=PROTOCOL,
-        source_pr41_run=42576852134,
-        symbol=symbol, seed=seed, rng_seed=rng_seed,
-        generations=LAST_GENERATION, population=POPULATION,
-        genetic_evaluations=evo["evaluations"],
-        genome_length=GENE_COUNT_LOCAL, first_genome_sha256=genome_sha(ZERO),
-        champion_genome=champion.tolist(), champion_sha256=genome_sha(champion),
-        champion_generation=int(evo["champion"]["generation"]),
-        champion=summary, history=history,
-        input_universe_sha256=problem["is_snapshot_sha256"],
-        training_start="2026-01-01T00:00:00Z",
-        training_end_exclusive="2026-07-01T00:00:00Z",
-        signal_timeframes=["M5", "M15"], garch_per_asset=True,
-        zero_initialized_each_training=True, cross_asset_training=False,
-        shared_bankroll=False, old_pr41_genome_used=False,
-        q3_accessed=False, oos_evaluated=False,
-        promotion_approved=False,
-        note="All 100 trials reuse the SAME H1 IS. More searches imply more selection bias, not OOS alpha.",
-    )
-    target = Path(output) / symbol.lower() / f"seed-{seed}.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    write_json(target, record)
-    print("PR43_TRAINING_COMPLETED " + json.dumps({
-        "symbol": symbol, "seed": seed,
-        "evaluations": evo["evaluations"],
-        "generation": record["champion_generation"],
-        "pf_q1": summary["pf_q1"], "pf_q2": summary["pf_q2"],
-        "dd_h1": summary["dd_semester_pct"],
-        "executed_hourly": summary["executed_hourly"],
-        "qualified": summary["qualified"], "q3_accessed": False,
-    }, allow_nan=False), flush=True)
-    return record
-
-
-def train_shard(*, symbol, shard, universe, manifest, golden=None,
-                golden_manifest=None, output=OUTPUT):
-    """One process, one symbol's data only; independent optimization per seed."""
-    if symbol not in SYMBOLS:
-        raise ValueError("Divisa no soportada")
-    seeds = seeds_for_shard(shard)
+def continue_champion(*, symbol, seed, report, universe, manifest,
+                      golden=None, golden_manifest=None, output=OUTPUT):
+    if symbol not in SYMBOLS or seed not in SEEDS:
+        raise ValueError("Solo los 12 campeones originales PR42")
+    frozen, founder = frozen_candidate(report, symbol, seed)
     problem = native_problem(symbol, universe, manifest,
                              golden=golden, golden_manifest=golden_manifest)
-    if problem["is_snapshot_sha256"] != SOURCE_SHA[symbol]:
-        raise ValueError("Hash de fuente incompatible con PR41")
-    completed = []
-    for seed in seeds:
-        item = train_seed(symbol, seed, problem, output=output)
-        completed.append(dict(seed=seed, champion_sha256=item["champion_sha256"],
-                              qualified=item["champion"]["qualified"]))
-    assert len(completed) == SEEDS_PER_SHARD
-    shard_report = dict(protocol=PROTOCOL, symbol=symbol, shard=shard,
-                        seed_range=list(seeds), completions=completed,
-                        genetic_evaluations=SEEDS_PER_SHARD * EVALUATIONS_PER_SEED,
-                        q3_accessed=False, cross_asset_training=False)
-    write_json(Path(output) / symbol.lower() / f"shard-{shard:02}.json", shard_report)
-    return shard_report
+    if problem["symbol"] != symbol or problem["is_snapshot_sha256"] != SOURCE_SHA[symbol]:
+        raise ValueError("Crossover de fuentes entre divisas")
+    baseline = check_founder(frozen, founder, problem)
+
+    # The PR41 stochastic state was not archived. Re-seed the evolutionary
+    # operator from the FROZEN winning genome, not a zero genome or cross-pair
+    # parent. This is new descent from the champion, not bitwise RNG resume.
+    rng_seed = seed + 1000 * SYMBOLS.index(symbol)
+    result = evolve_population(
+        lambda population: batch_fitness(population, problem),
+        founder.copy(), f"pr43_{symbol}_seed{seed}_from_PR42_champion",
+        rng_seed, first_generation=FIRST_GENERATION,
+        last_generation=LAST_GENERATION, ranking=pr41_rank,
+    )
+    history = [evolution_history(r) for r in result["generations"]]
+    if (result["evaluations"] != NEW_EVALUATIONS or len(history) != ADDITIONAL_GENERATIONS
+            or [r["generation"] for r in history] != list(range(21, 121))):
+        raise ValueError("Faltan generaciones de continuidad")
+    winner_genome = np.asarray(result["genome"], dtype="<f8")
+    if winner_genome.shape != (GENE_COUNT_LOCAL,) or not np.isfinite(winner_genome).all():
+        raise ValueError("Genoma posterior incompatible")
+    winner = evaluate_local(winner_genome, problem)
+    if (not np.isclose(winner["score"], result["champion"]["score"], atol=1e-10, rtol=0)
+            or bool(winner["qualifies"]) != bool(result["champion"]["qualifies"])):
+        raise ValueError("El campeón nuevo no reproduce su fitness")
+    if genome_sha(founder) != frozen["champion_genome_sha256"]:
+        raise ValueError("Se alteró el campeón original")
+    report_out = dict(
+        protocol=PROTOCOL, symbol=symbol, seed=seed,
+        pr41_final_run_id=42576852134,
+        source_pr42_generation=frozen["champion_generation"],
+        source_pr42_genome_sha256=genome_sha(founder),
+        source_pr42_genome=founder.tolist(),
+        source_pr42_metrics=result_summary(baseline),
+        source_pr42_qualified=True,
+        started_from_champion=True, zero_initialized=False,
+        stochastic_resume_exact=False,
+        stochastic_resume_note="PR41 did not archive RNG and sigma state; population is reseeded from the signed winning genome.",
+        first_new_generation=FIRST_GENERATION,
+        last_new_generation=LAST_GENERATION,
+        additional_generations=ADDITIONAL_GENERATIONS,
+        population=POPULATION, new_evaluations=NEW_EVALUATIONS,
+        rng_seed=rng_seed,
+        evolved_champion_genome=winner_genome.tolist(),
+        evolved_champion_sha256=genome_sha(winner_genome),
+        evolved_champion_generation=int(result["champion"]["generation"]),
+        evolved_champion_metrics=result_summary(winner),
+        history=history,
+        input_universe_sha256=problem["is_snapshot_sha256"],
+        signal_timeframes=["M5", "M15"],
+        garch_native_to_symbol=True,
+        independent_bankroll=True, shared_account=False,
+        cross_asset_evolution=False, q3_accessed=False, oos_evaluated=False,
+        input_end_exclusive="2026-07-01T00:00:00Z",
+        original_models_modified=False, auto_promoted=False,
+        warning="100 additional generations reuse Q1/Q2 IS, not OOS evidence. Q3 untouched.",
+    )
+    directory = Path(output) / symbol.lower()
+    directory.mkdir(parents=True, exist_ok=True)
+    write_json(directory / f"seed-{seed}.json", report_out)
+    print("PR43_CONTINUED_CHAMPION " + json.dumps(dict(
+        symbol=symbol, seed=seed, original_generation=frozen["champion_generation"],
+        additional_generations=ADDITIONAL_GENERATIONS,
+        new_evaluations=NEW_EVALUATIONS,
+        evolved_generation=report_out["evolved_champion_generation"],
+        new_pf_q1=report_out["evolved_champion_metrics"]["pf_q1"],
+        new_pf_q2=report_out["evolved_champion_metrics"]["pf_q2"],
+        new_dd_h1=report_out["evolved_champion_metrics"]["dd_semester_pct"],
+        new_executed_per_h=report_out["evolved_champion_metrics"]["executed_hourly"],
+        q3_accessed=False), allow_nan=False), flush=True)
+    return report_out
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--symbol", required=True, choices=SYMBOLS)
-    p.add_argument("--shard", required=True, type=int, choices=range(SHARDS))
-    p.add_argument("--universe", type=Path, required=True)
-    p.add_argument("--manifest", type=Path, required=True)
+    p.add_argument("--seed", required=True, type=int, choices=SEEDS)
+    for arg in ("report", "universe", "manifest"):
+        p.add_argument("--" + arg, required=True, type=Path)
     p.add_argument("--golden", type=Path)
     p.add_argument("--golden-manifest", type=Path)
     p.add_argument("--output", type=Path, default=OUTPUT)
-    train_shard(**vars(p.parse_args()))
+    continue_champion(**vars(p.parse_args()))
