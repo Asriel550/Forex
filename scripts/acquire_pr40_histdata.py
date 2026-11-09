@@ -55,23 +55,18 @@ def parse_source_form(html,symbol,period):
         and x.get("action","").split("?")[0].rstrip("/") == "/get.php"
     ]
     if len(matches)!=1:
+        # Exact pair+M1+download action is mandatory: never reuse a token
+        # from an unrelated symbol or /getStatus.php status-only form.
         import re
-        headline=re.search(r"<title[^>]*>(.*?)</title>",html,flags=re.I|re.S)
-        evidence={
+        title=re.search(r"<title[^>]*>(.*?)</title>",html,re.I|re.S)
+        print("PR40_HISTDATA_FORM_DEBUG "+json.dumps({
             "symbol":symbol,"period":period,
-            "title":re.sub(r"\\s+"," ",headline.group(1)).strip()[:140] if headline else None,
-            "html_chars":len(html),"has_get_php":"get.php" in html,
-            "forms":len(parser.forms),"matches":len(matches),
-            "inputs":[{
-                "keys":sorted(x["fields"]),
-                "fxpair":x["fields"].get("fxpair"),
-                "timeframe":x["fields"].get("timeframe"),
-                "has_tk":bool(x["fields"].get("tk")),
-                "action":x.get("action"),
-            } for x in parser.forms[:8]],
-        }
-        print("PR40_HISTDATA_FORM_DEBUG "+json.dumps(evidence),flush=True)
-        raise ValueError(f"HistData no publicó un formulario M1 único para {symbol} {period}")
+            "title":re.sub(r"\\s+"," ",title.group(1)).strip()[:120] if title else None,
+            "form_count":len(parser.forms),
+            "actions":[x.get("action") for x in parser.forms],
+            "download_matches":len(matches)
+        }),flush=True)
+        raise ValueError(f"HistData no publicó un formulario M1 de descarga exacto para {symbol} {period}")
     fields=matches[0]["fields"]
     if (fields.get("date")!="2026" or fields.get("datemonth")!=period
             or fields.get("platform")!="ASCII"):
