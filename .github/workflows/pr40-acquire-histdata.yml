@@ -6,7 +6,7 @@ on:
     branches:
       - codex/m5-m15-multiasset-pr40
     paths:
-      - research/triggers/pr40-histdata-v1.txt
+      - research/triggers/pr40-histdata-v*.txt
   workflow_dispatch:
 
 permissions:
@@ -149,7 +149,7 @@ jobs:
         with:
           pattern: pr40-histdata-*-manifest-and-bars
           path: reports/pr40-pairs
-      - name: Cross-pair verification: months, Q1/Q2, candles and SHA256
+      - name: "Cross-pair verification: months, Q1/Q2, candles and SHA256"
         run: |
           python - <<'PY'
           import json
