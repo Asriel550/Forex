@@ -64,3 +64,37 @@ El CI debe publicar datos reales y marcar la búsqueda como **no aceptada**
 si falla cualquier condición. Un CI verde solo certifica funcionamiento
 técnico, no rentabilidad. No se ejecutan 21 generaciones sin pruebas
 robustas y revisión posterior.
+
+
+## Smoke corregido M5+M15 (Gen376, semilla43, p85)
+
+[CI completo aprobado](https://github.com/Asriel550/Forex/actions/runs/42542842719).
+[JSON íntegro](https://github.com/Asriel550/Forex/actions/runs/42542842719/artifacts/13642003115).
+[Release M5+M15 v2](https://github.com/Asriel550/Forex/releases/tag/data-m5-m15-is-2026h1-full-universe-v2)
+(SHA256 `05487661977ea0a612f7e717b81e84aadbb5e2071238ca6835d9944a06bc9be9`).
+
+La migración verificó **35.261 velas elegibles** y las **9.968 propuestas
+originales** sin alterar outcomes, dirección, GARCH ni máscaras históricas.
+Ninguna feature M1 se trasladó al modelo. Se probaron 128 candidatos.
+
+| Métrica | Filtro original | Cabeza M5+M15 Gen376/43 |
+| --- | ---: | ---: |
+| Propuestas antes del gate | 9.968 | **12.741** |
+| Aceptadas por gate p85, antes del cupo | 1.447 | **1.850** |
+| Capacidad upstream/h, antes del gate | 1,086 | **1,230** |
+| Q1 PnL / PF | −$194 / 0,476 | **−$158 / 0,713** |
+| Q2 PnL / PF | −$146 / 0,810 | **−$154 / 0,873** |
+| Q1 frecuencia realmente ejecutada/h | 0,042 | **0,073** |
+| Q2 frecuencia realmente ejecutada/h | 0,106 | **0,174** |
+| Semestre, una cuenta (PnL / frecuencia) | −$194 / 0,020/h | **−$158 / 0,036/h** |
+| DD Q1 / Q2 | 20,51% / 20,63% | **20,11% / 20,04%** |
+
+La cabeza aumenta la **capacidad pre-gate** hasta superar 1,2/h,
+pero **no** alcanza 1,2/h ejecutados después del gate y el stop.
+La mejora de PF es insuficiente: ambos trimestres siguen por debajo
+de 1,20 y tocan el stop por drawdown superior al 20%.
+Por tanto **0 candidatos aptos; ninguno promovido**. El CI técnico está
+verde, pero los criterios financieros **no**.
+
+Las cifras iniciales de la variante M1 quedan anuladas para este protocolo.
+No usar estos resultados IS como prueba OOS o de trading real.
