@@ -1,0 +1,6 @@
+PR41 retry v2 after fixing undefined PF metadata transport.
+The first run 42576192854 failed before completing generation 1:
+evolve_population uses .tolist() on the founder's None semester_pf in an invalid candidate.
+Fix: convert None -> NaN ONLY inside ephemeral GA fitness ndarray, preserve null in reported PF and never allow NaN to qualify or be promoted.
+No change to raw data, 22-gene architecture, per-market causal GARCH, Q1/Q2 metrics, original p85/contract, 20 generations×128×4 markets×3 seeds.
+Q3 intact; no M1 signal features; no automatic model promotion.
