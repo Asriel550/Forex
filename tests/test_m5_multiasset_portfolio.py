@@ -132,12 +132,12 @@ def test_no_synthetic_fixture_can_claim_financial_acceptance():
     assert p["semester"]["executed_hourly"]<1.
 
 
-def test_missing_real_non_eurusd_data_blocks_all_portfolio_claims():
+def test_signed_four_asset_readiness_does_not_invent_empirical_metrics():
     readiness=validate_inventory(INVENTORY)
-    assert readiness["verified_assets"]==["EURUSD"]
-    assert readiness["candle_assets_ready"]==["GBPUSD","AUDUSD","USDCAD"]
-    assert readiness["missing_assets"]==["GBPUSD","AUDUSD","USDCAD"]
-    assert readiness["ready_for_real_backtest"] is False
+    assert readiness["verified_assets"]==list(SYMBOLS)
+    assert readiness["candle_assets_ready"]==[]
+    assert readiness["missing_assets"]==[]
+    assert readiness["ready_for_real_backtest"] is True
     assert readiness["portfolio_pf_q1"] is None
     assert readiness["portfolio_executed_contracts_per_hour"] is None
     assert readiness["portfolio_max_dd_pct"] is None
