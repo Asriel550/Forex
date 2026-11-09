@@ -210,23 +210,46 @@ def assess_search_fitness(metrics, blocks, *, payout=.8):
 
 # PR #33: objetivo exclusivo de la evolución temporal Gen 376+.
 # Los coeficientes están fijados antes de consultar el OOS julio-septiembre.
-TEMPORAL_MEAN_WEIGHT = .40
-TEMPORAL_WORST_WEIGHT = .60
-TEMPORAL_DISPERSION_WEIGHT = .50
-TEMPORAL_VARIANCE_WEIGHT = .25
-TEMPORAL_MAX_DRAWDOWN_WEIGHT = .40
-TEMPORAL_MEAN_DRAWDOWN_WEIGHT = .20
-TEMPORAL_LOSS_WEIGHT = .12
-TEMPORAL_FREQUENCY_SHORTFALL_WEIGHT = .10
-TEMPORAL_STOP_WEIGHT = .15
+# Calibración IS-Q1/Q2 v2: retorno en puntos porcentuales para evitar
+# que una pérdida direccional ~1.0 o un stop binario dominen un retorno ~0.003.
+# La densidad usada para ENTRENAR es previa al stop; para promover se exige
+# frecuencia OPERATIVA. Las cotas factibles se miden sin filtro de convicción.
+TEMPORAL_RETURN_SCALE = 100.
+TEMPORAL_GATE_ONLY_RETURN_WEIGHT = .60
+TEMPORAL_MEAN_WEIGHT = .45
+TEMPORAL_WORST_WEIGHT = .55
+TEMPORAL_DISPERSION_WEIGHT = .25
+TEMPORAL_VARIANCE_WEIGHT = .10
+TEMPORAL_MAX_DRAWDOWN_WEIGHT = .16
+TEMPORAL_MEAN_DRAWDOWN_WEIGHT = .06
+TEMPORAL_EXCESS_DRAWDOWN_WEIGHT = .08
+TEMPORAL_LOSS_WEIGHT = .025
+TEMPORAL_FREQUENCY_SHORTFALL_WEIGHT = .12
+TEMPORAL_STOP_WEIGHT = .05
+
+
+def temporal_fitness_weights():
+    """Coeficientes versionados, comparables entre corridas sin mirar Q3."""
+    return dict(
+        return_scale=TEMPORAL_RETURN_SCALE,
+        gate_only_return_weight=TEMPORAL_GATE_ONLY_RETURN_WEIGHT,
+        mean_return=TEMPORAL_MEAN_WEIGHT, worst_return=TEMPORAL_WORST_WEIGHT,
+        dispersion=TEMPORAL_DISPERSION_WEIGHT, variance=TEMPORAL_VARIANCE_WEIGHT,
+        max_drawdown=TEMPORAL_MAX_DRAWDOWN_WEIGHT,
+        mean_drawdown=TEMPORAL_MEAN_DRAWDOWN_WEIGHT,
+        excess_drawdown=TEMPORAL_EXCESS_DRAWDOWN_WEIGHT,
+        direction_loss=TEMPORAL_LOSS_WEIGHT,
+        attainable_frequency_shortfall=TEMPORAL_FREQUENCY_SHORTFALL_WEIGHT,
+        account_stop=TEMPORAL_STOP_WEIGHT,
+    )
 
 
 def assess_temporal_multiregime_fitness(blocks, *, stake, direction_loss):
-    """Aptitud trimestral robusta para la evolución Gen 376+.
+    """Fitness para Gen 376+ con IS en dos trimestres y presupuesto de riesgo.
 
-    Bloques cronológicos independientes con reset de cuenta; cada retorno se
-    divide entre TODAS las propuestas del bloque, incluso las rechazadas.
-    El campeón no puede compensar un trimestre malo con un único mes brillante.
+    Se mezclan retorno real y retorno del MISMO gate antes del stop (no se
+    inventan fills). Esto evita que la parada precoz haga indistinguibles
+    los candidatos; el riesgo y la promoción siguen usando el replay real.
     """
     if (len(blocks) < 2 or not np.isfinite(stake) or stake <= 0
             or not np.isfinite(direction_loss) or direction_loss < 0):
@@ -234,58 +257,85 @@ def assess_temporal_multiregime_fitness(blocks, *, stake, direction_loss):
     if any(b['admissions'] < 1 or b['observed_hours'] <= 0 for b in blocks):
         raise ValueError('Bloques vacíos o sin horas observadas')
 
-    returns = np.array([
-        b['pnl_usd'] / (stake * b['admissions']) for b in blocks
-    ], dtype=float)
+    real_returns = np.array([b['pnl_usd'] / (stake * b['admissions']) for b in blocks], dtype=float)
+    pres_returns = np.array([b.get('gate_only_pnl_usd', b['pnl_usd'])
+                            / (stake * b['admissions']) for b in blocks], dtype=float)
+    returns = (1. - TEMPORAL_GATE_ONLY_RETURN_WEIGHT) * real_returns + (
+        TEMPORAL_GATE_ONLY_RETURN_WEIGHT * pres_returns
+    )
     dd = np.array([b['max_drawdown_pct'] / 100. for b in blocks], dtype=float)
     rates = np.array([b['contracts_per_observed_hour'] for b in blocks], dtype=float)
+    gate_rates = np.array([b.get('gate_only_contracts_per_observed_hour',
+                                 b['contracts_per_observed_hour']) for b in blocks], dtype=float)
+    capacities = np.array([
+        b.get('capacity_contracts_per_observed_hour', max(
+            MIN_TRADES_HOUR, b.get('gate_only_contracts_per_observed_hour',
+                                    b['contracts_per_observed_hour'])
+        )) for b in blocks
+    ], dtype=float)
     stopped = np.array([b.get('account_stop') is not None for b in blocks], dtype=bool)
     if not (np.isfinite(returns).all() and np.isfinite(dd).all()
-            and np.isfinite(rates).all() and (dd >= 0.).all() and (rates >= 0.).all()):
+            and np.isfinite(rates).all() and np.isfinite(gate_rates).all()
+            and np.isfinite(capacities).all() and (dd >= 0.).all()
+            and (rates >= 0.).all() and (gate_rates >= 0.).all()
+            and (capacities > 0.).all()
+            and (gate_rates <= capacities + 1e-8).all()):
         raise ValueError('Métricas operativas trimestrales inválidas')
 
     avg_return = float(returns.mean())
     worst_return = float(returns.min())
-    dispersion = float(returns.std())
-    variance = float(returns.var())
+    dispersion = float((TEMPORAL_RETURN_SCALE * returns).std())
+    variance = float((TEMPORAL_RETURN_SCALE * returns).var())
     max_dd, avg_dd = float(dd.max()), float(dd.mean())
-    shortfall = float(np.maximum(0., MIN_TRADES_HOUR - rates).mean() / MIN_TRADES_HOUR)
+    attainable = np.minimum(MIN_TRADES_HOUR, capacities)
+    attainable_shortfall = float((np.maximum(0., attainable - gate_rates) / attainable).mean())
+    operational_shortfall = float((np.maximum(0., MIN_TRADES_HOUR - rates) / MIN_TRADES_HOUR).mean())
     stop_fraction = float(stopped.mean())
-
-    penalty = (
-        TEMPORAL_DISPERSION_WEIGHT * dispersion
-        + TEMPORAL_VARIANCE_WEIGHT * variance
-        + TEMPORAL_MAX_DRAWDOWN_WEIGHT * max_dd
-        + TEMPORAL_MEAN_DRAWDOWN_WEIGHT * avg_dd
-        + TEMPORAL_LOSS_WEIGHT * direction_loss
-        + TEMPORAL_FREQUENCY_SHORTFALL_WEIGHT * shortfall
-        + TEMPORAL_STOP_WEIGHT * stop_fraction
+    penalty_parts = dict(
+        dispersion=TEMPORAL_DISPERSION_WEIGHT * dispersion,
+        variance=TEMPORAL_VARIANCE_WEIGHT * variance,
+        max_dd=TEMPORAL_MAX_DRAWDOWN_WEIGHT * max_dd,
+        mean_dd=TEMPORAL_MEAN_DRAWDOWN_WEIGHT * avg_dd,
+        excess_dd=TEMPORAL_EXCESS_DRAWDOWN_WEIGHT *
+            float((np.maximum(0., dd - MAX_DRAWDOWN_PCT / 100.) / (MAX_DRAWDOWN_PCT / 100.)).max() ** 2),
+        loss=TEMPORAL_LOSS_WEIGHT * direction_loss,
+        frequency=TEMPORAL_FREQUENCY_SHORTFALL_WEIGHT * attainable_shortfall,
+        stops=TEMPORAL_STOP_WEIGHT * stop_fraction,
     )
-    score = TEMPORAL_MEAN_WEIGHT * avg_return + TEMPORAL_WORST_WEIGHT * worst_return - penalty
+    penalty = float(sum(penalty_parts.values()))
+    score = TEMPORAL_RETURN_SCALE * (
+        TEMPORAL_MEAN_WEIGHT * avg_return + TEMPORAL_WORST_WEIGHT * worst_return
+    ) - penalty
     pf_passes = [
         b.get('profit_factor_status') == 'infinite_no_losses'
         or (b.get('profit_factor') is not None and b['profit_factor'] > MIN_PROFIT_FACTOR)
         for b in blocks
     ]
     qualifies = all(
-        pf_passes[i] and returns[i] > 0. and rates[i] >= MIN_TRADES_HOUR
+        pf_passes[i] and real_returns[i] > 0. and rates[i] >= MIN_TRADES_HOUR
         and dd[i] * 100. < MAX_DRAWDOWN_PCT and not stopped[i]
         for i in range(len(blocks))
     )
     return dict(
-        qualifies=bool(qualifies), score=float(score), return_per_admission=float(
-            sum(b['pnl_usd'] for b in blocks) / (stake * sum(b['admissions'] for b in blocks))
-        ),
+        qualifies=bool(qualifies), score=float(score),
+        return_per_admission=float(sum(b['pnl_usd'] for b in blocks) /
+                                   (stake * sum(b['admissions'] for b in blocks))),
         worst_quarter_return=worst_return,
         quarter_return_std=dispersion, quarter_return_variance=variance,
         max_quarter_drawdown_pct=100. * max_dd,
         mean_quarter_drawdown_pct=100. * avg_dd,
         min_quarter_frequency=float(rates.min()),
+        min_gate_only_frequency=float(gate_rates.min()),
         direction_loss=float(direction_loss),
-        fitness_penalty=float(penalty),
-        frequency_shortfall=shortfall,
+        fitness_penalty=penalty,
+        **{'penalty_' + key: float(value) for key, value in penalty_parts.items()},
+        frequency_shortfall=attainable_shortfall,
+        operational_frequency_shortfall=operational_shortfall,
         stopped_fraction=stop_fraction,
-        quarter_returns=returns.tolist(), quarter_frequencies=rates.tolist(),
+        quarter_returns=returns.tolist(), quarter_operational_returns=real_returns.tolist(),
+        quarter_gate_only_returns=pres_returns.tolist(),
+        quarter_frequencies=rates.tolist(), quarter_gate_only_frequencies=gate_rates.tolist(),
+        quarter_capacity_frequencies=capacities.tolist(),
         quarter_drawdowns_pct=(dd * 100.).tolist(), quarter_pf_pass=pf_passes,
     )
 
