@@ -1,0 +1,13 @@
+One-shot saturation experiment, 2026-11-08/09.
+Generations: 398..497 inclusive (100 NEW generations)
+Population per generation: 128
+Seeds: 42, 43, 44
+Total new evaluations: 38,400
+Founder: SHA256-frozen best genotype of each Gen376..397 seed, run 42544173112.
+Features: EURUSD M5 + completed M15 exclusively.
+Snapshot: data-m5-m15-is-2026h1-full-universe-v2.
+Direction fixed Gen375/43. Gate fixed causal p85.
+Fitness: PR34 calibrated temporal fitness. No coefficient tuning.
+Evaluation: Q1 and Q2 2026 IS only. Q3 unused.
+Goal: measure incremental fitness improvement, PF, drawdown, executed frequency, generation of last improvement and stagnation.
+No automatic model promotion.
