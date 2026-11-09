@@ -1,0 +1,6 @@
+PR41 H1 independent native GARCH neuroevolution launch.
+Four pairs EURUSD GBPUSD AUDUSD USDCAD; per-pair native causal GARCH from signed H1 M5+M15 data, no M1 signal.
+20 generations of 128 models PER ASSET, seeds 42 43 44, 30,720 candidates total.
+Each starts with own 22-gene zero founder; no EUR Gen375 direction or Gen268 entry gene copy, independent direction/entry/volatility regime thresholds.
+Fixed original binary M5 payout, shared economical contract, gate p85, stops/cap, Q1+Q2 IS only; Q3 July-Sep 2026 NEVER opened.
+Standalone promotion gate PF >1.20 Q1 and Q2, DD<15%, no stops, all THREE seeds, then shared portfolio only if >=2 assets passed. No automatic trading promotion.
