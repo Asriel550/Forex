@@ -1,0 +1,8 @@
+PR40 initial multiasset readiness and safety smoke, 2026-11-09 UTC.
+Freeze original PR38 GARCH=0.0 p85 seeds42/43/44.
+Instruments EURUSD GBPUSD AUDUSD USDCAD; H1 Jan-Jun 2026 IS only.
+Perform tests for a single shared bankroll, global 2/h cap, 5m simultaneous payouts, no Q3, no M1 indicators.
+Check inventory. Only EURUSD is presently signed and available.
+If three symbols missing, emit BLOCKED/MISSING with null PF/DD/rate, skip real multiasset jobs.
+No synthetic result may be called a financial backtest.
+No automatic promotion.
