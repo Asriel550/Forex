@@ -5,7 +5,7 @@ on:
     branches:
       - codex/m5-garch-sweetspot-pr39
     paths:
-      - research/triggers/pr39-garch-sweetspot-v1.txt
+      - research/triggers/pr39-garch-sweetspot-*.txt
   workflow_dispatch:
 
 permissions:
