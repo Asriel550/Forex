@@ -1,0 +1,3 @@
+PR40 empirical 4-major shared account rerun after updating inventory-aware test from candles_ready to signed four-universe VERIFIED. Data and model unchanged.
+All 3 HistData H1 M5/M15/GARCH universes verified in run42569749262; original PR38 EUR GARCH 0% p85.
+3 seeds 42,43,44; one account, global 2/hour cap, causal p85 per pair, no promotion and no Q3.
