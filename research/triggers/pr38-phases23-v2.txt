@@ -1,0 +1,5 @@
+PR38 phase2+3 retry after fixing required --golden and --golden-manifest arguments in the label verifier.
+No dataset changed: immutable M5+M15 and IS future-label SHA256 identical.
+Previous workflow was blocked before any model evolution by a CLI invocation error.
+Execute 16-generation x128 seeds42/43/44 for 3 target variants, then phase3 if PF threshold unmet.
+Q3 not accessed. No model promotion.
