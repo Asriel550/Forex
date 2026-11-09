@@ -30,7 +30,7 @@ from src.evolution_lineage import MARKET, MARKET_FEATURES
 from src.evolution_multiscale import FEATURE_NAMES, M5_TACTICAL, arm_inputs, scale_inputs
 from src.market import MarketConfig
 from src.m5_multiasset_inputs import FIELDS
-from src.quant_engine import enrich_features
+from src.quant_engine import enrich_features, GarchConvergenceError
 from src.reproducibility import array_sha256, market_frame_fingerprint
 from src.resampling import aggregate
 from src.upstream_filters import SIGNAL_NAMES, timeframe_features
@@ -237,7 +237,25 @@ def build(*,symbol,raw_dir,source_manifest,h1_ohlcv=None,
         or m5_all.timestamp.max()<Q3_END-pd.Timedelta(days=2)):
         raise ValueError("No existe historial M5 causal continuo H1→Q3")
     reference,founder,quant,risk,_,_,_,mean,std=setup()
-    enriched=enrich_features(m5_all,quant,timeframe="M5",expiry_candles=1)
+    # Frozen deterministic data-quality fallback. No Q3 market labels,
+    # PR42/PR43 genes or performance metrics enter this decision.
+    garch_warmup_start=m5_all.timestamp.min()
+    garch_uses_q2_tail_only=False
+    try:
+        enriched=enrich_features(m5_all,quant,timeframe="M5",expiry_candles=1)
+    except GarchConvergenceError:
+        # Same unmodified GARCH(1,1) recipe, fitted on the latest fixed
+        # 30-day Q2 prefix + Q3. PR40 allows retaining ONE failed refit;
+        # second consecutive failures may not be disguised or interpolated.
+        # This is a pre-OOS source preparation recovery, not tuning by PF.
+        garch_warmup_start=pd.Timestamp("2026-06-01T00:00:00Z")
+        q2_tail=m5_all.loc[m5_all.timestamp>=garch_warmup_start].copy()
+        q2_tail.attrs["timeframe"]="M5"
+        if ((q2_tail.timestamp<Q3_START).sum()<2500 or
+                (q2_tail.timestamp>=Q3_START).sum()<10000):
+            raise ValueError("No hay historial Q2 suficiente para reanudar GARCH causal")
+        enriched=enrich_features(q2_tail,quant,timeframe="M5",expiry_candles=1)
+        garch_uses_q2_tail_only=True
     prepared=prepare_market_data(enriched,market=MARKET)
     context,normalized,market_normalizer=founder_observations(prepared,founder)
     tf=timeframe_features(m5_all,m15_all)
@@ -372,6 +390,9 @@ def build(*,symbol,raw_dir,source_manifest,h1_ohlcv=None,
             json.dumps(asdict(quant),sort_keys=True).encode()).hexdigest(),
         frozen_h1_normalizer_sha256=norm_hash,
         source_evidence_months=list(ALLOWED[symbol]),
+        garch_history_start_utc=pd.Timestamp(garch_warmup_start).isoformat(),
+        garch_q2_30day_fallback_used=garch_uses_q2_tail_only,
+        garch_q2_30day_fallback_policy="unchanged GARCH recipe; only if full-H1 numerical convergence fails, fixed June1 Q2 warmup; fail if it also cannot converge",
         original_h1_source_sha256=EXPECTED_H1_SHA.get(symbol),
         q2_eligible_volatility_tail=q2_tail.tolist(),
         q2_eligible_volatility_tail_sha256=array_sha256(q2_tail),
