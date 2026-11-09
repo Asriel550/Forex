@@ -26,6 +26,7 @@ from src.evolution_multiscale import direction_scores, evolve_population, POPULA
 from src.evolution_lineage import MARKET
 from src.model_training import directional_tanh_loss
 from src.replay_engine import apply_hourly_cap, replay_contracts
+from src.conviction_regime_gate import gate_reasons
 from src.upstream_filters import GENE_COUNT, dynamic_upstream
 from src.train import write_json
 
@@ -86,7 +87,7 @@ def rejected_candidate(eligible, thresholds):
     )
 
 
-def one_candidate(genes, problem, *, include_traces=False):
+def one_candidate(genes, problem, *, include_traces=False, gate_mode='p85'):
     data = problem["data"]
     upstream, thresholds = dynamic_upstream(
         data["entry"], data["margin"], data["timeframe"], data["volatility"],
@@ -98,7 +99,7 @@ def one_candidate(genes, problem, *, include_traces=False):
     rows = pd.DataFrame({"outcome":data["outcome"][idx]}, index=problem["times"][idx])
     scores = problem["scores"][idx]
     sides = problem["side"][idx]
-    reasons = p85_reasons(rows, scores)
+    reasons = gate_reasons(rows, scores, data['volatility'][idx], gate_mode)
     q1 = rows.index < Q2_START
     quarters, traces = [], {}
     for name, mask in (("Q1", q1), ("Q2", ~q1), ("semester", np.ones(len(rows), bool))):
