@@ -74,3 +74,60 @@ El criterio operativo de investigación de cartera sigue siendo PF>1,20 en Q1 y 
 ## 7. Cierre documental
 
 La ausencia de operaciones, PF nulo o un stop temprano son resultados negativos a declarar con precisión. Ningún CI verde por sí solo certifica rentabilidad. Sin optimización en Q3, sin señales M1, sin promociones automáticas y sin fusionar investigación no aprobada.
+
+
+## 8. Cierre experimental verificado: CI #42576852134
+
+[GitHub Actions final #42576852134](https://github.com/Asriel550/Forex/actions/runs/42576852134) **SUCCESS**, incluidos los doce entrenamientos individuales, el consolidador cross-seed y los tres replays de cartera. [JSON 12 casos](https://github.com/Asriel550/Forex/actions/runs/42576852134/artifacts/13655966449) y [JSON de la cartera](https://github.com/Asriel550/Forex/actions/runs/42576852134/artifacts/13655782276).
+
+**Presupuesto cumplido:** 20 generaciones × 128 genomas por generación × 4 activos × 3 semillas = **30.720 evaluaciones genéticas**. Todos los datasets son releases selladas H1 M5+M15/GARCH de cada símbolo. Cada activo inicia genes propios y semilla propia; se mantienen compartidos solamente el producto binario M5, Gate p85, las restricciones de cuenta y el esquema de sus ocho features M5/M15. No se copiaron pesos EURUSD de entrada ni dirección a GBP/AUD/CAD. Q3 no se consultó.
+
+### 8.1. Individuos elegidos (PF Q1/Q2, frecuencia ejecutada y DD H1)
+
+| Símbolo | Semilla | Gen local | PF Q1 | PF Q2 | Contratos/h H1 | DD H1 | Banda GARCH propia (relativa) | Pasa PF/DD |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| EURUSD | 42 | 19 | 1.933 | 1.576 | 0.0497 | 3.16% | 1.280/1.970 | Sí |
+| EURUSD | 43 | 4 | 1.459 | 1.288 | 0.0864 | 7.72% | 0.853/2.125 | Sí |
+| EURUSD | 44 | 17 | 3.467 | 1.508 | 0.0334 | 5.50% | 0.972/1.935 | Sí |
+| GBPUSD | 42 | 20 | 1.647 | 1.348 | 0.0682 | 4.62% | 0.897/1.658 | Sí |
+| GBPUSD | 43 | 7 | 1.600 | 1.527 | 0.0160 | 2.29% | 0.788/2.231 | Sí |
+| GBPUSD | 44 | 18 | 1.600 | 1.446 | 0.0758 | 4.81% | 0.970/2.322 | Sí |
+| AUDUSD | 42 | 8 | 4.000 | 1.300 | 0.0394 | 5.51% | 1.054/2.434 | Sí |
+| AUDUSD | 43 | 19 | 1.867 | 1.462 | 0.0387 | 6.91% | 1.033/2.077 | Sí |
+| AUDUSD | 44 | 18 | 1.543 | 1.490 | 0.0432 | 5.09% | 0.563/2.250 | Sí |
+| USDCAD | 42 | 18 | 2.031 | 1.371 | 0.0556 | 5.26% | 1.008/2.832 | Sí |
+| USDCAD | 43 | 17 | 4.200 | 1.482 | 0.0421 | 3.50% | 1.086/2.106 | Sí |
+| USDCAD | 44 | 20 | 1.347 | 1.322 | 0.0600 | 5.81% | 1.111/2.256 | Sí |
+
+**Filtro individual aplicado literalmente:** PF estrictamente >1.20 en ambos trimestres, DD trimestral y semestral <15%, PnL positivo y ninguna parada de cuenta. **Los cuatro activos pasaron en las tres semillas**. El filtro NO exigía frecuencia mínima individual; por eso muchas candidatas conservadoras alcanzaron PF elevados con actividad minúscula. No deben calificarse como sistemas comercialmente densos ni como alfa OOS probado.
+
+Frecuencias individuales extremas: **mínimo 0.0160/h** (GBPUSD seed43, ~una operación cada 62 horas observadas), **máximo 0.0864/h** (EURUSD seed43, ~una operación cada 12 horas observadas). Los PF excepcionalmente altos, como **4.2** (USDCAD seed43 Q1) o **4.0** (AUDUSD seed42 Q1), requieren análisis posterior del número real de operaciones y de sus intervalos de confianza antes de interpretarse como ventaja robusta; se han optimizado/seleccionado en el mismo IS Q1/Q2.
+
+### 8.2. Cartera compartida condicional de cuatro mercados
+
+Al haber pasado **todas las divisas las tres semillas**, se activó el replay de las cuatro conjuntamente, sin optimización adicional de componentes ni descarte retrospectivo. Se mantuvieron cuenta única, límite **global 2 contratos/h**, un único stop y liquidaciones simultáneas M5.
+
+| Semilla | PF cartera Q1 | PF cartera Q2 | Contratos/h realmente ejecutados H1 | DD H1 | Cumple objetivo completo de cartera |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 42 | 1.786 | 1.394 | 0.2008 | 4.53% | No |
+| 43 | 1.683 | 1.406 | 0.1695 | 5.26% | No |
+| 44 | 1.600 | 1.430 | 0.2042 | 5.79% | No |
+
+**Resultado:** PF Q1 y Q2 de la cartera **>1.20 en las tres semillas**, DD semestral **<6%** en las tres. Pero la frecuencia ejecutada quedó **0.1695–0.2042/h**, muy lejos del objetivo previo **≥1.00/h**. `all_qualified=false` por **frecuencia insuficiente**. Los objetivos individuales de PF/DD se consiguieron dentro del IS, pero no se solucionó la densidad.
+
+La frecuencia global no se calcula sumando 4 promesas independientes; resulta del replay completo con choques de horario, capital compartido y stops. Los PF trimestrales proceden de replays trimestrales individuales y el DD/frecuencia de la cuenta semestral continua. No confundir indicadores entrenados/seleccionados IS con resultados fuera de muestra.
+
+### 8.3. Incidentes y reproducibilidad
+
+- [Primer run #42576192854](https://github.com/Asriel550/Forex/actions/runs/42576192854): falló en la primera generación por PF `None` en la interfaz NumPy del motor genético; sin resultados económicos registrados.
+- [Segundo run #42576424566](https://github.com/Asriel550/Forex/actions/runs/42576424566): las veinte generaciones se ejecutaron pero falló la exportación del historial, que es `dict` plano y no `record` anidado; sin métricas finales exportadas.
+- [Tercer run #42576852134](https://github.com/Asriel550/Forex/actions/runs/42576852134): corregido el transporte de PF indefinido sin inventar ganancias, y validado el schema plano con prueba de regresión, **todos los jobs y comparativas finales SUCCESS**. 30.720 evaluaciones genéticas contabilizadas del tercer run; no sumar repeticiones fallidas como resultados independientes.
+- Los archivos `reports/pr41-independent-assets/{symbol}-seed-{seed}.json` contienen cromosomas SHA256, las **20 generaciones completas** con fitness/mediana/PF/frecuencia/DD por gen, fuente SHA256, variación por semilla y test de selección; los resúmenes están disponibles en Actions (retención típica 90 días).
+
+### 8.4. Interpretación técnica y decisión
+
+La independencia GARCH + dirección/entrada/umbrales **sí mejoró la selección de operaciones en IS** frente al trasplante de pesos EURUSD PR40: el PF de los modelos independientes no se parece al PF subunitario del trasplante. **No se puede afirmar que la mejora se deba exclusivamente a la independencia**: cambió la arquitectura de la cabeza, la función objetivo, los pesos y el filtro de admisión; hacen falta ablaciones controladas.
+
+El coste principal es **parálisis operativa**. El algoritmo descubre subconjuntos de señales selectos, rentables retrospectivamente, pero no alcanza una operación por hora en la cartera. Las tres semillas corren sobre el mismo semestre y la cartera se construye seleccionando por esos mismos datos, lo que introduce **sesgo de selección IS** y no equivale a verificación independiente. **No abrir Q3** para buscar ganadores; cualquier trabajo posterior debe fijar en IS un plan de frecuencia mínima/intervalos de confianza y examinar densidad por régimen antes de nueva búsqueda.
+
+**Decisión final:** individual PF/DD aprobado en cuatro pares, cartera PF/DD también aprobado en H1 IS, **frecuencia 1/h no aprobada**, aprobación de trading **NO**, PR41 sigue *draft*, cero promoción y Q3 intacto.
