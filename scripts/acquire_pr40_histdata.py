@@ -54,6 +54,22 @@ def parse_source_form(html,symbol,period):
         and x["fields"].get("tk")
     ]
     if len(matches)!=1:
+        import re
+        headline=re.search(r"<title[^>]*>(.*?)</title>",html,flags=re.I|re.S)
+        evidence={
+            "symbol":symbol,"period":period,
+            "title":re.sub(r"\\s+"," ",headline.group(1)).strip()[:140] if headline else None,
+            "html_chars":len(html),"has_get_php":"get.php" in html,
+            "forms":len(parser.forms),"matches":len(matches),
+            "inputs":[{
+                "keys":sorted(x["fields"]),
+                "fxpair":x["fields"].get("fxpair"),
+                "timeframe":x["fields"].get("timeframe"),
+                "has_tk":bool(x["fields"].get("tk")),
+                "action":x.get("action"),
+            } for x in parser.forms[:8]],
+        }
+        print("PR40_HISTDATA_FORM_DEBUG "+json.dumps(evidence),flush=True)
         raise ValueError(f"HistData no publicó un formulario M1 único para {symbol} {period}")
     fields=matches[0]["fields"]
     if any(k.lower() in {"202607","202608","202609"} for k in fields.values()):
