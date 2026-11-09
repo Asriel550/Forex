@@ -1,0 +1,156 @@
+name: PR42 frozen Forex silos — 4 autonomous pairs x 3 independent seeds (IS only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/forex-pr42-independent-silos-h1
+    paths:
+      - 'scripts/run_pr42_isolated_silos.py'
+      - 'tests/test_pr42_isolated_silos.py'
+      - 'docs/research/pr42_isolated_silos.md'
+      - '.github/workflows/pr42-independent-silos.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pr42-standalone-silos-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: '0'
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+
+jobs:
+  isolated_silo:
+    name: Autonomous ${{ matrix.symbol }} / frozen seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        symbol: [EURUSD, GBPUSD, AUDUSD, USDCAD]
+        seed: [42, 43, 44]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Original PR41 research runtime, unchanged
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Contract tests — provenance, quarantine, independent ledger
+        run: python -m pytest -q tests/test_pr42_isolated_silos.py tests/test_pr41_native_asset_evolution.py
+      - name: Fetch ONLY this symbol and seed's completed PR41 champion
+        uses: actions/download-artifact@v8
+        with:
+          name: pr41-native-${{ matrix.symbol }}-seed-${{ matrix.seed }}
+          run-id: 42576852134
+          github-token: ${{ github.token }}
+          path: reports/pr42-frozen-champion
+      - name: Fetch EURUSD's OWN sealed IS M5/M15 + GARCH series
+        if: matrix.symbol == 'EURUSD'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/pr42-symbol-data
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+            --pattern manifest.json --dir reports/pr42-symbol-data --clobber
+      - name: Fetch this NON-EUR symbol's OWN independent sealed IS GARCH series
+        if: matrix.symbol != 'EURUSD'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+          mkdir -p reports/pr42-symbol-data
+          gh release download "data-pr40-${slug}-m5-m15-garch-universe-2026h1-v1" \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+            --pattern manifest.json --dir reports/pr42-symbol-data --clobber
+      - name: Replay ONLY this frozen champion (no evolution, broker, Q3, or shared account)
+        env:
+          PAIR: ${{ matrix.symbol }}
+          SEED: ${{ matrix.seed }}
+        run: |
+          slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+          optional=()
+          if [ "$PAIR" = "EURUSD" ]; then
+            optional=(--golden reports/m5-is-canonical/a.npz --golden-manifest reports/m5-is-canonical/a.json)
+          fi
+          python -m scripts.run_pr42_isolated_silos \
+            --symbol "$PAIR" --seed "$SEED" \
+            --report "reports/pr42-frozen-champion/${slug}-seed-${SEED}.json" \
+            --universe reports/pr42-symbol-data/universe.npz \
+            --manifest reports/pr42-symbol-data/manifest.json \
+            "${optional[@]}"
+      - name: Upload one self-contained silo's audit, not a combined trading ledger
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr42-isolated-${{ matrix.symbol }}-seed-${{ matrix.seed }}
+          path: reports/pr42-isolated-silos/
+          if-no-files-found: warn
+          retention-days: 90
+
+  read_only_summary:
+    name: Twelve independent H1 replays, four isolated accounts per seed
+    needs: isolated_silo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr42-isolated-*
+          path: reports/pr42-collated
+      - name: Verify 12 isolated outcomes and aggregate frequency only
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          reports=[json.loads(p.read_text()) for p in Path('reports/pr42-collated').rglob('silo.json')]
+          symbols=('EURUSD','GBPUSD','AUDUSD','USDCAD')
+          seeds=(42,43,44)
+          assert len(reports)==12
+          assert {(r['symbol'],r['seed']) for r in reports}=={(s,n) for s in symbols for n in seeds}
+          assert all(r['protocol']=='PR42_H1_four_airtight_FX_silos_v1' and
+                     r['shared_account'] is False and r['shared_cap'] is False and
+                     r['independent_bankroll'] is True and
+                     r['no_genetic_retraining'] is True and
+                     r['q3_accessed'] is False and r['execution_mode']=='research_only'
+                     for r in reports)
+          rows=[]
+          for seed in seeds:
+              local=sorted((r for r in reports if r['seed']==seed),key=lambda r:r['symbol'])
+              freq=sum(r['results']['semester']['executed_hourly'] for r in local)
+              rows.append(dict(seed=seed,standalone_frequency_sum_per_h=freq,
+                  symbols=[r['symbol'] for r in local],
+                  per_symbol_pf_q1=[r['results']['Q1']['pf'] for r in local],
+                  per_symbol_pf_q2=[r['results']['Q2']['pf'] for r in local],
+                  per_symbol_drawdown=[r['results']['semester']['dd_pct'] for r in local]))
+          summary=dict(protocol='PR42_silos_reporting_only_v1',
+              source_pr41_run=42576852134,analysis_period='2026 H1 Q1+Q2',
+              no_q3_access=True,independent_ledger_count_per_seed=4,
+              separate_seed_alternatives=3,shared_account=False,
+              genetic_evaluations_performed=0,rows=rows,
+              warning='Frequency sum is a descriptive count across isolated accounts, NOT a shared-bankroll PF, pooled equity or OOS validation.')
+          Path('pr42-silos-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          print('PR42_ISOLATED_REPLAY_SUMMARY '+json.dumps(summary),flush=True)
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr42-isolated-silos-summary
+          path: pr42-silos-summary.json
+          if-no-files-found: error
+          retention-days: 90
