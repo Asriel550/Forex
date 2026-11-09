@@ -31,7 +31,9 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        symbol: [EURUSD, GBPUSD, AUDUSD, USDCAD]
+        # First pass already published EUR, AUD and CAD. Retry only the
+        # unsealed pair: never waste CI or overwrite certified OOS inputs.
+        symbol: [GBPUSD]
     steps:
       - uses: actions/checkout@v6
         with:
