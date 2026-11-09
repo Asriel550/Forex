@@ -108,3 +108,34 @@ El límite <12% es **criterio de investigación**, más exigente que el <15% del
 **Estado final de la primera iteración PR40:** implementación del protocolo y verificación estructural, **sin evaluación de los nuevos activos por falta de datos H1**. No se puede asegurar capacidad ≥1,0/h, PF ni DD hasta construir los tres archivos. El workflow puede terminar con tests verdes y los jobs de backtest real omitidos; eso **no significa aprobación financiera**.
 
 **Q3 permanece completamente sellado.**
+
+
+## 8. Primera ejecución de CI — validación técnica, datos externos aún ausentes
+
+[Run #42565772995](https://github.com/Asriel550/Forex/actions/runs/42565772995):
+**18 pruebas aprobadas**, resultado técnico `SUCCESS`. Se verificaron
+equivalencia del replay de un solo activo frente al contrato original,
+cupo global entre pares, liquidaciones M5 simultáneas, stops de DD
+compartidos, una cuenta H1 continua y rechazo de Q3 e inputs M1.
+
+[Reporte de readiness](https://github.com/Asriel550/Forex/actions/runs/42565772995/artifacts/13650579025):
+
+- `verified_assets=["EURUSD"]`
+- `missing_assets=["GBPUSD","AUDUSD","USDCAD"]`
+- `ready_for_real_backtest=false`
+- `portfolio_pf_q1=null`, `portfolio_pf_q2=null`
+- `portfolio_executed_contracts_per_hour=null`
+- `portfolio_max_dd_pct=null`
+- `q3_accessed=false`
+
+Los jobs reales por semilla 42/43/44 y su consolidación se marcaron
+**SKIPPED deliberadamente**. No existe un backtest real de cuatro pares,
+ni evidencia que acredite 1.0–1.25/h, PF o DD combinados. **CI verde es
+prueba de seguridad del diseño, no validación de la estrategia.**
+
+Próximo trabajo de datos: obtener y verificar por separado los seis meses
+de OHLCV nativo M5/M15 y GARCH causal de GBPUSD, AUDUSD y USDCAD;
+reconstruir exactamente las 32 entradas normalizadas por el Gen375 original;
+comparar cobertura, clipping y firmas; publicar Releases selladas;
+actualizar el inventario y entonces ejecutar por primera vez la validación
+financiera de cartera H1. Q3 seguirá fuera del flujo.
