@@ -174,6 +174,7 @@ def load_native_q3(symbol,archive,manifest):
         or meta.get("frozen_h1_normalizer") is not True
         or meta.get("m15_closed_no_lookahead") is not True
         or meta.get("q3_full_source_coverage") is not True
+        or len(meta.get("q2_eligible_volatility_tail",[]))!=48
         or meta.get("start_utc") not in (START.isoformat(),"2026-07-01T00:00:00Z")
         or meta.get("end_exclusive_utc") not in (END.isoformat(),"2026-10-01T00:00:00Z")
         or meta.get("months")!=list(months)
@@ -183,6 +184,10 @@ def load_native_q3(symbol,archive,manifest):
         or set(meta["source_zip_sha256"])!=set(months)
         or any(not hex64(v) for v in meta["source_zip_sha256"].values())):
         raise ValueError("Q3 sin procedencia, GARCH propio o cobertura auditables: "+symbol)
+    prior=np.asarray(meta["q2_eligible_volatility_tail"],dtype="<f8")
+    if (prior.shape!=(48,) or not np.isfinite(prior).all() or (prior<0).any()
+            or array_sha256(prior)!=meta.get("q2_eligible_volatility_tail_sha256")):
+        raise ValueError("Q2 no verifica estado previo GARCH del mismo par")
     blob=Path(archive)
     if sha256(blob.read_bytes()).hexdigest()!=meta.get("universe_sha256"):
         raise ValueError("SHA256 del universo Q3 no coincide "+symbol)
@@ -220,7 +225,7 @@ def load_native_q3(symbol,archive,manifest):
     return data,t,float(sum(hours.values())),meta
 
 
-def local_asset_head(data,genes):
+def local_asset_head(data,genes,*,q2_garch_tail=None):
     """Exact PR41 entry/tanh/direction/GARCH-band formula; no EUR model."""
     g=np.asarray(genes,dtype=float)
     tf=np.asarray(data["timeframe"],dtype=float)
@@ -229,8 +234,17 @@ def local_asset_head(data,genes):
     score=(4.5+2.*np.tanh(g[18]))*np.tanh(tf@g[9:17]+g[17])
     entry=tf@g[:8]+g[8]
     floor=.3+2.*sigmoid(g[21])
-    prior=pd.Series(np.maximum(sig,1e-12)).shift(1).rolling(48,min_periods=24).median().to_numpy()
-    ratio=sig/np.where(np.isfinite(prior),prior,np.maximum(sig,1e-12))
+    if q2_garch_tail is None:
+        all_sigma=sig
+        offset=0
+    else:
+        tail=np.asarray(q2_garch_tail,dtype="<f8")
+        if tail.shape!=(48,) or not np.isfinite(tail).all() or (tail<0).any():
+            raise ValueError("Cola de volatilidad Q2 incompatible")
+        all_sigma=np.r_[tail,sig]
+        offset=48
+    past=pd.Series(np.maximum(all_sigma,1e-12)).shift(1).rolling(48,min_periods=24).median().to_numpy()[offset:]
+    ratio=sig/np.where(np.isfinite(past),past,np.maximum(sig,1e-12))
     low=.35+sigmoid(g[19]);high=1.2+2.*sigmoid(g[20])
     mask=(entry>0)&(np.abs(score)>floor)&(ratio>=low)&(ratio<=high)
     return score,mask,dict(garch_low=float(low),garch_high=float(high),margin=float(floor))
@@ -251,9 +265,9 @@ def strictly_causal_p85(rows,scores):
     return np.asarray(reasons,dtype="<U24")
 
 
-def audit_one(model,data,times,hours):
+def audit_one(model,data,times,hours,*,q2_garch_tail):
     """Never update genes or use cross-pair balance/risk/cap."""
-    score,mask,band=local_asset_head(data,model["genes"])
+    score,mask,band=local_asset_head(data,model["genes"],q2_garch_tail=q2_garch_tail)
     # Trades maturing at/after 00:00 Oct 1 cannot use Q4 prices.
     eligible=np.flatnonzero(mask & (times+STEP<END))
     if len(eligible):
@@ -297,7 +311,8 @@ def run(*,control_root,evolved_root,q3_root,output=OUTPUT):
                                 source_zip_sha256=meta["source_zip_sha256"])
         for model in models:
             if model["symbol"]==symbol:
-                results.append(audit_one(model,data,t,hours))
+                results.append(audit_one(model,data,t,hours,
+                    q2_garch_tail=meta["q2_eligible_volatility_tail"]))
     if len(results)!=24 or len({(r["group"],r["symbol"],r["seed"]) for r in results})!=24:
         raise ValueError("Auditoría incompleta")
     summary=dict(
