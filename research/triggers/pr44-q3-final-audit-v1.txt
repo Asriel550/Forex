@@ -1,0 +1,1 @@
+PR44 Q3 2026 single-pass OOS audit authorized on 2026-11-09. Four certified Q3 releases preflighted: EURUSD, GBPUSD, AUDUSD, USDCAD. Evaluate exactly 24 frozen PR42/PR43 genomes once; zero genetic evaluations, no selection, no refit, no weight changes. Q3 window 2026-07-01T00:00:00Z to 2026-10-01T00:00:00Z exclusive. This trigger authorizes the pre-registered audit only.
