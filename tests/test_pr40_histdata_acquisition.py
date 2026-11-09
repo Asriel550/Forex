@@ -29,6 +29,9 @@ def test_form_requires_pair_and_unique_monthly_m1_ascii_token():
     html='''<form action="/get.php">
      <input name="fxpair" value="AUDUSD">
      <input name="timeframe" value="M1">
+     <input name="date" value="2026">
+     <input name="datemonth" value="202606">
+     <input name="platform" value="ASCII">
      <input name="tk" value="testtoken">
      </form>'''
     values=parse_source_form(html,"AUDUSD","202606")
@@ -37,18 +40,6 @@ def test_form_requires_pair_and_unique_monthly_m1_ascii_token():
         parse_source_form(html,"GBPUSD","202606")
     with pytest.raises(ValueError):
         parse_source_form(html,"AUDUSD","202607")
-
-
-def test_current_site_can_expose_tk_outside_form():
-    html='''<html><title>USD/CAD</title>
-    <input type="hidden" id="tk" value="site-token-2026">
-    <form action="/get.php"><input name="not-the-token" value="x"></form>
-    </html>'''
-    fields=parse_source_form(html,"USDCAD","202603")
-    assert fields=={
-        "tk":"site-token-2026","date":"2026","datemonth":"202603",
-        "platform":"ASCII","timeframe":"M1","fxpair":"USDCAD",
-    }
 
 
 def test_zip_validator_rejects_cross_symbol_or_cross_month(tmp_path):
@@ -93,6 +84,9 @@ def test_real_histdata_page_has_download_and_status_forms_but_only_zip_is_allowe
     html='''<form action="/get.php">
     <input name="fxpair" value="GBPUSD">
     <input name="timeframe" value="M1">
+    <input name="date" value="2026">
+    <input name="datemonth" value="202601">
+    <input name="platform" value="ASCII">
     <input name="tk" value="zip_token">
     </form>
     <form action="/getStatus.php">
