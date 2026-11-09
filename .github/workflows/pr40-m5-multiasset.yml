@@ -5,7 +5,7 @@ on:
     branches:
       - codex/m5-m15-multiasset-pr40
     paths:
-      - research/triggers/pr40-multiasset-v1.txt
+      - research/triggers/pr40-multiasset-v*.txt
   workflow_dispatch:
 
 permissions:
