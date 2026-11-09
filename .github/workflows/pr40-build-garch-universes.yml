@@ -46,6 +46,9 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
           python -m pip check
+      - name: Test closed M15 causality and frozen 8-array M5/M15 shape
+        run: |
+          python -m pytest -q tests/test_pr40_garch_universe.py tests/test_m5_dynamic_upstream.py
       - name: Download SHA-sealed HistData M5 and M15 H1 candles, exclude Q3
         env:
           GH_TOKEN: ${{ github.token }}
