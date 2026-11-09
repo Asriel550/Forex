@@ -31,6 +31,7 @@ def validate_inventory(path):
             or data.get("no_model_refit") is not True):
         raise ValueError("Inventario no coincide con el protocolo PR40 sellado")
     verified=[]
+    candles_ready=[]
     missing=[]
     for sym in SYMBOLS:
         asset=data["assets"][sym]
@@ -39,6 +40,13 @@ def validate_inventory(path):
                     or not SHA.fullmatch(str(asset.get("universe_sha256","")))):
                 raise ValueError("Firma inválida para "+sym)
             verified.append(sym)
+        elif asset.get("status")=="candles_ready":
+            if (not asset.get("candle_release_tag")
+                    or not SHA.fullmatch(str(asset.get("candle_ohlcv_sha256","")))
+                    or asset.get("verified_source_months")!=EXPECTED_MONTHS):
+                raise ValueError("Velas HistData incompletas o sin sello: "+sym)
+            candles_ready.append(sym)
+            missing.append(sym)  # Still lacks GARCH and frozen-model inputs.
         elif asset.get("status")=="missing":
             missing.append(sym)
         else:
@@ -49,14 +57,16 @@ def validate_inventory(path):
         protocol="PR40_multiasset_readiness_v1",
         signal_timeframes=["M5","M15"],seeds=[42,43,44],
         asset_count_required=len(SYMBOLS),verified_assets=verified,
+        candle_assets_ready=candles_ready,
         missing_assets=missing,ready_for_real_backtest=not missing,
         portfolio_pf_q1=None,portfolio_pf_q2=None,
         portfolio_executed_contracts_per_hour=None,
         portfolio_max_dd_pct=None,
         q3_accessed=False,
         explanation=(
-            "Verified native M5/M15 source and independently derived GARCH "
-            "must exist for each symbol. No extrapolation from EURUSD allowed."
+            "HistData M5/M15 candles are acquired, but GARCH and the frozen "
+            "neural input universe must be built and independently sealed. "
+            "No extrapolation from EURUSD allowed."
         ),
     )
 
