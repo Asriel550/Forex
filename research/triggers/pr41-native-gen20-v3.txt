@@ -1,0 +1,4 @@
+PR41 exact 20-generation independent native FX genetics retry v3.
+Second run 42576424566 finished all 20 generations but report export failed (KeyError 'record'): evolve_population returns FLATTENED history dict, not nested under record.
+Fix exporter to read rec['generation'], rec['quarter_pf'], rec['semester_rate'], etc. Add regression test calling actual evolve_population with two generations, asserting flattened schema.
+No changes to GARCH, symbol data, 22-gene independent architecture, 20×128, 3 seeds, original payout/stops/p85 or H1 Q1+Q2 scope. Q3 untouched.
