@@ -81,7 +81,7 @@ jobs:
             f.write(f"Source: six official monthly ZIPs, fixed EST UTC-05. "
                     f"M1 **only for aggregation**, M5/M15 decision candles.\n\n")
             f.write(f"M5 bars {meta['m5_rows']}, M15 bars {meta['m15_rows']}; "
-                    f"derived OHLC SHA256 \`{meta['ohlcv_sha256']}\`.\n\n")
+                    f"derived OHLC SHA256 {meta['ohlcv_sha256']}.\n\n")
             f.write(f"June UTC rows removed at 2026-07-01: "
                     f"{meta['q3_source_rows_rejected']}, "
                     "not used for features/training/replay. No Q3 dataset loaded.\n")
