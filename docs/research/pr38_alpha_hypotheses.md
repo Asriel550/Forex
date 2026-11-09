@@ -1,3 +1,5 @@
+> **Documento de cierre y fuente de verdad:** [Bitácora integral del ciclo experimental PR34–PR38](./pr38_bitacora_integral_m5_m15.md). Incluye las métricas de los **27 experimentos PR38**, resultados definitivos de Fase 3, incidentes y límites. El presente archivo es el protocolo técnico de la exploración, y debe leerse junto al cierre.
+
 # PR38 — Investigación de alfa M5+M15: gate, targets y estructura
 
 ## Invariantes obligatorios
