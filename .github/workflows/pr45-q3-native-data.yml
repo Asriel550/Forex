@@ -185,9 +185,7 @@ jobs:
         with:
           name: pr45-q3-native-${{ matrix.symbol }}
           path: |
-            reports/pr45-q3-native/${{ matrix.symbol }}/
-            reports/pr45-q3-native/${{ matrix.symbol }}/manifest.json
-            reports/pr45-q3-native/${{ matrix.symbol }}/universe.npz
+            reports/pr45-q3-native/*/
           if-no-files-found: warn
           retention-days: 90
 
