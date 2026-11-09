@@ -24,10 +24,10 @@ from scripts.run_m5_direction_ablation import founder_observations
 from src.artifacts import file_sha256
 from src.decision import RiskConfig
 from src.environment import BinaryOptionsEnv, prepare_market_data
-from src.evolution_context import H1_STRUCTURAL, M5_TACTICAL
+from src.evolution_context import H1_STRUCTURAL
 from src.evolution_engine import M5Simulation
 from src.evolution_lineage import MARKET, MARKET_FEATURES
-from src.evolution_multiscale import FEATURE_NAMES, arm_inputs, scale_inputs
+from src.evolution_multiscale import FEATURE_NAMES, M5_TACTICAL, arm_inputs, scale_inputs
 from src.market import MarketConfig
 from src.m5_multiasset_inputs import FIELDS
 from src.quant_engine import enrich_features
