@@ -193,8 +193,10 @@ def _continuous_h1_join(h1_m5,h1_m15,raw_q3_m5,raw_q3_m15,minute_frame):
 
 
 def build(*,symbol,raw_dir,source_manifest,h1_ohlcv=None,
-          h1_manifest=None,output=OUTPUT):
+          h1_manifest=None,h1_universe=None,output=OUTPUT):
     if symbol not in SYMBOLS:raise ValueError("Símbolo no preinscrito")
+    if h1_universe is None or not Path(h1_universe).is_file():
+        raise ValueError("Se exige el universo H1 sellado para continuidad GARCH Q2→Q3")
     source=json.loads(Path(source_manifest).read_text(encoding="utf-8"))
     expected=ALLOWED[symbol]
     entries=source.get("sources",[])
@@ -328,6 +330,24 @@ def build(*,symbol,raw_dir,source_manifest,h1_ohlcv=None,
         "AUDUSD":"8d1f34d5bf38ce1c4beeb5079d374a7af1a9d07a8161d07fc010d56b251b0eee",
         "USDCAD":"bf866689bb549bf2d647d8600bd343148dfb44040fb51c9cbb2baa7738f4f8b9",
     }
+    # The PR41 relative-GARCH band uses the previous 48 eligible M5
+    # proposals; Q2 must seed the first Q3 decisions, never cold-start.
+    original_h1_archive={
+        "EURUSD":"05487661977ea0a612f7e717b81e84aadbb5e2071238ca6835d9944a06bc9be9",
+        "GBPUSD":"2cc9ab95266cb3a87c2988ffd8006c79e9db68765d5ab54ded129c161fff4a0b",
+        "AUDUSD":"8d1f34d5bf38ce1c4beeb5079d374a7af1a9d07a8161d07fc010d56b251b0eee",
+        "USDCAD":"bf866689bb549bf2d647d8600bd343148dfb44040fb51c9cbb2baa7738f4f8b9",
+    }
+    if file_sha256(h1_universe)!=original_h1_archive[symbol]:
+        raise ValueError("Universo H1/GARCH PR41 no firmado")
+    with np.load(h1_universe,allow_pickle=False) as frozen:
+        old_sigma=np.asarray(frozen["volatility"],dtype="<f8")
+        old_times=np.asarray(frozen["row_times_ns"],dtype="<i8")
+    if (len(old_sigma)<48 or len(old_times)!=len(old_sigma) or
+        pd.Timestamp(old_times[-1],unit="ns",tz="UTC")>=Q3_START or
+        not np.isfinite(old_sigma).all() or (old_sigma<0).any()):
+        raise ValueError("Sin los 48 estados finales GARCH válidos de Q2")
+    q2_tail=np.ascontiguousarray(old_sigma[-48:],dtype="<f8")
     meta=dict(schema=Q3_SCHEMA,symbol=symbol,
         provider="HistData.com",
         signal_timeframes=["M5","M15"],source_timeframes=["M5","M15"],
@@ -352,6 +372,8 @@ def build(*,symbol,raw_dir,source_manifest,h1_ohlcv=None,
         frozen_h1_normalizer_sha256=norm_hash,
         source_evidence_months=list(ALLOWED[symbol]),
         original_h1_source_sha256=EXPECTED_H1_SHA.get(symbol),
+        q2_eligible_volatility_tail=q2_tail.tolist(),
+        q2_eligible_volatility_tail_sha256=array_sha256(q2_tail),
         garch_retained_refits=enriched.attrs.get("garch_retained_refits",[]),
         universe_sha256=file_sha256(archive),
         m5_parquet_sha256=file_sha256(parquet),
@@ -381,6 +403,7 @@ if __name__=="__main__":
     p.add_argument("--source-manifest",type=Path)
     p.add_argument("--h1-ohlcv",type=Path)
     p.add_argument("--h1-manifest",type=Path)
+    p.add_argument("--h1-universe",type=Path)
     p.add_argument("--output",type=Path,default=OUTPUT)
     a=p.parse_args()
     if a.phase=="acquire":
@@ -389,4 +412,5 @@ if __name__=="__main__":
     else:
         source=a.source_manifest or (a.output/a.symbol.lower()/"source-manifest.json")
         build(symbol=a.symbol,raw_dir=a.raw_dir,source_manifest=source,
-              h1_ohlcv=a.h1_ohlcv,h1_manifest=a.h1_manifest,output=a.output)
+              h1_ohlcv=a.h1_ohlcv,h1_manifest=a.h1_manifest,
+              h1_universe=a.h1_universe,output=a.output)
