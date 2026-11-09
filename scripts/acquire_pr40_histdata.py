@@ -54,6 +54,27 @@ def parse_source_form(html,symbol,period):
         and x["fields"].get("tk")
     ]
     if len(matches)!=1:
+        # HistData currently may render tk outside a <form>. The public
+        # Generic ASCII M1 protocol specifies all other fields explicitly.
+        from html.parser import HTMLParser
+        class AllInputs(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.items=[]
+            def handle_starttag(self,tag,attrs):
+                if tag.lower()=="input":
+                    self.items.append(dict(attrs))
+        inputs=AllInputs()
+        inputs.feed(html)
+        tokens={item.get("value","") for item in inputs.items
+                if (item.get("id","").lower()=="tk"
+                    or item.get("name","").lower()=="tk")
+                and item.get("value")}
+        if len(tokens)==1:
+            return {
+                "tk":tokens.pop(),"date":"2026","datemonth":period,
+                "platform":"ASCII","timeframe":"M1","fxpair":symbol,
+            }
         import re
         headline=re.search(r"<title[^>]*>(.*?)</title>",html,flags=re.I|re.S)
         evidence={
