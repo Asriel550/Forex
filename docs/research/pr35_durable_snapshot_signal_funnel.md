@@ -8,8 +8,8 @@ retención de GitHub Actions. La Release almacena dos activos binarios/versionad
 fuera del árbol Git (no se meten megabytes en commits):
 
 - Tag: `data-m5-is-2026h1-garch-v1`.
-- `m5-is-2026h1-v1.npz`: IS enero–junio 2026, 2.859 propuestas de marzo.
-- `m5-is-2026h1-v1.json`: fuentes, firmas GARCH/MC, semillas, fechas y auditorías.
+- Asset `a.npz` (etiqueta `m5-is-2026h1-v1.npz`): IS enero–junio 2026, 2.859 propuestas de marzo.
+- Asset `a.json` (etiqueta `m5-is-2026h1-v1.json`): fuentes, firmas GARCH/MC, semillas, fechas y auditorías.
 - SHA256 del snapshot: `7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504`.
 - SHA256 del manifiesto: `d115db5f4799aa3b6920d5d7539778c8b611452844211a98fc3e8ccc7f689f04`.
 
