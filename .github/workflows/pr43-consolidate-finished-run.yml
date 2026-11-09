@@ -1,0 +1,85 @@
+name: PR43 consolidation only — 12 completed PR42 champion evolutions, Q3 sealed
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/forex-pr43-100-training-per-asset-h1
+    paths:
+      - '.github/workflows/pr43-consolidate-finished-run.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  summary:
+    name: Verify 12 completed PR42 champion continuations (no retraining)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr43-continued-*
+          run-id: 42647437793
+          github-token: ${{ github.token }}
+          path: reports/pr43-collated
+      - name: Consolidate only 12 H1 descendants without cherry-picking or Q3
+        run: |
+          python - <<'PY'
+          import json,hashlib,struct
+          from pathlib import Path
+          paths=list(Path('reports/pr43-collated').rglob('seed-*.json'))
+          records=[json.loads(p.read_text()) for p in paths]
+          symbols=('EURUSD','GBPUSD','AUDUSD','USDCAD')
+          seeds=(42,43,44)
+          assert len(records)==12 and {(r['symbol'],r['seed']) for r in records}=={
+              (sym,seed) for sym in symbols for seed in seeds}
+          assert sum(r['new_evaluations'] for r in records)==153600
+          for r in records:
+            assert r['protocol']=='PR43_continue_PR42_champions_100_gen_H1_IS_v1'
+            assert r['additional_generations']==100 and r['population']==128
+            assert r['first_new_generation']==21 and r['last_new_generation']==120
+            assert len(r['history'])==100 and [x['generation'] for x in r['history']]==list(range(21,121))
+            assert r['q3_accessed'] is False and r['oos_evaluated'] is False
+            assert r['zero_initialized'] is False and r['started_from_champion'] is True
+            assert r['original_models_modified'] is False and r['auto_promoted'] is False
+            for genes,digest in ((r['source_pr42_genome'],r['source_pr42_genome_sha256']),
+                                 (r['evolved_champion_genome'],r['evolved_champion_sha256'])):
+              assert hashlib.sha256(struct.pack('<22d',*genes)).hexdigest()==digest
+          rows=[]
+          for sym in symbols:
+            for r in sorted((x for x in records if x['symbol']==sym),key=lambda v:v['seed']):
+              m=r['evolved_champion_metrics']
+              rows.append(dict(symbol=sym,seed=r['seed'],
+                original_generation=r['source_pr42_generation'],
+                evolved_generation=r['evolved_champion_generation'],
+                pf_q1=m['pf_q1'],pf_q2=m['pf_q2'],
+                dd_semester_pct=m['dd_semester_pct'],
+                executed_hourly=m['executed_hourly'],qualified=m['qualified'],
+                original_genome_sha256=r['source_pr42_genome_sha256'],
+                new_genome_sha256=r['evolved_champion_sha256']))
+          result=dict(protocol='PR43_12_champion_extensions_H1_v1',
+            completed_lineages=12,new_generations_each=100,
+            new_genetic_evaluations=153600,
+            original_pr41_champions_unchanged=True,
+            q3_accessed=False,auto_promotion=False,
+            same_H1_IS_search_not_OOS=True,rows=rows)
+          Path('pr43-continued-summary.json').write_text(json.dumps(result,indent=2,allow_nan=False)+'\n')
+          print('PR43_FINAL_12_CONTINUATIONS '+json.dumps(result,allow_nan=False),flush=True)
+          with Path('summary.md').open('w') as f:
+            f.write('## 12 PR42 champions x 100 MORE genetic generations (H1 only)\n\n')
+            f.write('| Pair | Seed | Best new Gen | PF Q1 | PF Q2 | DD H1 | Real/h |\n')
+            f.write('| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n')
+            for row in rows:
+              f.write(f"| {row['symbol']} | {row['seed']} | {row['evolved_generation']} | "
+                      f"{row['pf_q1']} | {row['pf_q2']} | {row['dd_semester_pct']:.3f}% | "
+                      f"{row['executed_hourly']:.4f} |\n")
+            f.write('\nNo Q3, no OOS, no automatic promotion.\n')
+          PY
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr43-100-more-generations-summary
+          path: pr43-continued-summary.json
+          if-no-files-found: error
+          retention-days: 90

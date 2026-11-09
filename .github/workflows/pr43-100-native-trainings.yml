@@ -2,14 +2,6 @@ name: PR43 — 100 MORE generations from PR42 champion per FX pair (H1 IS ONLY)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - codex/forex-pr43-100-training-per-asset-h1
-    paths:
-      - '.github/workflows/pr43-100-native-trainings.yml'
-      - 'scripts/run_pr43_100_native_trainings.py'
-      - 'tests/test_pr43_100_native_trainings.py'
-      - 'docs/research/pr43_100_independent_trainings.md'
 
 permissions:
   contents: read
@@ -149,8 +141,7 @@ jobs:
       - name: Consolidate only 12 H1 descendants without cherry-picking or Q3
         run: |
           python - <<'PY'
-          import json,hashlib
-          import numpy as np
+          import json,hashlib,struct
           from pathlib import Path
           paths=list(Path('reports/pr43-collated').rglob('seed-*.json'))
           records=[json.loads(p.read_text()) for p in paths]
@@ -169,7 +160,7 @@ jobs:
             assert r['original_models_modified'] is False and r['auto_promoted'] is False
             for genes,digest in ((r['source_pr42_genome'],r['source_pr42_genome_sha256']),
                                  (r['evolved_champion_genome'],r['evolved_champion_sha256'])):
-              assert hashlib.sha256(np.asarray(genes,dtype='<f8').tobytes()).hexdigest()==digest
+              assert hashlib.sha256(struct.pack('<22d',*genes)).hexdigest()==digest
           rows=[]
           for sym in symbols:
             for r in sorted((x for x in records if x['symbol']==sym),key=lambda v:v['seed']):
