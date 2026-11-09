@@ -2,6 +2,8 @@
 
 **Estado:** diseño reproducible y motor de cartera implementados; validación empírica **BLOQUEADA** hasta adquirir/sellar datos reales M5+M15/GARCH de los tres pares nuevos. No existen PF, frecuencia ni DD verificados de portfolio multiasset. No se despliega a producción. **Q3 julio–septiembre de 2026 totalmente intocado.**
 
+> **Aclaración de fuente, posterior al primer blueprint:** el usuario solicitó explícitamente descargar los otros pares desde **HistData.com**. HistData distribuye datos de barras M1 o tick, **no M5/M15 nativos**. Por tanto, la procedencia válida será **ZIP mensual M1 como insumo técnico de agregación → velas M5 y M15 cerradas y verificadas → GARCH M5 causal → inputs para la cabeza PR38 congelada**. Ninguna variable M1 entra como señal. [Nuevo workflow de adquisición](https://github.com/Asriel550/Forex/actions/workflows/pr40-acquire-histdata.yml) y [script](../../scripts/acquire_pr40_histdata.py). El periodo de descarga permitido es exclusivamente enero–junio de 2026, y cualquier minuto de junio local que caiga desde 2026-07-01 00:00 UTC se descarta antes de agregar.
+
 ## 1. Decisión: conservar el núcleo PR38, NO la evolución PR39
 
 Se conserva, sin entrenamiento ni recalibración, el campeón **`garch_regime` PR38** de cada semilla, [Actions #42551086458](https://github.com/Asriel550/Forex/actions/runs/42551086458):
@@ -37,7 +39,7 @@ No se incluye automáticamente NZDUSD como quinto por el mero hecho de que los c
 
 Para cada par adicional se necesita:
 
-- OHLCV M5 y M15 **nativos, completamente cerrados** para 2026-01-01 00:00 UTC a 2026-07-01 00:00 UTC, con proveedor, instrumento, zona horaria, definiciones de volumen, timestamps, continuidad/gaps y hashes de origen registrados.
+- OHLCV M5 y M15 **reconstruidos a partir de HistData mensual, completamente cerrados** para 2026-01-01 00:00 UTC a 2026-07-01 00:00 UTC, con proveedor, instrumento, zona horaria, definiciones de volumen, timestamps, continuidad/gaps y hashes de origen registrados.
 - Serie GARCH de M5 **estimada causalmente en ese mismo activo** con la receta/MC alineadas al motor original (no copiar la volatilidad EUR a GBP, AUD o CAD). Reportar parámetros/refits fallidos, warmup y huellas de reproducibilidad.
 - **Los mismos 32 inputs de dirección** y **las mismas ocho features M5/M15** en el mismo orden que la arquitectura PR38; aplicar **el normalizador original congelado Gen375**. Registrar porcentaje de clipping/fuera de distribución, especialmente por cambios de escala de precios/tick-volume, sin reentrenar el modelo.
 - `row_times_ns`, `outcome` de expiración M5, `volatility`, `entry`, `margin`, `timeframe`, `direction_inputs`, `legacy_mask` (schema `pr40_m5_m15_symbol_universe_v1`), con SHA256 binario del NPZ y de todos los arrays, ventanas Q1 y Q2 y horas observadas por mes.
@@ -134,8 +136,12 @@ ni evidencia que acredite 1.0–1.25/h, PF o DD combinados. **CI verde es
 prueba de seguridad del diseño, no validación de la estrategia.**
 
 Próximo trabajo de datos: obtener y verificar por separado los seis meses
-de OHLCV nativo M5/M15 y GARCH causal de GBPUSD, AUDUSD y USDCAD;
+de OHLCV M5/M15 derivado de archivos HistData mensuales y GARCH causal de GBPUSD, AUDUSD y USDCAD;
 reconstruir exactamente las 32 entradas normalizadas por el Gen375 original;
 comparar cobertura, clipping y firmas; publicar Releases selladas;
 actualizar el inventario y entonces ejecutar por primera vez la validación
 financiera de cartera H1. Q3 seguirá fuera del flujo.
+
+## 9. Adquisición HistData ejecutada a solicitud del usuario
+
+La implementación en `scripts/acquire_pr40_histdata.py` permite descargar los **18 ZIP oficiales mensuales** de GBPUSD/AUDUSD/USDCAD para los seis meses 202601–202606, valida par/mes/formato y SHA256, normaliza el huso del proveedor (EST fijo sin DST), excluye timestamps UTC posteriores o iguales a julio antes de construir las velas, descarta grupos incompletos M5 y M15, calcula huellas de OHLCV y publica un `ohlcv.npz` junto con los manifiestos y hashes. La Release se crea por par solo si los seis ZIP se recibieron y los controles pasaron; **no** inventa operaciones de cartera. El GARCH por par y los inputs normalizados PR38 son un paso posterior imprescindible para el backtest económico.
