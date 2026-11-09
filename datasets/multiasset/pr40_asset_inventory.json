@@ -1,10 +1,25 @@
 {
   "protocol": "PR40_four_major_pairs_IS_2026H1_v1",
   "description": "Input inventory; absent assets are explicit blockers, not zero-PF instruments.",
-  "signal_timeframes": ["M5", "M15"],
+  "signal_timeframes": [
+    "M5",
+    "M15"
+  ],
   "q3_accessed": false,
-  "train_periods": ["202601", "202602", "202603", "202604", "202605", "202606"],
-  "symbols": ["EURUSD", "GBPUSD", "AUDUSD", "USDCAD"],
+  "train_periods": [
+    "202601",
+    "202602",
+    "202603",
+    "202604",
+    "202605",
+    "202606"
+  ],
+  "symbols": [
+    "EURUSD",
+    "GBPUSD",
+    "AUDUSD",
+    "USDCAD"
+  ],
   "assets": {
     "EURUSD": {
       "status": "verified",
@@ -13,22 +28,58 @@
       "golden_garch_snapshot_sha256": "7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504"
     },
     "GBPUSD": {
-      "status": "missing",
+      "status": "candles_ready",
       "release_tag": null,
       "universe_sha256": null,
-      "required_evidence": "independent GBPUSD M5/M15 OHLCV SHA256, causal GARCH M5, Gen375 frozen-normalizer inputs, six-month IS seal"
+      "required_evidence": "HistData H1 M5/M15 OHLC acquired and SHA-pinned; still need independent causal M5 GARCH, matching frozen Gen375 normalizer/features, complete 8-array model universe, cross-symbol replay.",
+      "candle_release_tag": "data-pr40-gbpusd-m5-m15-2026h1-v1",
+      "candle_ohlcv_sha256": "10a5d1aeecf9019134a6ed2b6c3131c6f48ca56dcb583df3dfca441690807b45",
+      "m5_candles": 36155,
+      "m15_candles": 11773,
+      "verified_source_months": [
+        "202601",
+        "202602",
+        "202603",
+        "202604",
+        "202605",
+        "202606"
+      ]
     },
     "AUDUSD": {
-      "status": "missing",
+      "status": "candles_ready",
       "release_tag": null,
       "universe_sha256": null,
-      "required_evidence": "independent AUDUSD M5/M15 OHLCV SHA256, causal GARCH M5, Gen375 frozen-normalizer inputs, six-month IS seal"
+      "required_evidence": "HistData H1 M5/M15 OHLC acquired and SHA-pinned; still need independent causal M5 GARCH, matching frozen Gen375 normalizer/features, complete 8-array model universe, cross-symbol replay.",
+      "candle_release_tag": "data-pr40-audusd-m5-m15-2026h1-v1",
+      "candle_ohlcv_sha256": "0c728f5602bc622fca9f98553e80aaf9bde4c50f1ca9746bc04d4fddc3083db0",
+      "m5_candles": 36238,
+      "m15_candles": 11844,
+      "verified_source_months": [
+        "202601",
+        "202602",
+        "202603",
+        "202604",
+        "202605",
+        "202606"
+      ]
     },
     "USDCAD": {
-      "status": "missing",
+      "status": "candles_ready",
       "release_tag": null,
       "universe_sha256": null,
-      "required_evidence": "independent USDCAD M5/M15 OHLCV SHA256, causal GARCH M5, Gen375 frozen-normalizer inputs, six-month IS seal"
+      "required_evidence": "HistData H1 M5/M15 OHLC acquired and SHA-pinned; still need independent causal M5 GARCH, matching frozen Gen375 normalizer/features, complete 8-array model universe, cross-symbol replay.",
+      "candle_release_tag": "data-pr40-usdcad-m5-m15-2026h1-v1",
+      "candle_ohlcv_sha256": "c1f0b62d0b05cff5841185fe7803a7aa39ae9bea2287cbf1a6f51c1b21c6241c",
+      "m5_candles": 36318,
+      "m15_candles": 11855,
+      "verified_source_months": [
+        "202601",
+        "202602",
+        "202603",
+        "202604",
+        "202605",
+        "202606"
+      ]
     }
   },
   "no_model_refit": true,
