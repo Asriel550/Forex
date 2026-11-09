@@ -173,10 +173,11 @@ def _continuous_h1_join(h1_m5,h1_m15,raw_q3_m5,raw_q3_m15,minute_frame):
                              (minute_frame.timestamp<Q3_START)]
     for old,step in ((h1_m5,"M5"),(h1_m15,"M15")):
         full=aggregate(overlap,1,step,now=Q3_START)
-        if len(full)<2000:raise ValueError("June Q2->Q3 source overlap missing")
+        minimum=2000 if step=="M5" else 700
+        if len(full)<minimum:raise ValueError("June Q2->Q3 source overlap missing")
         matched=old.set_index("timestamp").join(full.set_index("timestamp"),
                    how="inner",lsuffix="_old",rsuffix="_fresh")
-        if len(matched)<2000:
+        if len(matched)<minimum:
             raise ValueError("Fuente June no coincide en sellos de tiempo H1")
         for name in ("open","high","low","close","volume"):
             if not np.allclose(matched[name+"_old"],matched[name+"_fresh"],
