@@ -76,3 +76,29 @@ def test_standalone_gate_strict_pf_dd_and_stop():
     assert not strict_asset_pass(example_report(dd=15.))
     assert not strict_asset_pass(example_report(stop=True))
     assert not strict_asset_pass(example_report(pf=(None,1.4)))
+
+
+def test_evolution_history_is_flat_and_never_nested_under_record():
+    from src.evolution_multiscale import evolve_population
+    from scripts.run_m5_dynamic_upstream import key
+    def fitness(pop):
+        n=len(pop)
+        values=np.full(n,-1.0)
+        return dict(
+            qualifies=np.zeros(n,dtype=bool),
+            score=values,
+            worst_quarter_return=values,
+            quarter_return_std=np.ones(n),
+            min_gate_only_frequency=np.zeros(n),
+            return_per_admission=values,
+            quarter_pf=np.zeros((n,2)),
+            semester_rate=np.zeros(n),
+            semester_dd=np.zeros(n),
+            regime_lower=np.full(n,.85),
+            regime_upper=np.full(n,2.2),
+        )
+    run=evolve_population(fitness,np.zeros(GENE_COUNT_LOCAL),
+        "pr41_test_history",42,first_generation=1,last_generation=2,ranking=key)
+    assert run["evaluations"]==256
+    assert [r["generation"] for r in run["generations"]]==[1,2]
+    assert all("record" not in x and "quarter_pf" in x for x in run["generations"])
