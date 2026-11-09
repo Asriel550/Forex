@@ -1,0 +1,7 @@
+PR38 stage2/3 sequential research launch.
+Stage2 variants: ATR M15 expansion, conservative 1.5 R:R future target, asymmetric false-positive M5 binary loss.
+Population=128, training_generations=16, seeds=42/43/44, labels solely in Q1/Q2 IS.
+If no 3-seed PF>1.10 improvement and no final success, Stage3 variants: M15 temporal attention and GARCH regime gate; 15 generations each, seeds42/43/44.
+No use of July-Sep Q3. No M1-derived trading features, original binary 5m payout and account stops.
+Evaluate all PF Q1/Q2 separately, executed semester hourly, semester DD<15%, 3-seed replication.
+No automatic promotion; report failures faithfully.
