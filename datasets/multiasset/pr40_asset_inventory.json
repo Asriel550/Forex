@@ -1,0 +1,37 @@
+{
+  "protocol": "PR40_four_major_pairs_IS_2026H1_v1",
+  "description": "Input inventory; absent assets are explicit blockers, not zero-PF instruments.",
+  "signal_timeframes": ["M5", "M15"],
+  "q3_accessed": false,
+  "train_periods": ["202601", "202602", "202603", "202604", "202605", "202606"],
+  "symbols": ["EURUSD", "GBPUSD", "AUDUSD", "USDCAD"],
+  "assets": {
+    "EURUSD": {
+      "status": "verified",
+      "release_tag": "data-m5-m15-is-2026h1-full-universe-v2",
+      "universe_sha256": "05487661977ea0a612f7e717b81e84aadbb5e2071238ca6835d9944a06bc9be9",
+      "golden_garch_snapshot_sha256": "7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504"
+    },
+    "GBPUSD": {
+      "status": "missing",
+      "release_tag": null,
+      "universe_sha256": null,
+      "required_evidence": "independent GBPUSD M5/M15 OHLCV SHA256, causal GARCH M5, Gen375 frozen-normalizer inputs, six-month IS seal"
+    },
+    "AUDUSD": {
+      "status": "missing",
+      "release_tag": null,
+      "universe_sha256": null,
+      "required_evidence": "independent AUDUSD M5/M15 OHLCV SHA256, causal GARCH M5, Gen375 frozen-normalizer inputs, six-month IS seal"
+    },
+    "USDCAD": {
+      "status": "missing",
+      "release_tag": null,
+      "universe_sha256": null,
+      "required_evidence": "independent USDCAD M5/M15 OHLCV SHA256, causal GARCH M5, Gen375 frozen-normalizer inputs, six-month IS seal"
+    }
+  },
+  "no_model_refit": true,
+  "no_asset_selection_from_is_outcomes": true,
+  "no_portfolio_performance_claim_without_four_verified_streams": true
+}
