@@ -1,0 +1,5 @@
+Retry HistData PR40 ingestion workflow, correcting quoted YAML step name only.
+Download GBPUSD AUDUSD USDCAD 2026 January through June (six monthly ZIP archives per asset) from HistData.
+M1 used solely as raw aggregation input; M5+M15 OHLC are actual strategy bars; no M1 signals.
+Q3 prohibited; no PR38 model refit.
+Publish three pair-specific sealed OHLC Releases with SHA256 provenance. No portfolio PF/volume inventing.
