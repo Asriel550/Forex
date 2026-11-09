@@ -158,9 +158,10 @@ jobs:
           from hashlib import sha256
           metas=[]
           for symbol in ("GBPUSD","AUDUSD","USDCAD"):
-            paths=list(Path("reports/pr40-pairs").rglob(f"{symbol}/manifest.json"))
-            assert len(paths)==1,(symbol,paths)
-            root=paths[0].parent
+            paths=list(Path("reports/pr40-pairs").rglob("manifest.json"))
+            matches=[p for p in paths if json.loads(p.read_text()).get("symbol")==symbol]
+            assert len(matches)==1,(symbol,paths)
+            root=matches[0].parent
             d=json.loads((root/"manifest.json").read_text())
             source=json.loads((root/"source-manifest.json").read_text())
             h=sha256((root/"ohlcv.npz").read_bytes()).hexdigest()
