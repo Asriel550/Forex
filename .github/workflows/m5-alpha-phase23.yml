@@ -1,0 +1,430 @@
+name: PR38 Phases 2-3 — M5-M15 ATR RR FP and structure
+
+on:
+  push:
+    branches:
+      - codex/m5-m15-alpha-research-pr38
+    paths:
+      - research/triggers/pr38-phases23-v1.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pr38-phase23-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+
+jobs:
+  seal-targets:
+    name: Prepare and seal M5/M15-only IS targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Pinned Python runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Test ATR, close-of-M15, no lookahead, and target asymmetry
+        run: |
+          python -m pytest -q tests/test_m5_m15_target_experiments.py tests/test_m5_gate_sensitivity.py tests/test_m5_dynamic_upstream.py
+      - name: Retrieve original sealed GARCH and M5+M15 universe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/m5-upstream-is
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+            --pattern manifest.json --dir reports/m5-upstream-is --clobber
+          python -m scripts.build_m5_full_is_universe --verify-only \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+      - name: Reuse sealed IS-only targets or build them from M5/M15 OHLC candles once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="data-m5-m15-is-2026h1-alpha-labels-v1"
+          mkdir -p reports/m5-alpha-targets
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern targets.npz --pattern manifest.json \
+              --dir reports/m5-alpha-targets --clobber
+            python -m scripts.build_m5_m15_alpha_targets --verify-only \
+              --golden reports/m5-is-canonical/a.npz \
+              --golden-manifest reports/m5-is-canonical/a.json \
+              --universe reports/m5-upstream-is/universe.npz \
+              --manifest reports/m5-upstream-is/manifest.json
+          else
+            python -m scripts.build_m5_m15_alpha_targets \
+              --golden reports/m5-is-canonical/a.npz \
+              --golden-manifest reports/m5-is-canonical/a.json \
+              --universe reports/m5-upstream-is/universe.npz \
+              --manifest reports/m5-upstream-is/manifest.json
+            gh release create "$TAG" \
+              reports/m5-alpha-targets/targets.npz \
+              reports/m5-alpha-targets/manifest.json \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "PR38 M5/M15 future IS-only labels ATR and conservative RR" \
+              --notes "Research labels computed ONLY within Jan-Jun 2026 IS. No OOS Q3, no M1 model signals, no claims of real broker R:R fills. Consume via SHA manifest, never as inference features."
+          fi
+          mkdir -p reports/target-recheck
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+             --pattern targets.npz --pattern manifest.json \
+             --dir reports/target-recheck --clobber
+          cmp reports/m5-alpha-targets/targets.npz reports/target-recheck/targets.npz
+          cmp reports/m5-alpha-targets/manifest.json reports/target-recheck/manifest.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr38-phase2-target-seal
+          path: reports/m5-alpha-targets/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  phase2:
+    name: Target ${{ matrix.variant }}, seed ${{ matrix.seed }}, 16x128
+    needs: seal-targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [atr_expansion, rr15, asymmetric_fp]
+        seed: [42, 43, 44]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned numerical runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Verify training objective and no-future input
+        run: python -m pytest -q tests/test_m5_m15_target_experiments.py
+      - name: Restore exact original Gen397 seed champion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports/prior-seed
+          gh run download 42544173112 --repo "$GITHUB_REPOSITORY" \
+            --name "m5-gen376-397-seed-${{ matrix.seed }}" \
+            --dir reports/prior-seed
+      - name: Download three immutable datasets (GARCH, universe, IS labels)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/m5-upstream-is reports/m5-alpha-targets
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+            --pattern manifest.json --dir reports/m5-upstream-is --clobber
+          gh release download data-m5-m15-is-2026h1-alpha-labels-v1 \
+            --repo "$GITHUB_REPOSITORY" --pattern targets.npz \
+            --pattern manifest.json --dir reports/m5-alpha-targets --clobber
+          python -m scripts.build_m5_full_is_universe --verify-only \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+          python -m scripts.build_m5_m15_alpha_targets --verify-only \
+            --universe reports/m5-upstream-is/universe.npz \
+            --manifest reports/m5-upstream-is/manifest.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Restore original March founder and seal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Evolve 16x128 models with variant target, replay 5m payout Q1 Q2
+        run: |
+          python -m scripts.run_m5_m15_target_experiments \
+            --seed ${{ matrix.seed }} --variant ${{ matrix.variant }} \
+            --founder-report reports/prior-seed/replay.json \
+            --universe reports/m5-upstream-is/universe.npz \
+            --manifest reports/m5-upstream-is/manifest.json \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json \
+            --target-path reports/m5-alpha-targets/targets.npz \
+            --target-manifest reports/m5-alpha-targets/manifest.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr38-phase2-${{ matrix.variant }}-seed-${{ matrix.seed }}
+          path: reports/m5-alpha-research/phase2/*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  summarize2:
+    name: Evaluate all phase2 PF, determine phase3 necessity
+    needs: phase2
+    runs-on: ubuntu-latest
+    outputs:
+      need_phase3: ${{ steps.compare.outputs.need_phase3 }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr38-phase2-*
+          path: reports/phase2-seeds
+      - name: Group 9 experiments and check all three seeds per target
+        id: compare
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          files=sorted(Path('reports/phase2-seeds').rglob('*-seed-*.json'))
+          studies=[json.loads(p.read_text()) for p in files]
+          assert len(studies)==9, len(studies)
+          assert sorted(set(x['variant'] for x in studies))==['asymmetric_fp','atr_expansion','rr15']
+          assert all(x['evaluated']==2048 and x['oos_accessed'] is False for x in studies)
+          all_seeds=[]
+          any_pf_11=False
+          all_qualified=False
+          for variant in ['atr_expansion','rr15','asymmetric_fp']:
+            group=[x for x in studies if x['variant']==variant]
+            assert sorted(x['seed'] for x in group)==[42,43,44]
+            every=all(x['champion']['qualifies'] for x in group)
+            any_pf_11 |= all(min(x['champion']['pf_q1'],x['champion']['pf_q2'])>1.10 for x in group)
+            all_qualified |= every
+            all_seeds.append(dict(variant=variant,
+                all_three_qualified=every,
+                models=[dict(seed=x['seed'],generation=x['selected_generation'],
+                    pf_q1=x['champion']['pf_q1'],pf_q2=x['champion']['pf_q2'],
+                    real_per_hour=x['champion']['executed_hourly'],
+                    dd_semester=x['champion']['semester_dd'],qualifies=x['champion']['qualifies'])
+                    for x in group]))
+          need3=not all_qualified and not any_pf_11
+          data=dict(protocol='PR38_phase2_v1',population=128,training_generations=16,
+            evaluations=18432,phase3_required=need3,all_qualified=all_qualified,
+            achieved_pf_1_10_all_seeds=any_pf_11,seeds=[42,43,44],
+            signal_timeframes=['M5','M15'],oos_accessed=False,results=all_seeds)
+          out=Path('reports/pr38-phase2-summary.json')
+          out.parent.mkdir(parents=True,exist_ok=True)
+          out.write_text(json.dumps(data,indent=2,allow_nan=False)+'\n')
+          print('PR38_PHASE2_SUMMARY '+json.dumps(data,allow_nan=False),flush=True)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+            f.write(f"need_phase3={'true' if need3 else 'false'}\n")
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+            f.write('## Phase2 ATR, R:R and asymmetric FP — 16 gens × 128 × 3 seeds\n\n')
+            for item in all_seeds:
+              for x in item['models']:
+                f.write(f"{item['variant']} seed {x['seed']}, Gen{x['generation']}: "
+                  f"PF Q1/Q2 {x['pf_q1']:.3f}/{x['pf_q2']:.3f}, "
+                  f"executed/h {x['real_per_hour']:.3f}, "
+                  f"DD {x['dd_semester']:.2f}%, qualifies {x['qualifies']}\n\n")
+            f.write(f"Phase3 required={need3}. No Q3 accessed.\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr38-phase2-summary
+          path: reports/pr38-phase2-summary.json
+          if-no-files-found: error
+          retention-days: 90
+
+  phase3:
+    name: Structural ${{ matrix.variant }}, seed ${{ matrix.seed }}, 15x128
+    needs: summarize2
+    if: needs.summarize2.outputs.need_phase3 == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [m15_attention, garch_regime]
+        seed: [42, 43, 44]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Pinned CPU runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Verify causal M5/M15 attention and GARCH data
+        run: python -m pytest -q tests/test_m5_m15_target_experiments.py
+      - name: Retrieve Gen397 seed parent from reference run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports/prior-seed
+          gh run download 42544173112 --repo "$GITHUB_REPOSITORY" \
+            --name "m5-gen376-397-seed-${{ matrix.seed }}" \
+            --dir reports/prior-seed
+      - name: Download sealed original GARCH, M5/M15 and target datasets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/m5-upstream-is reports/m5-alpha-targets
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+            --pattern manifest.json --dir reports/m5-upstream-is --clobber
+          gh release download data-m5-m15-is-2026h1-alpha-labels-v1 \
+            --repo "$GITHUB_REPOSITORY" --pattern targets.npz \
+            --pattern manifest.json --dir reports/m5-alpha-targets --clobber
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Restore canonical March founder
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Evolve temporal M15 attention or GARCH-gated heads, 15 generations
+        run: |
+          python -m scripts.run_m5_m15_target_experiments \
+            --seed ${{ matrix.seed }} --variant ${{ matrix.variant }} \
+            --founder-report reports/prior-seed/replay.json \
+            --universe reports/m5-upstream-is/universe.npz \
+            --manifest reports/m5-upstream-is/manifest.json \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json \
+            --target-path reports/m5-alpha-targets/targets.npz \
+            --target-manifest reports/m5-alpha-targets/manifest.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr38-phase3-${{ matrix.variant }}-seed-${{ matrix.seed }}
+          path: reports/m5-alpha-research/phase3/*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  final:
+    name: Consolidate all tested hypotheses and quality acceptance
+    needs: [summarize2, phase3]
+    if: always() && needs.summarize2.result == 'success' && (needs.phase3.result == 'success' || needs.phase3.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr38-phase2-*
+          path: reports/hypotheses
+      - name: Include phase3 results if executed
+        if: needs.phase3.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: pr38-phase3-*
+          path: reports/phase3-hypotheses
+      - name: Strict cross-seed acceptance, no fictional profit
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          paths=list(Path('reports/hypotheses').rglob('*-seed-*.json'))
+          paths+=list(Path('reports/phase3-hypotheses').rglob('*-seed-*.json'))
+          records=[json.loads(p.read_text()) for p in paths]
+          assert len(records)>=9 and all(not x['oos_accessed'] for x in records)
+          by_variant={}
+          for v in records:
+            by_variant.setdefault(v['variant'],[]).append(v)
+          summary=[]
+          for variant,values in by_variant.items():
+            assert sorted(v['seed'] for v in values)==[42,43,44]
+            allpass=all(v['champion']['qualifies'] for v in values)
+            summary.append(dict(variant=variant,all_seeds_pass=allpass,
+              three_seeds=[dict(
+                seed=v['seed'],generation=v['selected_generation'],
+                pf_q1=v['champion']['pf_q1'],pf_q2=v['champion']['pf_q2'],
+                real_hourly=v['champion']['executed_hourly'],
+                dd_semester=v['champion']['semester_dd'],qualified=v['champion']['qualifies'])
+                for v in values]))
+          accepted=[x['variant'] for x in summary if x['all_seeds_pass']]
+          out=dict(protocol='PR38_IS_sequential_hypotheses_v1',
+            signal_timeframes=['M5','M15'],seeds=[42,43,44],oos_accessed=False,
+            no_backprop=True,all_criteria_met=bool(accepted),accepted_variants=accepted,
+            evaluated_hypotheses=summary,
+            caution='In-sample optimization is not proof of out-of-sample alpha. No automatic promotion.')
+          target=Path('reports/pr38-hypothesis-final.json')
+          target.write_text(json.dumps(out,indent=2,allow_nan=False)+'\n')
+          print('PR38_FINAL '+json.dumps(out,allow_nan=False),flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+            f.write('## PR38 all examined variants — Q1/Q2 only; Q3 untouched\n\n')
+            for h in summary:
+              for x in h['three_seeds']:
+                f.write(f"{h['variant']} seed{x['seed']} Gen{x['generation']}: PF "
+                  f"{x['pf_q1']:.3f}/{x['pf_q2']:.3f}, "
+                  f"{x['real_hourly']:.3f}/h, DD {x['dd_semester']:.2f}%, "
+                  f"pass={x['qualified']}\n\n")
+            f.write(f"All-three-seed acceptance: {accepted or 'NONE'}; Q3 unaccessed.\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr38-all-hypotheses-final
+          path: reports/pr38-hypothesis-final.json
+          if-no-files-found: error
+          retention-days: 90
