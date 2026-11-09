@@ -1,0 +1,217 @@
+name: PR45 — Obtain 2026 Q3 HistData and seal four native causal M5 Parquets
+
+on:
+  push:
+    branches:
+      - codex/forex-pr45-q3-histdata-native-inputs
+    paths:
+      - 'research/triggers/pr45-q3-data-v*.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: pr45-official-q3-data-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: '0'
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+
+jobs:
+  source_and_native:
+    name: Official HistData Q3 source and continuous GARCH / ${{ matrix.symbol }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [EURUSD, GBPUSD, AUDUSD, USDCAD]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Reuse original PR40/PR41 feature environment, no genetic training
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Validate source protocol and Q2 seeded ratios — synthetic only
+        run: |
+          python -m pytest -q tests/test_pr45_q3_native_data.py tests/test_pr44_q3_single_pass_audit.py tests/test_pr40_garch_universe.py
+      - name: Restore original frozen founder/normalizer input (NO model changes)
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Restore sealed March founder without training it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Get THIS symbol's signed H1 universe, never another pair's data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports/pr45-h1
+          slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+          if [ "$PAIR" = "EURUSD" ]; then
+            gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern universe.npz --pattern manifest.json \
+              --dir reports/pr45-h1 --clobber
+          else
+            gh release download "data-pr40-${slug}-m5-m15-garch-universe-2026h1-v1" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern universe.npz --pattern manifest.json \
+              --dir reports/pr45-h1 --clobber
+            mkdir -p reports/pr45-h1-candles
+            gh release download "data-pr40-${slug}-m5-m15-2026h1-v1" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern ohlcv.npz --pattern manifest.json \
+              --dir reports/pr45-h1-candles --clobber
+          fi
+      - name: Acquire real provider ZIPs (EUR Jan-Sep; other pairs Jun-Sep)
+        env:
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          python -m scripts.build_pr45_q3_native acquire --symbol "$PAIR"
+      - name: Build Q3 Parquet + PR44 universe; GARCH computed with H1 history
+        env:
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          extra=()
+          if [ "$PAIR" != "EURUSD" ]; then
+            extra=(--h1-ohlcv reports/pr45-h1-candles/ohlcv.npz \
+                   --h1-manifest reports/pr45-h1-candles/manifest.json)
+          fi
+          python -m scripts.build_pr45_q3_native build \
+            --symbol "$PAIR" \
+            --h1-universe reports/pr45-h1/universe.npz \
+            "${extra[@]}"
+      - name: Verify native Q3 schema/provenance before accepting any release
+        env:
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          import pandas as pd
+          from scripts.run_pr44_q3_single_pass_audit import load_native_q3, SOURCE_SHA
+          s=os.environ['PAIR']
+          base=Path("reports/pr45-q3-native")/s.lower()
+          data,t,hours,meta=load_native_q3(s,base/"universe.npz",base/"manifest.json")
+          parquet=base/f"{s}_M5_Q3_2026.parquet"
+          frame=pd.read_parquet(parquet)
+          assert len(frame)>10000 and frame['m5_open_utc'].min() >= pd.Timestamp("2026-07-01T00:00Z")
+          assert frame['m5_close_utc'].max() <= pd.Timestamp("2026-10-01T00:00Z")
+          assert (frame['garch_sigma_m5']>=0).all()
+          assert meta['frozen_h1_input_sha256']==SOURCE_SHA[s]
+          assert len(meta['q2_eligible_volatility_tail'])==48
+          assert all(k in meta['source_zip_sha256'] for k in ('202607','202608','202609'))
+          assert meta['model_genomes_loaded'] is False and meta['model_pfs_evaluated'] is False
+          assert meta['q3_full_source_coverage'] is True
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+            f.write(f"## Q3 {s}: HistData Q3 source acquired and causal H1→Q3 features sealed\n\n")
+            f.write(f"M5 rows: {len(frame)}, native decision rows: {len(t)}, "
+                    f"observed h: {hours}, archive sha: {meta['universe_sha256']}\n\n")
+            f.write("0 PR42/43 genomes evaluated. No PF/DD. OOS final audit not triggered.\n")
+          PY
+      - name: Publish authentic Q3 M5 Parquet/NPZ/manifest and original provider ZIPs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          set -euo pipefail
+          slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+          tag="data-pr44-q3-${slug}-m5-m15-garch-universe-2026q3-v1"
+          base="reports/pr45-q3-native/$slug"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Already published Q3 source; never overwrite OOS releases: $tag"
+            exit 1
+          fi
+          gh release create "$tag" \
+            "$base/universe.npz" "$base/manifest.json" \
+            "$base/${PAIR}_M5_Q3_2026.parquet" \
+            "$base/source-manifest.json" \
+            reports/pr45-raw/"$slug"/*.zip \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "PR45 verified Q3 $PAIR native M5/M15 OHLCV and causal H1→Q3 GARCH" \
+            --notes "Official HistData M1 raw sources (ZIP files attached) aggregated to closed M5/M15; normalizer and PR41 GARCH recipe unchanged; signed Q2 warmup for first Q3 relative-GARCH decision. Q3 July-Sep 2026 source and inputs only. No 24-model OOS replay, no PF/DD, no optimization."
+          mkdir -p "$RUNNER_TEMP/verify"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern universe.npz --pattern manifest.json \
+            --pattern "${PAIR}_M5_Q3_2026.parquet" \
+            --dir "$RUNNER_TEMP/verify"
+          cmp "$base/universe.npz" "$RUNNER_TEMP/verify/universe.npz"
+          cmp "$base/manifest.json" "$RUNNER_TEMP/verify/manifest.json"
+          cmp "$base/${PAIR}_M5_Q3_2026.parquet" \
+              "$RUNNER_TEMP/verify/${PAIR}_M5_Q3_2026.parquet"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr45-q3-native-${{ matrix.symbol }}
+          path: |
+            reports/pr45-q3-native/${{ matrix.symbol }}/
+            reports/pr45-q3-native/${{ matrix.symbol }}/manifest.json
+            reports/pr45-q3-native/${{ matrix.symbol }}/universe.npz
+          if-no-files-found: warn
+          retention-days: 90
+
+  all_four_ready:
+    name: Verify all four Q3 datasets published; do not execute PR44
+    needs: source_and_native
+    runs-on: ubuntu-latest
+    steps:
+      - name: Zero-dependency release availability audit, no Q3 scoring
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for PAIR in EURUSD GBPUSD AUDUSD USDCAD; do
+            slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+            tag="data-pr44-q3-${slug}-m5-m15-garch-universe-2026q3-v1"
+            assets="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            for asset in universe.npz manifest.json "${PAIR}_M5_Q3_2026.parquet" source-manifest.json; do
+              echo "$assets" | grep -Fxq "$asset" || {
+                echo "::error::Missing Q3 published asset: $tag/$asset"
+                exit 1
+              }
+            done
+            echo "Q3 official source and causal universe ready: $PAIR"
+          done
+          echo "## All four official Q3 M5 Parquet/native datasets published" >> "$GITHUB_STEP_SUMMARY"
+          echo "No PR42/PR43 inference or OOS metrics calculated here; PR44 requires separate explicit authorization." >> "$GITHUB_STEP_SUMMARY"
