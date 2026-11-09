@@ -187,3 +187,42 @@ El [CI #42569749262](https://github.com/Asriel550/Forex/actions/runs/42569749262
 ### Replay portfolio real iniciado
 
 [GitHub Actions #42570155781](https://github.com/Asriel550/Forex/actions/runs/42570155781) utiliza exactamente los ganadores PR38 seeds 42/43/44, GARCH 0% y p85 por par, y una cuenta común con cupo 2/h y stop global. El informe financiero de cartera **no se considerará realizado** hasta que terminen los tres jobs reales y se publique el JSON de conciliación intersemillas.
+
+
+## 12. Resultado FINAL de PR40 H1 — cartera de cuatro divisas, tres semillas
+
+[Run de cartera #42570155781](https://github.com/Asriel550/Forex/actions/runs/42570155781): **SUCCESS técnico** en readiness, semillas 42/43/44 y consolidación final, con el artefacto [`pr40-four-pair-portfolio-summary`](https://github.com/Asriel550/Forex/actions/runs/42570155781/artifacts/13652896742). El `SUCCESS` no se interpreta como rentabilidad. **`three_seeds_qualified=false`**, **`q3_accessed=false`**, **`any_model_promoted=false`**. El modelo es exactamente PR38 (GARCH original 0%, gate local p85; solo M5+M15, sin M1 de señal), sin refit de pesos.
+
+| Semilla | PF cartera Q1 | PF cartera Q2 | Ejecutados H1 | Real ejecutada/h H1 | DD máximo H1 | PnL H1 continuo | Stop H1 | Califica |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 42 | 0,94454 | 0,76000 | 527 | 0,17935 | 20,0737% | -132 USD | Sí | **NO** |
+| 43 | 0,93962 | 0,77460 | 466 | 0,15859 | 20,4380% | -128 USD | Sí | **NO** |
+| 44 | 0,94328 | 0,81778 | 446 | 0,15178 | 20,1802% | -114 USD | Sí | **NO** |
+
+**Importante sobre la contabilidad:** PF Q1 y PF Q2 se calculan en *replays trimestrales independientes* con saldo inicial separado, para comparar ambos trimestres. H1 usa **una sola cuenta continua**, activa el stop por drawdown durante Q1 y deja de operar en Q2. Por ello el PnL H1 continuo **no es la suma** del PnL de Q1/Q2 aislados. La frecuencia H1 incorpora el tiempo inactivo tras el stop, no extrapola admisiones anteriores.
+
+### Comparación con EUR/USD aislado, misma semilla original PR38
+
+| Seed | PF EUR Q1 | PF EUR Q2 | EUR ejecutada/h H1 | EUR DD H1 | Cartera ejecutada/h H1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 42 | 1,27179 | 1,22353 | 0,20828 | 6,4047% | 0,17935 |
+| 43 | 1,23130 | 1,17288 | 0,20113 | 7,4738% | 0,15859 |
+| 44 | 1,25538 | 1,20992 | 0,22087 | 8,2667% | 0,15178 |
+
+### Transferencia a instrumentos nuevos
+
+Los replays *standalone* (cada par con la misma cuenta individual, filtro GARCH original 0% y gate p85) también fueron negativos en casi todos los trimestres:
+
+| Semilla | Par | PF Q1 | PF Q2 |
+| --- | --- | ---: | ---: |
+| 42 | GBPUSD | 0,9377 | 0,8186 |
+| 42 | AUDUSD | 0,8448 | 0,9535 |
+| 42 | USDCAD | 0,7907 | 0,5767 |
+| 43 | GBPUSD | 1,0098 | 0,7200 |
+| 43 | AUDUSD | 0,8492 | 0,9840 |
+| 43 | USDCAD | 0,7342 | 0,5128 |
+| 44 | GBPUSD | 0,9043 | 0,8000 |
+| 44 | AUDUSD | 0,9297 | 0,8385 |
+| 44 | USDCAD | 0,7188 | 0,5053 |
+
+**Conclusión técnica:** no basta con multiplicar capacidad por cuatro. Las propuestas del núcleo EUR entrenado no conservaron alfa rentable al transferirse mecánicamente a los tres pares, y los stops compartidos/competencia de horario redujeron, en vez de aumentar, el ritmo ejecutado. La hipótesis explícita de PR40 con núcleo intocable y canasta inicial fija **queda descartada para estos datos IS Q1+Q2**. No ajustar a posteriori la canasta con PF IS para ocultar este resultado, ni declarar éxito por los trabajos CI verdes. Q3 sigue en cuarentena sin evaluación. PR40 permanece draft, sin promoción.
