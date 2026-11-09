@@ -1,0 +1,5 @@
+PR40 HistData final form validation retry.
+Website offers paired download/status forms; choose only get.php and verify date 2026, datemonth 202601-202606, platform ASCII, timeframe M1 and expected pair.
+Reject token-only mismatched-pair fallback and reject July Q3.
+Regression tests adjusted for exact source fields, then 18 monthly official raw M1 source ZIP acquisitions.
+M1 used solely to aggregate M5 and M15 closed OHLCV, no PR38 changes, no Q3 model read.
