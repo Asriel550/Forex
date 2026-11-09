@@ -208,7 +208,18 @@ def run(*,symbol,seed,universe,manifest,eur_universe,eur_manifest,golden,golden_
     zeros=np.zeros(GENE_COUNT_LOCAL,dtype="<f8")
     def batch(pop):
         values=[evaluate_local(g,problem) for g in pop]
-        return {name:np.asarray([r[name] for r in values]) for name in values[0]}
+        # The original evaluator uses None for undefined PF when no losses
+        # occur. The genetic engine expects NumPy scalars with .tolist()
+        # even on the first *invalid* founder candidate. NaN is a transport
+        # marker here, NOT a reported profit factor or acceptance shortcut.
+        def transport(value):
+            if value is None:
+                return float("nan")
+            if isinstance(value,(list,tuple)):
+                return [transport(x) for x in value]
+            return value
+        return {name:np.asarray([transport(r[name]) for r in values])
+                for name in values[0]}
     evo=evolve_population(
         batch,zeros,f"pr41_{symbol}_independent_garch",rng_seed,
         first_generation=FIRST_GENERATION,last_generation=LAST_GENERATION,
@@ -223,8 +234,10 @@ def run(*,symbol,seed,universe,manifest,eur_universe,eur_manifest,golden,golden_
         dict(generation=int(rec["record"]["generation"]),
              score=float(rec["record"]["score"]),
              median_score=float(rec["median_score"]),
-             pf_q1=rec["record"]["quarter_pf"][0],
-             pf_q2=rec["record"]["quarter_pf"][1],
+             pf_q1=(float(rec["record"]["quarter_pf"][0]) if
+                     np.isfinite(rec["record"]["quarter_pf"][0]) else None),
+             pf_q2=(float(rec["record"]["quarter_pf"][1]) if
+                     np.isfinite(rec["record"]["quarter_pf"][1]) else None),
              executed_hourly=rec["record"]["semester_rate"],
              dd_semester_pct=rec["record"]["semester_dd"],
              qualified=bool(rec["record"]["qualifies"]),
