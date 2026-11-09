@@ -246,3 +246,156 @@ jobs:
           path: reports/pr41-20gen-summary.json
           if-no-files-found: error
           retention-days: 90
+
+
+  filtered_portfolio:
+    name: Recompute shared-account portfolio ONLY if >=2 pairs pass all seeds
+    needs: summary
+    if: ${{ fromJSON(needs.summary.outputs.eligible_count) >= 2 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [42, 43, 44]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Pinned original research runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Download verified EURUSD original account and market
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/m5-upstream-is
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern universe.npz --pattern manifest.json \
+            --dir reports/m5-upstream-is --clobber
+      - name: Retrieve signed native M5/M15 GARCH H1 universes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for PAIR in GBPUSD AUDUSD USDCAD; do
+            slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+            mkdir -p "reports/pr41-asset-data/$slug"
+            gh release download "data-pr40-${slug}-m5-m15-garch-universe-2026h1-v1" \
+              --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+              --pattern manifest.json \
+              --dir "reports/pr41-asset-data/$slug" --clobber
+          done
+      - uses: actions/download-artifact@v8
+        with:
+          name: pr41-independent-20gen-summary
+          path: reports/pr41-summary
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr41-native-*
+          path: reports/pr41-seed-results
+      - name: Safely assemble all 12 signed independent result files
+        run: |
+          mkdir -p reports/pr41-models
+          find reports/pr41-seed-results -type f -name '*-seed-*.json' \
+            -exec cp "{}" reports/pr41-models/ \;
+          test "$(find reports/pr41-models -name '*-seed-*.json' | wc -l)" -eq 12
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Restore original account/risk source, not EUR strategy genes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Replay ONLY passing assets in one account and 2/h globally
+        run: |
+          python -m scripts.run_pr41_filtered_portfolio \
+            --seed ${{ matrix.seed }} \
+            --selection reports/pr41-summary/pr41-20gen-summary.json \
+            --individual-reports reports/pr41-models \
+            --asset-data reports/pr41-asset-data \
+            --eur-universe reports/m5-upstream-is/universe.npz \
+            --eur-manifest reports/m5-upstream-is/manifest.json \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr41-qualified-portfolio-seed-${{ matrix.seed }}
+          path: reports/pr41-filtered-portfolio/seed-*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  filtered_portfolio_summary:
+    name: Summarize only prequalified pair portfolios, all 3 seeds
+    needs: [summary,filtered_portfolio]
+    if: needs.filtered_portfolio.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr41-qualified-portfolio-seed-*
+          path: reports/pr41-filtered
+      - name: Consolidate shared-risk PF and DD, never evaluate OOS
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          studies=[json.loads(p.read_text()) for p in
+             Path('reports/pr41-filtered').rglob('seed-*.json')]
+          assert sorted(x['seed'] for x in studies)==[42,43,44]
+          assert len({tuple(x['selected_assets']) for x in studies})==1
+          assert all(x['q3_accessed'] is False for x in studies)
+          summary=dict(protocol='PR41_conditional_filtered_portfolio_H1_v1',
+              selected_assets=studies[0]['selected_assets'],
+              seeds=[42,43,44],all_qualified=all(x['qualifies'] for x in studies),
+              q3_accessed=False,rows=[dict(seed=x['seed'],pf_q1=x['pfs'][0],
+                 pf_q2=x['pfs'][1],real_h=x['h1_executed_hourly'],
+                 dd_h1=x['h1_dd_pct'],qualifies=x['qualifies']) for x in studies],
+              warning='H1 IS selection and portfolio evaluation are not statistically independent OOS.')
+          Path('reports/pr41-filtered-portfolio-summary.json').write_text(
+              json.dumps(summary,indent=2,allow_nan=False)+'\n'
+          )
+          print('PR41_FILTERED_PORTFOLIO_FINAL '+json.dumps(summary,allow_nan=False),flush=True)
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
+            f.write('## Only three-seed qualified IS assets in shared portfolio\n\n')
+            f.write(str(summary['rows'])+'\n\n')
+            f.write('Q3 untouched. No promotion.\n')
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr41-qualified-portfolio-summary
+          path: reports/pr41-filtered-portfolio-summary.json
+          if-no-files-found: error
+          retention-days: 90
