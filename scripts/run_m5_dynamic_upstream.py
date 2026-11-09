@@ -197,7 +197,7 @@ def key(f):
 
 
 def run(*, universe, manifest, golden, golden_manifest, generations=1, seeds=(43,)):
-    if (type(generations) is not int or generations < 1 or generations > 21
+    if (type(generations) is not int or generations < 1 or generations > 22
             or not seeds or not set(seeds).issubset(SEEDS)
             or len(set(seeds)) != len(seeds)):
         raise ValueError("Gen 376+ requiere generaciones/semillas predeclaradas")
