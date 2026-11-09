@@ -1,6 +1,6 @@
 {
   "protocol": "PR40_four_major_pairs_IS_2026H1_v1",
-  "description": "Input inventory; absent assets are explicit blockers, not zero-PF instruments.",
+  "description": "EURUSD original plus three verified HistData M5/M15+GARCH Gen375 frozen universes, H1 2026 only; no Q3.",
   "signal_timeframes": [
     "M5",
     "M15"
@@ -28,10 +28,10 @@
       "golden_garch_snapshot_sha256": "7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504"
     },
     "GBPUSD": {
-      "status": "candles_ready",
-      "release_tag": null,
-      "universe_sha256": null,
-      "required_evidence": "HistData H1 M5/M15 OHLC acquired and SHA-pinned; still need independent causal M5 GARCH, matching frozen Gen375 normalizer/features, complete 8-array model universe, cross-symbol replay.",
+      "status": "verified",
+      "release_tag": "data-pr40-gbpusd-m5-m15-garch-universe-2026h1-v1",
+      "universe_sha256": "2cc9ab95266cb3a87c2988ffd8006c79e9db68765d5ab54ded129c161fff4a0b",
+      "required_evidence": "",
       "candle_release_tag": "data-pr40-gbpusd-m5-m15-2026h1-v1",
       "candle_ohlcv_sha256": "10a5d1aeecf9019134a6ed2b6c3131c6f48ca56dcb583df3dfca441690807b45",
       "m5_candles": 36155,
@@ -43,13 +43,15 @@
         "202604",
         "202605",
         "202606"
-      ]
+      ],
+      "garch_status": "causal M5 refit verified with frozen Gen375 normalizer; source M5/M15 HistData H1",
+      "garch_provenance_run_id": 42569749262
     },
     "AUDUSD": {
-      "status": "candles_ready",
-      "release_tag": null,
-      "universe_sha256": null,
-      "required_evidence": "HistData H1 M5/M15 OHLC acquired and SHA-pinned; still need independent causal M5 GARCH, matching frozen Gen375 normalizer/features, complete 8-array model universe, cross-symbol replay.",
+      "status": "verified",
+      "release_tag": "data-pr40-audusd-m5-m15-garch-universe-2026h1-v1",
+      "universe_sha256": "8d1f34d5bf38ce1c4beeb5079d374a7af1a9d07a8161d07fc010d56b251b0eee",
+      "required_evidence": "",
       "candle_release_tag": "data-pr40-audusd-m5-m15-2026h1-v1",
       "candle_ohlcv_sha256": "0c728f5602bc622fca9f98553e80aaf9bde4c50f1ca9746bc04d4fddc3083db0",
       "m5_candles": 36238,
@@ -61,13 +63,15 @@
         "202604",
         "202605",
         "202606"
-      ]
+      ],
+      "garch_status": "causal M5 refit verified with frozen Gen375 normalizer; source M5/M15 HistData H1",
+      "garch_provenance_run_id": 42569749262
     },
     "USDCAD": {
-      "status": "candles_ready",
-      "release_tag": null,
-      "universe_sha256": null,
-      "required_evidence": "HistData H1 M5/M15 OHLC acquired and SHA-pinned; still need independent causal M5 GARCH, matching frozen Gen375 normalizer/features, complete 8-array model universe, cross-symbol replay.",
+      "status": "verified",
+      "release_tag": "data-pr40-usdcad-m5-m15-garch-universe-2026h1-v1",
+      "universe_sha256": "bf866689bb549bf2d647d8600bd343148dfb44040fb51c9cbb2baa7738f4f8b9",
+      "required_evidence": "",
       "candle_release_tag": "data-pr40-usdcad-m5-m15-2026h1-v1",
       "candle_ohlcv_sha256": "c1f0b62d0b05cff5841185fe7803a7aa39ae9bea2287cbf1a6f51c1b21c6241c",
       "m5_candles": 36318,
@@ -79,7 +83,9 @@
         "202604",
         "202605",
         "202606"
-      ]
+      ],
+      "garch_status": "causal M5 refit verified with frozen Gen375 normalizer; source M5/M15 HistData H1",
+      "garch_provenance_run_id": 42569749262
     }
   },
   "no_model_refit": true,
