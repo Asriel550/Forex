@@ -1,0 +1,8 @@
+PR40 empirical four-pair portfolio replay authorized by VERIFIED input availability, Q1/Q2 IS ONLY.
+Sources: EURUSD PR36 M5/M15 v2 frozen SHA 05487661977ea0a612f7e717b81e84aadbb5e2071238ca6835d9944a06bc9be9;
+GBPUSD HistData GARCH+M5/M15 H1 SHA 2cc9ab95266cb3a87c2988ffd8006c79e9db68765d5ab54ded129c161fff4a0b;
+AUDUSD HistData GARCH+M5/M15 H1 SHA 8d1f34d5bf38ce1c4beeb5079d374a7af1a9d07a8161d07fc010d56b251b0eee;
+USDCAD HistData GARCH+M5/M15 H1 SHA bf866689bb549bf2d647d8600bd343148dfb44040fb51c9cbb2baa7738f4f8b9.
+Original PR38 garch_regime head seeds42/43/44, original GARCH band 0% and gate p85, no optimization/retraining, same normalized Gen375 M5/M15-arm.
+Run one global 2 trades/h, shared balance and stop, no M1 signals, Q3 untouched.
+Measure actual operational portfolio PF Q1 and Q2, Q1/Q2 PnL, executed frequency and max H1 DD. No promotion.
