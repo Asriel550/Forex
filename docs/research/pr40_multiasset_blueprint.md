@@ -155,3 +155,19 @@ El proveedor distribuye únicamente archivos base **M1 o tick**, no velas M5/M15
 La descarga exige identificar `/get.php` en el HTML; HistData también ofrece `/getStatus.php` con campos muy similares. Los primeros reintentos fallaron por seleccionar ambos formularios; [CI actual de adquisición](https://github.com/Asriel550/Forex/actions/runs/42568580038) incluye la corrección y su test.
 
 El archivo `ohlcv.npz` tendrá ambas temporalidades, fingerprints OHLCV y fuentes firmadas. Es **solo un dataset de velas**, no una validación de la red ni de la cartera: GARCH por símbolo y construcción del universo neuronal siguen siendo fases distintas.
+
+## 10. Resultado verificado de HistData: tres símbolos descargados
+
+**Las adquisiciones por símbolo terminaron exitosamente** en el [run #42568755753](https://github.com/Asriel550/Forex/actions/runs/42568755753). La consolidación del primer run falló por una **ruta incorrecta de extracción de artefactos**; sus tres trabajos individuales sí pasaron descarga, integridad, SHA y publicación de Release. La corrección se verificará en la [repetición #42569048427](https://github.com/Asriel550/Forex/actions/runs/42569048427). Ninguna de estas incidencias invalida los archivos ya sellados.
+
+| Símbolo | M5 completas | M15 completas | SHA256 de `ohlcv.npz` | Release |
+| --- | ---: | ---: | --- | --- |
+| GBPUSD | **36.155** | **11.773** | `10a5d1aeecf9019134a6ed2b6c3131c6f48ca56dcb583df3dfca441690807b45` | [GBP/USD](https://github.com/Asriel550/Forex/releases/tag/data-pr40-gbpusd-m5-m15-2026h1-v1) |
+| AUDUSD | **36.238** | **11.844** | `0c728f5602bc622fca9f98553e80aaf9bde4c50f1ca9746bc04d4fddc3083db0` | [AUD/USD](https://github.com/Asriel550/Forex/releases/tag/data-pr40-audusd-m5-m15-2026h1-v1) |
+| USDCAD | **36.318** | **11.855** | `c1f0b62d0b05cff5841185fe7803a7aa39ae9bea2287cbf1a6f51c1b21c6241c` | [USD/CAD](https://github.com/Asriel550/Forex/releases/tag/data-pr40-usdcad-m5-m15-2026h1-v1) |
+
+**Suma:** 108.711 velas M5 y 35.472 velas M15 verificadas, provenientes de **18 ZIP mensuales HistData** (seis por símbolo). Cada Release contiene `ohlcv.npz`, `manifest.json` y `source-manifest.json`, con SHA256 de cada ZIP, huellas de ambos OHLCV, zona horaria del proveedor y detalle de continuidad. Las Releases no demuestran independencia estadística entre pares.
+
+La fuente junio en EST fijo puede contener algunos registros que corresponden al 1 de julio en UTC. Se excluyeron **antes de la generación de velas**: GBPUSD 296, AUDUSD 296, USDCAD 299 registros. **Ninguno se utilizó para ingeniería de features, training o replays**; Q3 no se evaluó.
+
+El inventario distingue ahora **`candles_ready`** para las tres nuevas divisas de **`verified`** para el universo neuronal EURUSD. El siguiente paso pendiente es calcular y auditar **GARCH M5 independiente por divisa, inputs neuronales Gen375 y cabezas PR38 congeladas** y ejecutar el replay con riesgo compartido. **Por tanto, el PF, DD y contratos/h de cartera siguen sin medirse.**
