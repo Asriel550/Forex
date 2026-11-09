@@ -55,27 +55,6 @@ def parse_source_form(html,symbol,period):
         and x.get("action","").split("?")[0].rstrip("/") == "/get.php"
     ]
     if len(matches)!=1:
-        # HistData currently may render tk outside a <form>. The public
-        # Generic ASCII M1 protocol specifies all other fields explicitly.
-        from html.parser import HTMLParser
-        class AllInputs(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.items=[]
-            def handle_starttag(self,tag,attrs):
-                if tag.lower()=="input":
-                    self.items.append(dict(attrs))
-        inputs=AllInputs()
-        inputs.feed(html)
-        tokens={item.get("value","") for item in inputs.items
-                if (item.get("id","").lower()=="tk"
-                    or item.get("name","").lower()=="tk")
-                and item.get("value")}
-        if len(tokens)==1:
-            return {
-                "tk":tokens.pop(),"date":"2026","datemonth":period,
-                "platform":"ASCII","timeframe":"M1","fxpair":symbol,
-            }
         import re
         headline=re.search(r"<title[^>]*>(.*?)</title>",html,flags=re.I|re.S)
         evidence={
@@ -94,7 +73,10 @@ def parse_source_form(html,symbol,period):
         print("PR40_HISTDATA_FORM_DEBUG "+json.dumps(evidence),flush=True)
         raise ValueError(f"HistData no publicó un formulario M1 único para {symbol} {period}")
     fields=matches[0]["fields"]
-    if any(k.lower() in {"202607","202608","202609"} for k in fields.values()):
+    if (fields.get("date")!="2026" or fields.get("datemonth")!=period
+            or fields.get("platform")!="ASCII"):
+        raise ValueError(f"Formulario HistData no corresponde a {symbol} {period} ASCII/M1")
+    if any(value in {"202607","202608","202609"} for value in fields.values()):
         raise ValueError("Formulario fuera del periodo IS")
     return fields
 
