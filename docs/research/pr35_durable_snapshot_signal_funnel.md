@@ -78,3 +78,46 @@ No lanzar Gen 376–396 por haber ampliado un contador de señales.
 El Gate de Convicción Pura no cambia. PF>1,20 y DD<15% siguen requeridos
 antes de promover genomas; la meta 1,2/h no puede alcanzarse en Q2
 bajo el embudo congelado actual. Q3 permanece aislado.
+
+## Resultados medidos (CI PR35)
+
+[Workflow aprobado, reconstrucción exacta de los seis meses](https://github.com/Asriel550/Forex/actions/runs/42538864576).
+[JSON completo de la auditoría](https://github.com/Asriel550/Forex/actions/runs/42538864576/artifacts/13640940430).
+
+Las huellas GARCH/MC y las máscaras de entrada de **cada mes enero–junio**
+coincidieron con el snapshot canónico. La admisión principal resulta:
+
+| Tramo | M5 elegibles | Cumplen entry>0 | Pasan entry + margen | Tras cupo (2/h) | Capacidad/h |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Q1 | 17.287 | 7.159 | 5.594 | 1.766 | 1,226 |
+| Q2 | 17.974 | 5.360 | 4.374 | 1.425 | 0,951 |
+| Semestre | 35.261 | 12.519 | 9.968 | 3.191 | 1,086 |
+
+El `activation_threshold` congelado de la cabeza primaria vale
+**5,220727152415592**. Todas las decisiones de dirección evaluadas tenían
+margen no nulo, por lo que esa cláusula del filtro no explica la pérdida.
+
+**Q2: ablation de cobertura (antes de p85, sin PnL y sin stop):**
+
+| Filtro primario | Propuestas Q2 | Tras cupo (2/h) | Capacidad/h |
+| --- | ---: | ---: | ---: |
+| Original (entry>0 y margen>5,2207) | 4.374 | 1.425 | 0,951 |
+| Margen reducido a la mitad | 4.858 | 1.482 | 0,989 |
+| Eliminar umbral de margen | 5.360 | 1.535 | 1,025 |
+| Relajar ligeramente entry (−0,25 × std del logit) | 5.738 | 1.746 | 1,166 |
+| Eliminar el filtro entry sin alterar margen | 14.799 | 3.003 | 2,005 |
+| Sin ninguno de ambos filtros | 17.974 | 3.090 | 2,063 |
+
+**Diagnóstico:** en Q2 el filtro de entrada elimina 70,2% de velas
+elegibles *antes* de aplicar el margen, frente al 18,4% adicional que
+descarta el margen entre las velas que superaron entry. El filtro primario
+de entrada aporta la restricción más intensa. Reducir solo el umbral
+de margen no alcanza 1,2/h ni siquiera antes del gate adaptativo.
+
+Estos valores son **capacidad potencial superior** con las propuestas y el
+cupo horario, no una predicción de frecuencia ejecutada bajo p85/p80/p75,
+y **no certifican PnL, PF o drawdown** de ninguna nueva propuesta. Abrir
+el filtro puede introducir operaciones de menor calidad. Para evolucionar
+una cabeza de admisión con nuevas señales se necesita un nuevo pipeline
+causal de candidatos y una validación IS por trimestre; no retocar los
+genomas congelados ni observar Q3.
