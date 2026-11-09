@@ -1,0 +1,6 @@
+Experiment PR38 Phase1 control.
+Start p85, p80, p75 and volatility-dynamic causal gate smoke, two generations 128 models per mode across seeds 42/43/44.
+Historical data only 2026-01-01<=t<2026-07-01 (Q1/Q2 IS).
+Sealed M5+M15 universe release: data-m5-m15-is-2026h1-full-universe-v2.
+No M1 indicators. Q3 unaccessed. No automatic model promotion.
+Control baseline: original p85 Gen376-397 per-seed champion.
