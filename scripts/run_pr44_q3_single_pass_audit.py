@@ -19,7 +19,8 @@ from src.decision import RiskConfig
 from src.environment import AccountConfig
 from src.replay_engine import replay_contracts
 from src.reproducibility import array_sha256
-from src.train import write_json
+def write_json(path, payload):
+    Path(path).write_text(json.dumps(payload,indent=2,allow_nan=False)+'\n',encoding='utf-8')
 
 SYMBOLS = ("EURUSD","GBPUSD","AUDUSD","USDCAD")
 SEEDS = (42,43,44)
