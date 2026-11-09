@@ -87,12 +87,18 @@ def rejected_candidate(eligible, thresholds):
     )
 
 
-def one_candidate(genes, problem, *, include_traces=False, gate_mode='p85'):
+def one_candidate(genes, problem, *, include_traces=False, gate_mode='p85',
+                  extra_admissions=None):
     data = problem["data"]
     upstream, thresholds = dynamic_upstream(
         data["entry"], data["margin"], data["timeframe"], data["volatility"],
         genes, problem["legacy_threshold"]
     )
+    if extra_admissions is not None:
+        additional = np.asarray(extra_admissions, dtype=bool)
+        if additional.shape != upstream.shape:
+            raise ValueError('Filtro de régimen no alineado')
+        upstream &= additional
     idx = np.flatnonzero(upstream)
     if len(idx) <= 500:
         return rejected_candidate(len(idx),thresholds)
