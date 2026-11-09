@@ -39,6 +39,18 @@ def test_form_requires_pair_and_unique_monthly_m1_ascii_token():
         parse_source_form(html,"AUDUSD","202607")
 
 
+def test_current_site_can_expose_tk_outside_form():
+    html='''<html><title>USD/CAD</title>
+    <input type="hidden" id="tk" value="site-token-2026">
+    <form action="/get.php"><input name="not-the-token" value="x"></form>
+    </html>'''
+    fields=parse_source_form(html,"USDCAD","202603")
+    assert fields=={
+        "tk":"site-token-2026","date":"2026","datemonth":"202603",
+        "platform":"ASCII","timeframe":"M1","fxpair":"USDCAD",
+    }
+
+
 def test_zip_validator_rejects_cross_symbol_or_cross_month(tmp_path):
     blob=b"20260105 000000;1.234;1.235;1.230;1.232;0\n"*800
     good=tmp_path/"data.zip"
