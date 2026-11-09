@@ -1,0 +1,186 @@
+name: PR40 GARCH per-pair from sealed HistData H1 M5 M15, frozen Gen375
+
+on:
+  push:
+    branches:
+      - codex/m5-m15-multiasset-pr40
+    paths:
+      - research/triggers/pr40-garch-v*.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: pr40-per-pair-garch-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: '0'
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+
+jobs:
+  build:
+    name: Build causal H1 GARCH+M5-M15 freeze for ${{ matrix.symbol }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        symbol: [GBPUSD, AUDUSD, USDCAD]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install exact original research dependencies
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Download SHA-sealed HistData M5 and M15 H1 candles, exclude Q3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          mkdir -p "reports/pr40-histdata/$PAIR"
+          tag="data-pr40-$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')-m5-m15-2026h1-v1"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern ohlcv.npz --pattern manifest.json \
+            --dir "reports/pr40-histdata/$PAIR" --clobber
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Recover frozen original March founder (no re-training)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Refit symbol-specific causal M5 GARCH, frozen original M5+M15 features, no Q3
+        env:
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          python -m scripts.build_pr40_garch_universe \
+            --symbol "$PAIR" \
+            --ohlcv "reports/pr40-histdata/$PAIR/ohlcv.npz" \
+            --ohlcv-manifest "reports/pr40-histdata/$PAIR/manifest.json" \
+            --output "reports/pr40-garch/$PAIR/universe.npz" \
+            --manifest "reports/pr40-garch/$PAIR/manifest.json"
+      - name: Verify schema/SHA/GARCH and frozen normalization before publishing
+        env:
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from src.m5_multiasset_inputs import verify_new_asset
+          symbol=os.environ["PAIR"]
+          base=Path("reports/pr40-garch")/symbol
+          arrays,meta=verify_new_asset(symbol,base/"universe.npz",base/"manifest.json")
+          assert meta["q3_accessed"] is False
+          assert meta["source_timeframes"]==["M5","M15"]
+          assert meta["gen375_normalizer_frozen"] is True
+          assert meta["garch_m5_causal_refit"] is True
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as f:
+            f.write(f"## H1 {symbol} GARCH+Gen375 frozen M5/M15 universe\n\n")
+            f.write(f"Rows {meta['rows']}, legacy proposals {meta['original_proposals']}, "
+                    f"SHA256 {meta['universe_sha256']}; No Q3; No M1 signals.\n")
+          PY
+      - name: Publish and re-download signed per-symbol H1 GARCH universe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          set -euo pipefail
+          tag="data-pr40-$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')-m5-m15-garch-universe-2026h1-v1"
+          base="reports/pr40-garch/$PAIR"
+          mkdir -p "$RUNNER_TEMP/ver"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern universe.npz --pattern manifest.json \
+              --dir "$RUNNER_TEMP/ver" --clobber
+          else
+            gh release create "$tag" "$base/universe.npz" "$base/manifest.json" \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "PR40 $PAIR frozen M5+M15 Gen375 inputs and causal H1 GARCH" \
+              --notes "Built from independently hashed HistData H1 M5/M15 candles. Same frozen EURUSD founder and Gen375 normalizer, no model retraining or M1 head signals. Only Q1+Q2 2026 IS, Q3 untouched. This is an INPUT dataset, not an approved trading model."
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern universe.npz --pattern manifest.json \
+              --dir "$RUNNER_TEMP/ver" --clobber
+          fi
+          cmp "$base/universe.npz" "$RUNNER_TEMP/ver/universe.npz"
+          cmp "$base/manifest.json" "$RUNNER_TEMP/ver/manifest.json"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr40-garch-${{ matrix.symbol }}
+          path: |
+            reports/pr40-garch/${{ matrix.symbol }}/universe.npz
+            reports/pr40-garch/${{ matrix.symbol }}/manifest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  compare:
+    name: Confirm three verified GARCH universes and no OOS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr40-garch-*
+          path: reports/pr40-garch-pairs
+      - name: Cross-pair input integrity check
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from hashlib import sha256
+          files=list(Path("reports/pr40-garch-pairs").rglob("manifest.json"))
+          data=[json.loads(x.read_text()) for x in files]
+          assert sorted(d["symbol"] for d in data)==["AUDUSD","GBPUSD","USDCAD"]
+          assert all(d["q3_accessed"] is False for d in data)
+          assert all(d["gen375_normalizer_frozen"] and d["garch_m5_causal_refit"] for d in data)
+          assert len({d["gen375_normalizer_sha256"] for d in data})==1
+          for d,path in zip(data,files):
+            assert sha256((path.parent/"universe.npz").read_bytes()).hexdigest()==d["universe_sha256"]
+          print("PR40_GARCH_ALL_THREE "+json.dumps([
+            dict(symbol=d["symbol"],sha256=d["universe_sha256"],
+                 rows=d["rows"],proposals=d["original_proposals"]) for d in data
+          ],allow_nan=False),flush=True)
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as f:
+            f.write("## PR40 H1 GARCH/M5/M15 all 3 pairs reproducibly sealed\n\n")
+            for d in data:
+              f.write(f"{d['symbol']}: {d['rows']} rows, {d['original_proposals']} "
+                      f"legacy proposals, sha256 {d['universe_sha256']}\n\n")
+            f.write("No Q3 used. No model retraining. Portfolio PF/risks NOT yet inferred.\n")
+          PY
