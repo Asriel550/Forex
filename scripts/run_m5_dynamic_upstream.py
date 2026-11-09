@@ -88,7 +88,7 @@ def rejected_candidate(eligible, thresholds):
 
 
 def one_candidate(genes, problem, *, include_traces=False, gate_mode='p85',
-                  extra_admissions=None):
+                  extra_admissions=None, custom_gate_percentiles=None):
     data = problem["data"]
     upstream, thresholds = dynamic_upstream(
         data["entry"], data["margin"], data["timeframe"], data["volatility"],
@@ -105,7 +105,14 @@ def one_candidate(genes, problem, *, include_traces=False, gate_mode='p85',
     rows = pd.DataFrame({"outcome":data["outcome"][idx]}, index=problem["times"][idx])
     scores = problem["scores"][idx]
     sides = problem["side"][idx]
-    reasons = gate_reasons(rows, scores, data['volatility'][idx], gate_mode)
+    if custom_gate_percentiles is not None:
+        from src.garch_sweetspot import causal_custom_gate
+        selected_p = np.asarray(custom_gate_percentiles,dtype=float)
+        if selected_p.shape != (len(data["entry"]),):
+            raise ValueError("Percentiles dinámicos sin alineación al universo IS")
+        reasons = causal_custom_gate(rows, scores, selected_p[idx])
+    else:
+        reasons = gate_reasons(rows, scores, data['volatility'][idx], gate_mode)
     q1 = rows.index < Q2_START
     quarters, traces = [], {}
     for name, mask in (("Q1", q1), ("Q2", ~q1), ("semester", np.ones(len(rows), bool))):
