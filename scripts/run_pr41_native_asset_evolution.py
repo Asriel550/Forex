@@ -230,19 +230,21 @@ def run(*,symbol,seed,universe,manifest,eur_universe,eur_manifest,golden,golden_
     if not np.isclose(winner["score"],evo["champion"]["score"],rtol=0,atol=1e-10):
         raise ValueError("No reproduce el campeón genético")
     initial=evaluate_local(zeros,problem)
+    # evolve_population flattens each winning record into the generation
+    # history (dict(record, median_score=...)), it does NOT nest it.
     history=[
-        dict(generation=int(rec["record"]["generation"]),
-             score=float(rec["record"]["score"]),
+        dict(generation=int(rec["generation"]),
+             score=float(rec["score"]),
              median_score=float(rec["median_score"]),
-             pf_q1=(float(rec["record"]["quarter_pf"][0]) if
-                     np.isfinite(rec["record"]["quarter_pf"][0]) else None),
-             pf_q2=(float(rec["record"]["quarter_pf"][1]) if
-                     np.isfinite(rec["record"]["quarter_pf"][1]) else None),
-             executed_hourly=rec["record"]["semester_rate"],
-             dd_semester_pct=rec["record"]["semester_dd"],
-             qualified=bool(rec["record"]["qualifies"]),
-             regime_lower=float(rec["record"]["regime_lower"]),
-             regime_upper=float(rec["record"]["regime_upper"]))
+             pf_q1=(float(rec["quarter_pf"][0]) if
+                     np.isfinite(rec["quarter_pf"][0]) else None),
+             pf_q2=(float(rec["quarter_pf"][1]) if
+                     np.isfinite(rec["quarter_pf"][1]) else None),
+             executed_hourly=float(rec["semester_rate"]),
+             dd_semester_pct=float(rec["semester_dd"]),
+             qualified=bool(rec["qualifies"]),
+             regime_lower=float(rec["regime_lower"]),
+             regime_upper=float(rec["regime_upper"]))
         for rec in evo["generations"]
     ]
     if [h["generation"] for h in history]!=list(range(1,21)):
