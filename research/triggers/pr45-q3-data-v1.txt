@@ -1,0 +1,3 @@
+PR45 Q3 2026 official HistData source acquisition + causal H1→Q3 native GARCH build.
+Exactly four pairs; no PR42/PR43 model scoring, no PF/DD, no PR44 single-pass OOS run.
+Triggered once after pre-registered source and model-processing invariants committed.
