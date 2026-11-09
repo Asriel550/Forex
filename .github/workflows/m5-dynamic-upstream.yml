@@ -84,20 +84,34 @@ jobs:
           github-token: ${{ github.token }}
           path: reports/m5-conviction-evolution
           merge-multiple: true
-      - name: Rebuild full IS universe; require exact GARCH and legacy subset SHA256
+      - name: Verify already-published full IS Release or create initial sealed version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          success=0
-          for attempt in 1 2 3 4 5; do
-            echo "Canonical GARCH reconstruction attempt $attempt/5"
-            rm -f reports/m5-upstream-is/universe.npz reports/m5-upstream-is/manifest.json
-            if python -m scripts.build_m5_full_is_universe \
+          TAG="data-m5-is-2026h1-full-universe-v1"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Reuse immutable full IS universe; do not refit unstable GARCH."
+            mkdir -p reports/m5-upstream-is
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'universe.npz' --pattern 'manifest.json' \
+              --dir reports/m5-upstream-is --clobber
+            python -m scripts.build_m5_full_is_universe --verify-only \
               --golden reports/m5-is-canonical/a.npz \
-              --golden-manifest reports/m5-is-canonical/a.json; then
-              success=1
-              break
-            fi
-          done
-          test "$success" -eq 1
+              --golden-manifest reports/m5-is-canonical/a.json
+          else
+            success=0
+            for attempt in 1 2 3 4 5; do
+              echo "One-time canonical GARCH reconstruction attempt $attempt/5"
+              rm -f reports/m5-upstream-is/universe.npz reports/m5-upstream-is/manifest.json
+              if python -m scripts.build_m5_full_is_universe \
+                --golden reports/m5-is-canonical/a.npz \
+                --golden-manifest reports/m5-is-canonical/a.json; then
+                success=1
+                break
+              fi
+            done
+            test "$success" -eq 1
+          fi
       - name: Publish immutable expanded full-IS universe once, verify on re-download
         env:
           GH_TOKEN: ${{ github.token }}
