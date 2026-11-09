@@ -171,3 +171,19 @@ El archivo `ohlcv.npz` tendrá ambas temporalidades, fingerprints OHLCV y fuente
 La fuente junio en EST fijo puede contener algunos registros que corresponden al 1 de julio en UTC. Se excluyeron **antes de la generación de velas**: GBPUSD 296, AUDUSD 296, USDCAD 299 registros. **Ninguno se utilizó para ingeniería de features, training o replays**; Q3 no se evaluó.
 
 El inventario distingue ahora **`candles_ready`** para las tres nuevas divisas de **`verified`** para el universo neuronal EURUSD. El siguiente paso pendiente es calcular y auditar **GARCH M5 independiente por divisa, inputs neuronales Gen375 y cabezas PR38 congeladas** y ejecutar el replay con riesgo compartido. **Por tanto, el PF, DD y contratos/h de cartera siguen sin medirse.**
+
+## 11. GARCH y universo neuronal por divisa: ejecución verificada
+
+El [CI #42569749262](https://github.com/Asriel550/Forex/actions/runs/42569749262) completó los tres jobs de **GARCH M5 causal por par** y su consolidación, sin entrenar de nuevo el núcleo original PR38 ni leer Q3. Se utilizó el mismo QuantConfig y el normalizador Gen375 congelado; la cabeza de inferencia permanece con señales M5+M15, 8 columnas de OHLC y una entrada direccional de 32 posiciones donde la rama H1 está desactivada.
+
+| Par | Filas del universo IS elegible | Propuestas legacy antes del gate | SHA256 de `universe.npz` | Release |
+| --- | ---: | ---: | --- | --- |
+| GBPUSD | 35.165 | 10.864 | `2cc9ab95266cb3a87c2988ffd8006c79e9db68765d5ab54ded129c161fff4a0b` | [Universo GARCH GBPUSD](https://github.com/Asriel550/Forex/releases/tag/data-pr40-gbpusd-m5-m15-garch-universe-2026h1-v1) |
+| AUDUSD | 35.306 | 14.729 | `8d1f34d5bf38ce1c4beeb5079d374a7af1a9d07a8161d07fc010d56b251b0eee` | [Universo GARCH AUDUSD](https://github.com/Asriel550/Forex/releases/tag/data-pr40-audusd-m5-m15-garch-universe-2026h1-v1) |
+| USDCAD | 35.374 | 6.564 | `bf866689bb549bf2d647d8600bd343148dfb44040fb51c9cbb2baa7738f4f8b9` | [Universo GARCH USDCAD](https://github.com/Asriel550/Forex/releases/tag/data-pr40-usdcad-m5-m15-garch-universe-2026h1-v1) |
+
+**Advertencia:** las propuestas legacy son anteriores al Gate p85 y al stop de riesgo. Son datos derivados reales y reproducibles, **no** resultados PF/frecuencia/beneficio. `datasets/multiasset/pr40_asset_inventory.json` quedó actualizado a `verified` para los cuatro universos, cada uno con SHA256 completo. El test de readiness ahora exige este inventario sin presuponer métricas financieras.
+
+### Replay portfolio real iniciado
+
+[GitHub Actions #42570155781](https://github.com/Asriel550/Forex/actions/runs/42570155781) utiliza exactamente los ganadores PR38 seeds 42/43/44, GARCH 0% y p85 por par, y una cuenta común con cupo 2/h y stop global. El informe financiero de cartera **no se considerará realizado** hasta que terminen los tres jobs reales y se publique el JSON de conciliación intersemillas.
