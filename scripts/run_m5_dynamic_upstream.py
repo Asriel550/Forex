@@ -71,6 +71,21 @@ def p85_reasons(rows, scores):
     return causal_reasons(rows, scores, PERCENTILE)
 
 
+def rejected_candidate(eligible, thresholds):
+    """Mismo esquema ndarray para cualquier mutante sin historial suficiente."""
+    return dict(
+        qualifies=False, passes_all=False, score=-1e6, worst_quarter_return=-1e6,
+        quarter_return_std=1e6, min_gate_only_frequency=0., return_per_admission=-1e6,
+        eligible=int(eligible), quarter_pnl_usd=[0.,0.], quarter_pf=[None,None],
+        quarter_rate=[0.,0.], quarter_gate_rate=[0.,0.], quarter_dd=[0.,0.],
+        quarter_stop=[False,False], semester_pnl_usd=0., semester_pf=None,
+        semester_rate=0., semester_dd=0., semester_stop=False,
+        quarter_pass=[False,False], threshold_min=float(thresholds.min()),
+        threshold_max=float(thresholds.max()), gate_p85_count=0, gate_warmup=0,
+        gate_conviction_rejected=0, fitness_loss=0., up_funnel_capacity=0.,
+    )
+
+
 def one_candidate(genes, problem, *, include_traces=False):
     data = problem["data"]
     upstream, thresholds = dynamic_upstream(
@@ -79,15 +94,7 @@ def one_candidate(genes, problem, *, include_traces=False):
     )
     idx = np.flatnonzero(upstream)
     if len(idx) <= 500:
-        return {"qualifies":False, "score":-1e6, "worst_quarter_return":-1e6,
-                "quarter_return_std":1e6, "min_gate_only_frequency":0.,
-                "eligible":int(len(idx)), "return_per_admission":-1e6, "quarter_pnl_usd":[0.,0.],
-                "quarter_pf":[None,None], "quarter_rate":[0.,0.],
-                "quarter_gate_rate":[0.,0.], "quarter_dd":[0.,0.],
-                "semester_pnl_usd":0., "semester_pf":None,
-                "semester_rate":0., "semester_dd":0.,
-                "quarter_pass":[False,False], "passes_all":False,
-                "threshold_min":float(thresholds.min()), "threshold_max":float(thresholds.max())}
+        return rejected_candidate(len(idx),thresholds)
     rows = pd.DataFrame({"outcome":data["outcome"][idx]}, index=problem["times"][idx])
     scores = problem["scores"][idx]
     sides = problem["side"][idx]
@@ -97,15 +104,7 @@ def one_candidate(genes, problem, *, include_traces=False):
     for name, mask in (("Q1", q1), ("Q2", ~q1), ("semester", np.ones(len(rows), bool))):
         subset = rows.loc[mask]
         if subset.empty:
-            return {"qualifies":False, "score":-1e6, "worst_quarter_return":-1e6,
-                    "quarter_return_std":1e6, "min_gate_only_frequency":0.,
-                    "eligible":int(len(idx)), "return_per_admission":-1e6, "quarter_pnl_usd":[0.,0.],
-                    "quarter_pf":[None,None], "quarter_rate":[0.,0.],
-                    "quarter_gate_rate":[0.,0.], "quarter_dd":[0.,0.],
-                    "semester_pnl_usd":0., "semester_pf":None, "semester_rate":0.,
-                    "semester_dd":0., "quarter_pass":[False,False],
-                    "passes_all":False, "threshold_min":float(thresholds.min()),
-                    "threshold_max":float(thresholds.max())}
+            return rejected_candidate(len(idx),thresholds)
         observed = problem["hours"][name]
         result, trace = replay_contracts(
             subset, sides[mask], problem["account"], problem["risk"],
