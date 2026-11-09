@@ -1,0 +1,195 @@
+name: Gen 376-397 full M5+M15 upstream evolution
+
+# This run launches once from its explicitly committed marker, not from every
+# push to the development branch. Individual seed replicas stay independent.
+on:
+  push:
+    branches:
+      - codex/m5-dynamic-upstream-gen376-pr36
+    paths:
+      - research/triggers/gen376-397-launch-v1.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: m5-upstream-gen376-397-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+
+jobs:
+  evolve:
+    name: Generations 376-397, population 128, seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [42, 43, 44]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned CPU runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Verify M5+M15 causality, legacy gates and sealed source
+        run: |
+          python -m pytest -q tests/test_m5_dynamic_upstream.py tests/test_m5_durable_signal_audit.py tests/test_m5_repro_fitness_calibration.py
+      - name: Download original GARCH seal and M5+M15-only eligible IS universe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/m5-upstream-is
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'universe.npz' --pattern 'manifest.json' \
+            --dir reports/m5-upstream-is --clobber
+          python -m scripts.build_m5_full_is_universe --verify-only \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+      - name: Retrieve sealed base parents from prior successful experiments
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Retrieve frozen March original founder
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Evolve 22 generations with 128 models, sealed EURUSD M5+M15 IS only
+        run: |
+          python -m scripts.run_m5_dynamic_upstream \
+            --universe reports/m5-upstream-is/universe.npz \
+            --manifest reports/m5-upstream-is/manifest.json \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json \
+            --generations 22 --seeds ${{ matrix.seed }}
+      - name: Assert generation interval, exact evaluations, no Q3 access
+        env:
+          SEED: ${{ matrix.seed }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          report=json.loads(Path('reports/m5-dynamic-upstream/replay.json').read_text())
+          seed=int(os.environ['SEED'])
+          assert (report['population'],report['first_generation'],report['last_generation'])==(128,376,397)
+          assert report['seeds']==[seed] and report['evaluations']==22*128
+          assert report['oos_accessed'] is False and report['percentile']==.85
+          assert len(report['experiments'])==1
+          result=report['experiments'][0]
+          assert result['seed']==seed and result['evaluations']==2816
+          assert len(result['generations'])==22
+          assert [r['generation'] for r in result['generations']]==list(range(376,398))
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as stream:
+              champ=result['champion']
+              stream.write(f"### Seed {seed}: Gen376-397, 2816 candidates\n")
+              stream.write(f"PF(Q1,Q2): {champ['quarter_pf']}; executed semester/h: {champ['semester_rate']:.3f}; "
+                           f"DD(Q1,Q2): {champ['quarter_dd']}; qualifies: {champ['qualifies']}\n\n")
+              stream.write("Acceptance requires PF>1.20 in both quarters, >=1.2 executed/h and DD<15%. "
+                           "Technical success is not financial validation. Q3 untouched.\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: m5-gen376-397-seed-${{ matrix.seed }}
+          path: reports/m5-dynamic-upstream/replay.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  compare:
+    name: Compare frozen champions of all three independent seeds
+    needs: evolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: m5-gen376-397-seed-*
+          path: reports/seed-results
+      - name: Verify 8448 candidates and summarize robust IS performance
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files=sorted(Path('reports/seed-results').rglob('replay.json'))
+          assert len(files)==3, f'Expected three seeds, got {len(files)}'
+          data=[json.loads(path.read_text()) for path in files]
+          assert sorted(item['seeds'][0] for item in data)==[42,43,44]
+          assert all((d['population'],d['first_generation'],d['last_generation'],d['evaluations'])
+                     ==(128,376,397,2816) for d in data)
+          assert all(d['oos_accessed'] is False for d in data)
+          assert len({d['expanded_is_sha256'] for d in data})==1
+          candidates=[]
+          for d in data:
+              v=d['experiments'][0]
+              candidates.append(dict(seed=v['seed'],best_generation=v['selection']['generation'],
+                   score=v['champion']['score'],
+                   q1_pf=v['champion']['quarter_pf'][0],q2_pf=v['champion']['quarter_pf'][1],
+                   q1_dd=v['champion']['quarter_dd'][0],q2_dd=v['champion']['quarter_dd'][1],
+                   executed_hourly=v['champion']['semester_rate'],
+                   qualifies=v['champion']['qualifies'],
+                   genome_sha256=v['genome_sha256']))
+          summary=dict(protocol='PR36_gen376_397_full',seeds=[42,43,44],
+             generations=list(range(376,398)),population=128,
+             total_candidate_evaluations=8448,signal_timeframes=['M5','M15'],
+             percentile=.85,oos_accessed=False,candidates=candidates,
+             any_qualified=any(c['qualifies'] for c in candidates))
+          out=Path('reports/gen376-397-summary.json')
+          out.parent.mkdir(exist_ok=True)
+          out.write_text(json.dumps(summary,indent=2,allow_nan=False)+'\n')
+          print('GEN376_397_SUMMARY '+json.dumps(summary,allow_nan=False),flush=True)
+          with Path(__import__('os').environ['GITHUB_STEP_SUMMARY']).open('a') as stream:
+              stream.write("## Full Gen376–397 research run: 8,448 evaluated\n\n")
+              for c in candidates:
+                  stream.write(f"Seed {c['seed']}: gen {c['best_generation']}, Q1/Q2 PF "
+                               f"{c['q1_pf']}/{c['q2_pf']}, {c['executed_hourly']:.3f}/h executed, "
+                               f"DD {c['q1_dd']}/{c['q2_dd']}, accepted={c['qualifies']}\n\n")
+              stream.write("**No automatic promotion. Q3 untouched.**\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: m5-gen376-397-final-summary
+          path: reports/gen376-397-summary.json
+          if-no-files-found: error
+          retention-days: 90
