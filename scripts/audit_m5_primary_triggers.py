@@ -72,7 +72,7 @@ def analyze(*, snapshot, manifest, output):
     assert_isolated(PERIODS)
     sources = json.loads(SOURCE_MANIFEST.read_text(encoding='utf-8'))
     verify_source_periods(sources)
-    reference, founder, quant, risk, _, _, _, _, _ = setup()
+    reference, founder, quant, _, _, _, _, _, _ = setup()
 
     minutes = load_minutes(RAW, PERIODS, end=END)
     features = m5_features(minutes, quant, end=END)
@@ -132,9 +132,7 @@ def analyze(*, snapshot, manifest, output):
         hours = sum(observed_hours[p] for p in indices)
         variants = {}
         for kind in VARIANTS:
-            times = pd.DatetimeIndex(np.concatenate([
-                period_variants[p][kind].asi8 for p in indices
-            ]), tz='UTC') if False else pd.to_datetime(np.concatenate([
+            times = pd.to_datetime(np.concatenate([
                 period_variants[p][kind].as_unit('ns').asi8 for p in indices
             ]), utc=True, unit='ns')
             count = hourly_capacity(times, reference['gate']['hourly_cap'])
@@ -143,7 +141,6 @@ def analyze(*, snapshot, manifest, output):
         quarters[label] = dict(observed_hours=hours,
                                eligible_bars=sum(periods[p]['eligible_bars'] for p in indices),
                                variants=variants)
-    expected = report['fingerprints']['month_admissions']
     comparable = canonical_quant and all(periods[p]['matches_frozen_admissions'] for p in PERIODS)
     audit = dict(
         protocol='PR35_primary_trigger_IS_v1',
