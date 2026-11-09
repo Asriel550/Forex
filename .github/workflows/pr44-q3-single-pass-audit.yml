@@ -2,6 +2,11 @@ name: PR44 — Q3 2026 Single-Pass OOS / all 24 frozen FX genomes
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/forex-pr44-q3-single-pass-oos
+    paths:
+      - 'research/triggers/pr44-q3-final-audit-v*.txt'
 
 permissions:
   contents: read
@@ -53,7 +58,7 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check \
             numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0 \
-            gymnasium==1.1.1 pytest>=8.3
+            gymnasium==1.1.1 'pytest>=8.3'
       - name: Pre-registered policy and causality checks; SYNTHETIC ONLY
         run: python -m pytest -q tests/test_pr44_q3_single_pass_audit.py
       - name: Retrieve 12 original controls from completed PR41
