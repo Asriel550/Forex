@@ -1,0 +1,192 @@
+name: PR43 — 100 fresh genetic trainings per FX pair, Q1+Q2 IS ONLY
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/forex-pr43-100-training-per-asset-h1
+    paths:
+      - '.github/workflows/pr43-100-native-trainings.yml'
+      - 'scripts/run_pr43_100_native_trainings.py'
+      - 'tests/test_pr43_100_native_trainings.py'
+      - 'docs/research/pr43_100_independent_trainings.md'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pr43-100-native-trainings-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: '0'
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+
+jobs:
+  training:
+    name: ${{ matrix.symbol }} / H1 seed shard ${{ matrix.shard }} (5 fresh evolutions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        symbol: [EURUSD, GBPUSD, AUDUSD, USDCAD]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install frozen PR41 numerical runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Test new genetic sampling, Q3 quarantine and per-pair financial isolation
+        run: |
+          python -m pytest -q tests/test_pr43_100_native_trainings.py tests/test_pr42_isolated_silos.py tests/test_pr41_native_asset_evolution.py
+      - name: Download EURUSD's own H1 M5+M15/GARCH sealed snapshot
+        if: matrix.symbol == 'EURUSD'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/pr43-local-source
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz --pattern manifest.json \
+            --dir reports/pr43-local-source --clobber
+      - name: Download this NON-EUR pair's OWN H1 M5+M15/GARCH sealed snapshot
+        if: matrix.symbol != 'EURUSD'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAIR: ${{ matrix.symbol }}
+        run: |
+          slug="$(echo "$PAIR" | tr '[:upper:]' '[:lower:]')"
+          mkdir -p reports/pr43-local-source
+          gh release download "data-pr40-${slug}-m5-m15-garch-universe-2026h1-v1" \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz --pattern manifest.json \
+            --dir reports/pr43-local-source --clobber
+      - name: Train five NEW fully independent seed evolutions using ONLY Q1+Q2
+        env:
+          PAIR: ${{ matrix.symbol }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          optional=()
+          if [ "$PAIR" = EURUSD ]; then
+            optional=(--golden reports/m5-is-canonical/a.npz --golden-manifest reports/m5-is-canonical/a.json)
+          fi
+          python -m scripts.run_pr43_100_native_trainings \
+            --symbol "$PAIR" --shard "$SHARD" \
+            --universe reports/pr43-local-source/universe.npz \
+            --manifest reports/pr43-local-source/manifest.json \
+            "${optional[@]}"
+      - name: Verify five completed trainings and exact 5 x 20 x 128 budget
+        env:
+          PAIR: ${{ matrix.symbol }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import os,json
+          from pathlib import Path
+          from scripts.run_pr43_100_native_trainings import seeds_for_shard, PROTOCOL
+          symbol=os.environ['PAIR']; shard=int(os.environ['SHARD'])
+          root=Path('reports/pr43-100-native-trainings')/symbol.lower()
+          records=[json.loads((root/f'seed-{seed}.json').read_text()) for seed in seeds_for_shard(shard)]
+          assert len(records)==5
+          assert all(r['protocol']==PROTOCOL and r['symbol']==symbol and
+                     r['generations']==20 and r['population']==128 and
+                     r['genetic_evaluations']==2560 and len(r['history'])==20 and
+                     r['q3_accessed'] is False and r['old_pr41_genome_used'] is False
+                     for r in records)
+          s=json.loads((root/f'shard-{shard:02}.json').read_text())
+          assert s['genetic_evaluations']==12800 and s['q3_accessed'] is False
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
+            f.write(f"## {symbol} shard {shard}: all 5 H1-only genetic trainings completed\n\n")
+            f.write(f"Seeds: {[r['seed'] for r in records]} · Evaluations: 12,800 · Q3 not opened.\n")
+          PY
+      - name: Store five immutable independent seed reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr43-native-${{ matrix.symbol }}-shard-${{ matrix.shard }}
+          path: reports/pr43-100-native-trainings/
+          if-no-files-found: warn
+          retention-days: 90
+
+  summary:
+    name: Verify 100 per pair and 1,024,000 H1-only genetic evaluations
+    needs: training
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr43-native-*
+          path: reports/pr43-collation
+      - name: Verify all 400 independently trained genome reports, no OOS or promotion
+        run: |
+          python - <<'PY'
+          import json,hashlib,statistics,math
+          from pathlib import Path
+          root=Path('reports/pr43-collation')
+          paths=list(root.rglob('seed-*.json'))
+          records=[json.loads(p.read_text()) for p in paths]
+          symbols=('EURUSD','GBPUSD','AUDUSD','USDCAD')
+          seeds=range(1000,1100)
+          assert len(paths)==400, len(paths)
+          assert {(x['symbol'],x['seed']) for x in records}=={(s,n) for s in symbols for n in seeds}
+          assert all(x['protocol']=='PR43_100_fresh_per_asset_GARCH_H1_IS_v1'
+              and x['genetic_evaluations']==2560 and x['generations']==20 and x['population']==128
+              and x['genome_length']==22 and len(x['champion_genome'])==22
+              and x['q3_accessed'] is False and x['oos_evaluated'] is False
+              and x['promotion_approved'] is False and x['zero_initialized_each_training'] is True
+              and x['shared_bankroll'] is False and x['old_pr41_genome_used'] is False
+              and x['training_end_exclusive']=='2026-07-01T00:00:00Z'
+              and len(x['history'])==20 for x in records)
+          assert sum(x['genetic_evaluations'] for x in records)==1024000
+          rows=[]
+          for symbol in symbols:
+            group=sorted((r for r in records if r['symbol']==symbol),key=lambda r:r['seed'])
+            assert len(group)==100 and len({r['input_universe_sha256'] for r in group})==1
+            assert len({r['rng_seed'] for r in group})==100
+            for r in group:
+              import numpy as np
+              g=np.asarray(r['champion_genome'],dtype='<f8')
+              assert hashlib.sha256(g.tobytes()).hexdigest()==r['champion_sha256']
+            winners=[r for r in group if r['champion']['qualified']]
+            all_rates=[r['champion']['executed_hourly'] for r in group]
+            rows.append(dict(symbol=symbol,trainings=100,qualifying_is_count=len(winners),
+                median_executed_per_hour=statistics.median(all_rates),
+                min_executed_per_hour=min(all_rates),max_executed_per_hour=max(all_rates),
+                qualifying_median_pf_q1=statistics.median([r['champion']['pf_q1'] for r in winners]) if winners else None,
+                qualifying_median_pf_q2=statistics.median([r['champion']['pf_q2'] for r in winners]) if winners else None,
+                no_promotion=True))
+          result=dict(protocol='PR43_isolated_H1_search_distribution_v1',
+              data_window='2026-Q1+Q2-IS',q3_accessed=False,
+              completed_trainings=400,total_evaluations=1024000,
+              seeds_per_pair=100,generations_per_seed=20,population=128,
+              original_pr41_champions_unchanged=True,auto_selection=False,
+              all_runs_same_is_not_oos=True,results=rows)
+          Path('pr43-100-trainings-summary.json').write_text(json.dumps(result,indent=2,allow_nan=False)+'\n')
+          print('PR43_FINAL_400_TRAININGS '+json.dumps(result,allow_nan=False),flush=True)
+          with Path('summary.md').open('w') as f:
+            f.write('## PR43: exactly 100 H1 genetic trainings per pair, Q3 untouched\n\n')
+            f.write('| Pair | Trainings | IS PF/DD qualified | Median trades/h |\n| --- | ---: | ---: | ---: |\n')
+            for r in rows:
+              f.write(f"| {r['symbol']} | 100 | {r['qualifying_is_count']} | {r['median_executed_per_hour']:.4f} |\n")
+            f.write('\nNo Q3, no OOS, no promotion or broker orders.\n')
+          PY
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr43-native-100-per-asset-summary
+          path: pr43-100-trainings-summary.json
+          if-no-files-found: error
+          retention-days: 90
