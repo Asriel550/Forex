@@ -114,9 +114,10 @@ def pf_frequency_objective(report):
     Se penaliza DD que excede 12% y trimestre de baja calidad, sin
     permitir que la fitness sustituya el criterio duro de aceptación.
     """
-    pfs=np.asarray([v or 0 for v in report["quarter_pf"]],dtype=float)
-    if not np.isfinite(pfs).all() or (pfs<0).any():
+    pfs=np.asarray([v if v is not None else 0 for v in report["quarter_pf"]],dtype=float)
+    if np.isnan(pfs).any() or (pfs<0).any():
         raise ValueError("PF inválido")
+    pfs=np.nan_to_num(pfs,nan=0.,posinf=3.,neginf=0.)
     pf=np.sqrt(np.clip(pfs[0],0,3.)*np.clip(pfs[1],0,3.))
     rate=float(report["semester_rate"])
     dd=float(report["semester_dd"])
