@@ -64,3 +64,9 @@ Releases antes de iniciar el workflow PR44 de pasada única.
 
 Los meses faltantes, solapes incompatibles y gaps de barras
 no se inventan ni se cubren con precios artificiales.
+
+## Recuperación numérica GBPUSD pre-OOS
+
+En la primera adquisición, EURUSD, AUDUSD y USDCAD fueron publicados sin cambios. La receta GARCH sobre H1 completo para GBPUSD encontró dos refits consecutivos sin convergencia **en el propio historial H1**, antes de evaluar ningún genoma Q3. La política GARCH de retener solo un refit fallido permanece intocable. Para preparar GBPUSD se reintenta con exactamente la misma rutina y configuración GARCH causal, pero un warmup fijo del último mes Q2 (desde 2026-06-01) antes de la primera barra Q3. Esta diferencia de historial debe quedar registrada explícitamente en su manifest mediante garch_history_start_utc y garch_q2_30day_fallback_used; los otros tres pares conservan su serie completa H1. Esta recuperación no usa ni consulta PF, drawdown, resultados PR44 ni los 24 genomas. Si el nuevo ajuste tampoco converge, no se publica GBPUSD.
+
+No se sustituyen las tres Releases certificadas ni se ejecuta automáticamente el juicio Q3. La diferencia de calentamiento debe interpretarse como limitación metodológica en la comparación final.
