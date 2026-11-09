@@ -128,6 +128,71 @@ selección múltiple; no garantiza rentabilidad fuera del semestre.
 - Los artefactos de GitHub Actions son temporales; los datasets de
   las Releases privadas son persistentes mientras no los borre un admin.
 
-**Estado de conclusión:** pendiente de confirmar a partir del
-resumen automatizado del mismo run. Q3 no se consulta para decidir el
-punto dulce. No hay promoción ni despliegue automático.
+**Estado de conclusión:** cerrado sin aceptación financiera; los resultados íntegros constan a continuación. Q3 no se consultó y no se promovió ningún modelo.
+
+## Resultados experimentales auditados: A→B→C completos
+
+**Ejecución final:** [GitHub Actions #42560483604](https://github.com/Asriel550/Forex/actions/runs/42560483604), 3 semillas exitosas y [JSON consolidado](https://github.com/Asriel550/Forex/actions/runs/42560483604/artifacts/13649182171). 12 generaciones ×128×3=**4.608 genomas evaluados** en B; **30 replays reportados** en el grid A/B/C (3 de los 30 repiten intencionalmente el campeón B bajo p85 como control C). CI técnico `SUCCESS`, aceptación financiera `any_fully_qualified=false`, `qualified_variants=[]`, `q3_accessed=false`.
+
+En las tablas «G» significa G10/G15 del campeón original PR38 en A, pero **generación local 1–12** en B y C. «Banda» es el cociente **volatilidad GARCH M5 actual / mediana histórica desplazada** aceptado, con extremos absolutos específicos del genoma de cada semilla. La frecuencia es **realmente ejecutada**, tras gate, cupo y stop, dividida por horas del semestre continuo. El DD es **semestral**.
+
+### Fase A: cinco tamaños de banda, el mismo genoma original y p85
+
+| Variante | Seed | G | Banda GARCH efectiva (σ/mediana) | PF Q1 | PF Q2 | Ejecutadas/h | DD H1 % | Apta |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `A_band_+0pct_p85` | 42 | 10 | 1.007–2.383 | 1.272 | 1.224 | 0.2083 | 6.40 | No |
+| `A_band_+7.5pct_p85` | 42 | 10 | 0.932–2.562 | 1.041 | 0.988 | 0.2712 | 12.96 | No |
+| `A_band_+15pct_p85` | 42 | 10 | 0.856–2.740 | 1.050 | 0.907 | 0.3226 | 20.70 | No |
+| `A_band_+22.5pct_p85` | 42 | 10 | 0.781–2.919 | 1.037 | 0.747 | 0.2461 | 20.11 | No |
+| `A_band_+30pct_p85` | 42 | 10 | 0.705–3.098 | 0.897 | 0.808 | 0.1150 | 20.04 | No |
+| `A_band_+0pct_p85` | 43 | 15 | 1.011–2.605 | 1.231 | 1.173 | 0.2011 | 7.47 | No |
+| `A_band_+7.5pct_p85` | 43 | 15 | 0.935–2.800 | 1.137 | 1.045 | 0.2614 | 11.13 | No |
+| `A_band_+15pct_p85` | 43 | 15 | 0.859–2.996 | 1.060 | 0.877 | 0.3076 | 18.76 | No |
+| `A_band_+22.5pct_p85` | 43 | 15 | 0.783–3.191 | 0.863 | 0.891 | 0.1001 | 20.47 | No |
+| `A_band_+30pct_p85` | 43 | 15 | 0.707–3.386 | 0.865 | 0.820 | 0.1058 | 20.63 | No |
+| `A_band_+0pct_p85` | 44 | 15 | 1.011–2.144 | 1.255 | 1.210 | 0.2209 | 8.27 | No |
+| `A_band_+7.5pct_p85` | 44 | 15 | 0.935–2.305 | 1.274 | 1.085 | 0.2876 | 12.41 | No |
+| `A_band_+15pct_p85` | 44 | 15 | 0.859–2.465 | 1.119 | 1.087 | 0.3390 | 14.85 | No |
+| `A_band_+22.5pct_p85` | 44 | 15 | 0.783–2.626 | 0.764 | 1.037 | 0.0596 | 20.80 | No |
+| `A_band_+30pct_p85` | 44 | 15 | 0.707–2.787 | 0.800 | 0.855 | 0.0650 | 20.08 | No |
+
+**Conclusión A:** +15% elevó la actividad frente al control a **0,3226/h**, **0,3076/h** y **0,3390/h** en semillas 42/43/44, pero el PF Q2 cayó a **0,907/0,877/1,087**; DD subió a **20,70/18,76/14,85%**, todos por encima de 12%. La ampliación de +7,5% tampoco conserva PF>1,20 en ambos trimestres ni consigue 0,50/h. En +22,5% y +30%, el stop produce incluso **menos frecuencia realmente ejecutada**, aunque la banda upstream sea más ancha. Abrir sin discriminar regímenes adyacentes **no es una forma válida de escalar**.
+
+### Fase B: optimizar PF geométrico × frecuencia, banda +15%, gate p85
+
+| Variante | Seed | G | Banda GARCH efectiva (σ/mediana) | PF Q1 | PF Q2 | Ejecutadas/h | DD H1 % | Apta |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `B_genetic_PF_x_hourly_+15pct_p85` | 42 | 9 | 0.875–2.272 | 1.171 | 0.963 | 0.3111 | 12.39 | No |
+| `B_genetic_PF_x_hourly_+15pct_p85` | 43 | 12 | 0.883–3.013 | 1.328 | 1.037 | 0.3219 | 8.75 | No |
+| `B_genetic_PF_x_hourly_+15pct_p85` | 44 | 11 | 0.844–2.297 | 1.226 | 1.051 | 0.3720 | 11.22 | No |
+
+**Conclusión B:** los campeones fueron **G9 (seed42)**, **G12 (seed43)** y **G11 (seed44)**, tras 12 generaciones y 1.536 candidatos por semilla. Obtuvieron **0,3111/h, 0,3219/h y 0,3720/h** respectivamente, sin llegar a 0,50/h. Las semillas 43 y 44 redujeron el DD a **8,75% y 11,22%**, pero sus PF Q2 quedaron en **1,037 y 1,051**. La seed42 quedó en DD **12,39%** y PF Q2 **0,963**. El fitness nuevo mejora el compromiso IS respecto a abrir simplemente un 15%, **pero no soluciona el requisito conjunto**.
+
+### Fase C: misma cabeza ganadora B, cuatro gates, banda +15%
+
+| Variante | Seed | G | Banda GARCH efectiva (σ/mediana) | PF Q1 | PF Q2 | Ejecutadas/h | DD H1 % | Apta |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `C_band_+15pct_p75` | 42 | 9 | 0.875–2.272 | 0.926 | 0.740 | 0.1276 | 20.00 | No |
+| `C_band_+15pct_p80` | 42 | 9 | 0.875–2.272 | 1.144 | 0.757 | 0.2512 | 20.67 | No |
+| `C_band_+15pct_p85` | 42 | 9 | 0.875–2.272 | 1.171 | 0.963 | 0.3111 | 12.39 | No |
+| `C_band_+15pct_regime_dynamic` | 42 | 9 | 0.875–2.272 | 1.088 | 0.800 | 0.2617 | 20.42 | No |
+| `C_band_+15pct_p75` | 43 | 12 | 0.883–3.013 | 0.945 | 1.014 | 0.1239 | 20.18 | No |
+| `C_band_+15pct_p80` | 43 | 12 | 0.883–3.013 | 1.125 | 0.961 | 0.3955 | 15.77 | No |
+| `C_band_+15pct_p85` | 43 | 12 | 0.883–3.013 | 1.328 | 1.037 | 0.3219 | 8.75 | No |
+| `C_band_+15pct_regime_dynamic` | 43 | 12 | 0.883–3.013 | 1.113 | 1.003 | 0.3761 | 13.84 | No |
+| `C_band_+15pct_p75` | 44 | 11 | 0.844–2.297 | 0.981 | 0.770 | 0.1569 | 20.76 | No |
+| `C_band_+15pct_p80` | 44 | 11 | 0.844–2.297 | 1.117 | 0.860 | 0.4200 | 20.08 | No |
+| `C_band_+15pct_p85` | 44 | 11 | 0.844–2.297 | 1.226 | 1.051 | 0.3720 | 11.22 | No |
+| `C_band_+15pct_regime_dynamic` | 44 | 11 | 0.844–2.297 | 1.082 | 0.848 | 0.3325 | 20.33 | No |
+
+**Conclusión C:** cambiar p85 por p80/p75 o por p75/p80/p85 según núcleo/bordes de régimen **no mejoró simultáneamente frecuencia, PF y DD**. La mayor frecuencia del barrido completo ocurrió en la **semilla 44**, variante `C_band_+15pct_p80`, **0.4200/h**, pero con PF Q1 **1.117**, PF Q2 **0.860** y DD **20.08%**, también inválida. En particular, el gate dinámico local no supera de forma robusta al p85 dentro de la banda ampliada.
+
+### Juicio conjunto y limitaciones
+
+**Criterios simultáneos:** PF>1,20 por separado Q1/Q2, **≥0,50 contratos/h ejecutados en H1**, DD H1 **<12%**, sin stops y mismas reglas en **seeds42/43/44**. **Ninguna de las 10 configuraciones nominales** (5 A, 1 B, 4 C; B y C-p85 son control duplicado) consigue aprobar los tres modelos. No se selecciona el máximo PF de una semilla y la máxima frecuencia de otra para fabricar un ganador.
+
+La pérdida de PF al ampliar sugiere que el alfa **está localizado en la banda original**, no uniformemente distribuido en sus regímenes vecinos. Esto es evidencia retrospectiva IS, no una afirmación de estabilidad futura ni prueba OOS. El cupo horario y el stop continúan activos. Una banda más ancha puede aumentar las oportunidades **pre-stop** y, paradójicamente, bajar la actividad **post-stop** por secuencias de pérdidas que agotan la cuenta.
+
+**Incidencia de CI:** la [primera corrida #42560265962](https://github.com/Asriel550/Forex/actions/runs/42560265962) se detuvo antes de evaluar modelos por un *test* que comparaba falsamente diferentes PF/frecuencias al analizar la penalización del DD. Se corrigió la prueba para mantener los demás factores constantes, **sin cambiar ninguna fórmula de entrenamiento ni datos**. La reejecución #42560483604 completó todas las fases y la consolidación.
+
+**Decisión:** PR39 permanece **draft**, sin promocionar genomas, fusionar un cambio de trading ni abrir Q3. El siguiente diseño, si se autoriza, debería examinar los extremos **superior e inferior por separado** y evaluar incertidumbre/estabilidad por bloques dentro de IS antes de aumentar más generaciones. No alterar los objetivos para declarar éxito.
