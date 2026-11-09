@@ -53,14 +53,10 @@ jobs:
           python -m pip check
       - name: Unit tests
         run: python -m pytest -q tests/test_m5_repro_fitness_calibration.py tests/test_m5_temporal_evolution.py tests/test_m5_semester_replay.py
-      - name: Download single canonical IS features snapshot (Gen 375, March 2859)
-        uses: actions/download-artifact@v8
-        with:
-          artifact-ids: 13639251699
-          run-id: 42535814697
-          github-token: ${{ github.token }}
-          path: reports/m5-is-canonical
-          merge-multiple: true
+      - name: Download canonical IS from durable SHA256-pinned private Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/download_m5_release.sh reports/m5-is-canonical
       - name: Verify raw M1 ZIPs and complete M5 bars without GARCH refitting
         run: |
           python -m scripts.m5_is_repro_audit source \
@@ -105,13 +101,10 @@ jobs:
           python -m scripts.m5_is_repro_audit compare-sources \
             --first reports/m5-is-audit/a.json \
             --second reports/m5-is-audit/b.json
-      - uses: actions/download-artifact@v8
-        with:
-          artifact-ids: 13639251699
-          run-id: 42535814697
-          github-token: ${{ github.token }}
-          path: reports/m5-is-canonical
-          merge-multiple: true
+      - name: Download canonical IS from durable SHA256-pinned private Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/download_m5_release.sh reports/m5-is-canonical
       - uses: actions/download-artifact@v8
         with:
           artifact-ids: 13627574393
