@@ -1,0 +1,6 @@
+Retry PR40 HistData 2026H1 monthly acquisition after public protocol correction.
+Fallback for token id=tk exposed outside any form; explicit ASCII/M1 2026 month and pair POST.
+Sourced from established public HistData download protocol.
+Validate 18 separate monthly sources for GBPUSD AUDUSD USDCAD.
+Reuse CPU-only pinned torch in CI for fast setup. No Q3, no M1 features.
+Keep original PR38 model frozen.
