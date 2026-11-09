@@ -1,0 +1,4 @@
+PR40 HistData 2026H1 real downloads, retry v5 after inspecting live page:
+HistData serves TWO M1 forms for each pair/period: /get.php actual ZIP download and /getStatus.php status; previous parser erroneously rejected the page as ambiguous.
+Match ONLY action /get.php with exact token, fxpair and M1. Regression test added for both forms.
+Fetch six months 202601..202606 each of GBPUSD, AUDUSD, USDCAD. Aggregate raw M1 only to finalized M5 and M15 OHLCV, audit SHA256, publish three durable releases. Never request Q3. No M1 head signals, PR38 genes unchanged.
