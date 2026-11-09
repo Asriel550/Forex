@@ -61,7 +61,7 @@ def test_global_hourly_cap_applies_across_pairs_not_four_independent_caps():
     q1=result["Q1"]
     assert q1["gate_accepted"]==4
     assert q1["executed"]==2
-    assert q1["opened"] if "opened" in q1 else q1["executed"]==2
+    assert q1["executed"]==2
     assert q1["global_hourly_cap_rejections"]==2
     assert q1["max_simultaneously_open"]==2
     assert len([s for s,c in q1["contributions"].items() if c["executed"]])==2
