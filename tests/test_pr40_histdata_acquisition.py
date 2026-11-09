@@ -87,3 +87,21 @@ def test_utc_cutoff_is_before_any_q3_candle_engineering():
                          "2026-07-01T00:00:00Z"])
     keep=(ts>=START)&(ts<END)
     assert keep.tolist()==[True,False]
+
+
+def test_real_histdata_page_has_download_and_status_forms_but_only_zip_is_allowed():
+    html='''<form action="/get.php">
+    <input name="fxpair" value="GBPUSD">
+    <input name="timeframe" value="M1">
+    <input name="tk" value="zip_token">
+    </form>
+    <form action="/getStatus.php">
+    <input name="fxpair" value="GBPUSD">
+    <input name="timeframe" value="M1">
+    <input name="tk" value="status_token">
+    </form>'''
+    values=parse_source_form(html,"GBPUSD","202601")
+    assert values["tk"]=="zip_token"
+    html_status_only=html.split("</form>")[1]+"</form>"
+    with pytest.raises(ValueError,match="formulario"):
+        parse_source_form(html_status_only,"GBPUSD","202601")
