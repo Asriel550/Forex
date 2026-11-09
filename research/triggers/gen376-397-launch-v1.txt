@@ -1,0 +1,18 @@
+PR36 controlled full evolution launch
+experiment: gen376-397-m5-m15-v1
+start_generation: 376
+end_generation_inclusive: 397
+generation_count: 22
+population_per_generation: 128
+seeds: 42,43,44
+total_candidate_evaluations: 8448
+timeframes_for_signals: M5,M15
+historical_ingest: M1 used for aggregation only, not as a neural feature
+universe_release: data-m5-m15-is-2026h1-full-universe-v2
+universe_sha256: 05487661977ea0a612f7e717b81e84aadbb5e2071238ca6835d9944a06bc9be9
+base_garch_sha256: 7feb467de7ca66810ee336b3e29c0ba809f7587ecac1b335f05ac92007803504
+decision_gate: pure conviction p85, unchanged
+train_periods: Q1+Q2 2026 IS only
+protected_oos: Q3 July-September 2026 untouched
+runtime: three independent GitHub Actions matrix jobs
+promotion: disabled; report PF, drawdown and executed contracts/hour
