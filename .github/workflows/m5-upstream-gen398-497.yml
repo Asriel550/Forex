@@ -1,0 +1,229 @@
+name: M5+M15 100 extra generations, Gen 398-497
+
+# Start precisely once with an explicit data/research trigger, not each push.
+on:
+  push:
+    branches:
+      - codex/m5-upstream-plateau-gen398-497
+    paths:
+      - research/triggers/gen398-497-plateau-v1.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: m5-m15-upstream-plateau-398-497-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+
+jobs:
+  evolve:
+    name: Gen398-497, seed ${{ matrix.seed }}, 128 models
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - seed: 42
+            parent_artifact: 13643165581
+          - seed: 43
+            parent_artifact: 13643075391
+          - seed: 44
+            parent_artifact: 13643225282
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned single-thread numerical runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Check M5+M15 causality and generation accounting
+        run: |
+          python -m pytest -q tests/test_m5_upstream_plateau.py tests/test_m5_dynamic_upstream.py tests/test_m5_repro_fitness_calibration.py
+      - name: Retrieve frozen Gen376-397 seed parent from exact prior Actions run
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ matrix.parent_artifact }}
+          run-id: 42544173112
+          github-token: ${{ github.token }}
+          path: reports/prior-seed
+          merge-multiple: true
+      - name: Retrieve immutable M5+M15 full IS and original GARCH seals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/m5-upstream-is
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+            --pattern manifest.json --dir reports/m5-upstream-is --clobber
+          python -m scripts.build_m5_full_is_universe --verify-only \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+      - name: Retrieve sealed Gen354 and M5 baseline artifacts
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Restore frozen original March admissions and founder
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Continue 100 generations from signed prior champion with original population128
+        run: |
+          python -m scripts.run_m5_upstream_plateau \
+            --seed ${{ matrix.seed }} \
+            --parent-report reports/prior-seed/replay.json \
+            --universe reports/m5-upstream-is/universe.npz \
+            --manifest reports/m5-upstream-is/manifest.json \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+      - name: Verify exact 100-generation sequence and no Q3
+        env:
+          SEED: ${{ matrix.seed }}
+        run: |
+          python - <<'PY'
+          import os, json
+          from pathlib import Path
+          seed=int(os.environ["SEED"])
+          d=json.loads(Path(f"reports/m5-upstream-plateau/gen398-497-seed-{seed}.json").read_text())
+          assert (d["population"],d["first_generation"],d["last_generation"],d["generations"])==(128,398,497,100)
+          assert d["evaluations"]==12800 and d["seed"]==seed
+          assert d["oos_accessed"] is False and d["signal_timeframes"]==["M5","M15"]
+          assert len(d["genetic_generations"])==100
+          assert [x["generation"] for x in d["genetic_generations"]]==list(range(398,498))
+          assert d["base_genome_sha256"]=={
+            42:"b179c0ab3ae44af489ee5471b5cdfd958f9e04a0e829348716d2d5f59b21b6ad",
+            43:"3e28eb796a9f95ab5333c3b177d97d0d497479d5c56953635220521834968a94",
+            44:"ec497b444ba21d7a14b899c3265d804f5a6a1cdc1e7146ad9b18a5b8c1a32a8a",
+          }[seed]
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as f:
+            after=d["current"];before=d["base"];change=d["comparison"]
+            f.write(f"## Gen398–497, seed {seed} (100×128=12,800 candidates)\n\n")
+            f.write(f"Fitness: {before['score']:.6f} → {after['score']:.6f} "
+                    f"(Δ={change['score_delta']:+.6f}); improvement={change['better_score']}\n\n")
+            f.write(f"PF Q1/Q2: {after['quarter_pf']}; executed/h: {after['semester_rate']:.4f}; "
+                    f"DD Q1/Q2: {after['quarter_dd']}; qualified={after['qualifies']}\n\n")
+            f.write(f"Last improvement: {d['plateau']['last_improvement_generation']}; "
+                    f"stagnation: {d['plateau']['generations_since_last_improvement']} generations. "
+                    "Q3 untouched. No automatic promotion.\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: m5-m15-plateau-gen398-497-seed-${{ matrix.seed }}
+          path: reports/m5-upstream-plateau/gen398-497-seed-*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  compare:
+    name: Compare 3 seeds, 38,400 candidates and detect plateau
+    needs: evolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: m5-m15-plateau-gen398-497-seed-*
+          path: reports/plateau-seeds
+      - name: Compare baseline, marginal improvements and operational quality
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          files=sorted(Path("reports/plateau-seeds").rglob("gen398-497-seed-*.json"))
+          assert len(files)==3, f"Missing seed results: {files}"
+          studies=[json.loads(path.read_text()) for path in files]
+          assert sorted(x["seed"] for x in studies)==[42,43,44]
+          assert all(x["evaluations"]==12800 and x["oos_accessed"] is False and x["generations"]==100 for x in studies)
+          assert all(x["signal_timeframes"]==["M5","M15"] for x in studies)
+          assert len({x["dataset_sha256"] for x in studies})==1
+          candidates=[]
+          for x in studies:
+            old,new=x["base"],x["current"]
+            candidates.append(dict(
+              seed=x["seed"], base_generation=x["base_best_generation"],
+              best_generation=x["current_best_generation"],
+              score_previous=old["score"],score_new=new["score"],
+              score_gain=x["comparison"]["score_delta"],
+              score_improved=x["comparison"]["better_score"],
+              pf_q1=new["quarter_pf"][0],pf_q2=new["quarter_pf"][1],
+              dd_q1=new["quarter_dd"][0],dd_q2=new["quarter_dd"][1],
+              executed_contracts_per_hour=new["semester_rate"],
+              improvements_count=x["plateau"]["improvements_count"],
+              generations_stalled=x["plateau"]["generations_since_last_improvement"],
+              last_20_gain=x["plateau"]["fitness_gain_last_20"],
+              financial_acceptance=new["qualifies"],
+              genome_sha256=x["current_genome_sha256"],
+            ))
+          output=dict(
+            protocol="M5_M15_100_more_generations_plateau_v1",
+            generations=list(range(398,498)),population=128,
+            seeds=[42,43,44],evaluations=38400,
+            q1_q2_in_sample=True,oos_accessed=False,
+            snapshot_sha256=studies[0]["dataset_sha256"],
+            any_fitness_improvement=any(c["score_improved"] for c in candidates),
+            any_financial_acceptance=any(c["financial_acceptance"] for c in candidates),
+            caution="In-sample fitness plateau is not a proof of a universal model ceiling or OOS performance.",
+            candidates=candidates,
+          )
+          target=Path("reports/m5-upstream-plateau/summary-gen398-497.json")
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(json.dumps(output,indent=2,allow_nan=False)+"\n")
+          print("PLATEAU_SUMMARY "+json.dumps(output,allow_nan=False),flush=True)
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as f:
+            f.write("## Gen398–497: 38,400 candidates across 3 seeds\n\n")
+            for c in candidates:
+              f.write(f"Seed {c['seed']}: best Gen{c['best_generation']}, "
+                      f"Δfitness={c['score_gain']:+.6f}, PF Q1/Q2 "
+                      f"{c['pf_q1']:.3f}/{c['pf_q2']:.3f}, "
+                      f"executed {c['executed_contracts_per_hour']:.4f}/h, "
+                      f"stalled {c['generations_stalled']} gens, "
+                      f"accept={c['financial_acceptance']}\n\n")
+            f.write("The experiment is IS only: Q3 is untouched; no automatic model promotion.\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: m5-m15-plateau-gen398-497-summary
+          path: reports/m5-upstream-plateau/summary-gen398-497.json
+          if-no-files-found: error
+          retention-days: 90
