@@ -1,0 +1,179 @@
+name: PR38 Phase 1 — gate p75 p80 volatility dynamic M5-M15
+
+on:
+  push:
+    branches:
+      - codex/m5-m15-alpha-research-pr38
+    paths:
+      - research/triggers/pr38-phase1-v1.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  OPENBLAS_NUM_THREADS: '1'
+  OMP_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  PYTHONHASHSEED: '0'
+
+concurrency:
+  group: pr38-phase1-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Gate sensitivity, seed ${{ matrix.seed }}, 4 modes x 2 generations
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - seed: 42
+            parent_artifact: 13643165581
+          - seed: 43
+            parent_artifact: 13643075391
+          - seed: 44
+            parent_artifact: 13643225282
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned numerical runtime
+        run: |
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install numpy==2.3.5 pandas==2.3.3 scipy==1.18.1 arch==8.0.0
+          python -m pip check
+      - name: Verify causal percentile gate including original p85
+        run: |
+          python -m pytest -q tests/test_m5_gate_sensitivity.py tests/test_m5_dynamic_upstream.py
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ matrix.parent_artifact }}
+          run-id: 42544173112
+          github-token: ${{ github.token }}
+          path: reports/prior-seed
+          merge-multiple: true
+      - name: Fetch immutable M5-M15 expanded universe and original GARCH snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/download_m5_release.sh reports/m5-is-canonical
+          mkdir -p reports/m5-upstream-is
+          gh release download data-m5-m15-is-2026h1-full-universe-v2 \
+            --repo "$GITHUB_REPOSITORY" --pattern universe.npz \
+            --pattern manifest.json --dir reports/m5-upstream-is --clobber
+          python -m scripts.build_m5_full_is_universe --verify-only \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13627574393
+          run-id: 42507157819
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13631131495
+          run-id: 42514492433
+          github-token: ${{ github.token }}
+          path: data/adaptive-source
+          merge-multiple: true
+      - name: Restore original March founder
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/13631151337/zip" \
+            -o "$RUNNER_TEMP/march.zip"
+          unzip -p "$RUNNER_TEMP/march.zip" march-inputs.npz > data/adaptive-source/march-inputs.npz
+          unzip -p "$RUNNER_TEMP/march.zip" extension.json > data/adaptive-source/extension.json
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: 13634275350
+          run-id: 42521754798
+          github-token: ${{ github.token }}
+          path: reports/m5-conviction-evolution
+          merge-multiple: true
+      - name: Sweep 4 gate modes and 2x128 evolutionary smoke per mode
+        run: |
+          python -m scripts.run_m5_gate_sensitivity \
+            --seed ${{ matrix.seed }} \
+            --founder-report reports/prior-seed/replay.json \
+            --universe reports/m5-upstream-is/universe.npz \
+            --manifest reports/m5-upstream-is/manifest.json \
+            --golden reports/m5-is-canonical/a.npz \
+            --golden-manifest reports/m5-is-canonical/a.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pr38-gate-sensitivity-seed-${{ matrix.seed }}
+          path: reports/m5-alpha-research/phase1/*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  summarize:
+    name: Interpret phase1 p75 falloff versus p85, decide phase2
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pr38-gate-sensitivity-seed-*
+          path: reports/phase1-results
+      - name: Combine diagnostics without looking at Q3
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          files=sorted(Path("reports/phase1-results").rglob("phase1-seed-*.json"))
+          studies=[json.loads(p.read_text()) for p in files]
+          assert sorted(d['seed'] for d in studies)==[42,43,44]
+          assert all(not d['oos_accessed'] and d['signal_timeframes']==['M5','M15'] for d in studies)
+          assert all(d['evaluations']==1024 for d in studies)
+          results=[]
+          for s in studies:
+            for mode in s['modes']:
+              c=mode['champion'];p=mode['parent']
+              results.append(dict(
+                seed=s['seed'],mode=mode['gate_mode'],smoke_generation=mode['best_smoke_generation'],
+                pf_q1=c['pf_q1'],pf_q2=c['pf_q2'],
+                executed_per_hour=c['semester_executed_hourly'],drawdown_pct=c['semester_drawdown_pct'],
+                upstream=c['upstream_proposals'],gate_accepted=c['gate_accepted_pre_cap'],
+                parent_pf_q1=p['pf_q1'],parent_pf_q2=p['pf_q2'],
+                parent_executed_hourly=p['semester_executed_hourly'],
+                parent_gate_accepted=p['gate_accepted_pre_cap'],
+                qualifies=c['qualifies'],
+              ))
+          decision=any(not s['phase2_required'] for s in studies)
+          data=dict(protocol='PR38_gate_sweep_v1',seeds=[42,43,44],population=128,
+            modes=['p85','p80','p75','volatility_dynamic'],generations_per_mode=2,
+            evaluated=3072,phase1_success=decision,phase2_required=not decision,
+            oos_accessed=False,results=results)
+          target=Path('reports/pr38-phase1-summary.json')
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(json.dumps(data,indent=2,allow_nan=False)+'\n')
+          print('PR38_PHASE1_SUMMARY '+json.dumps(data,allow_nan=False),flush=True)
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as f:
+            f.write('## PR38 Phase 1, 3 seeds × 4 gates × 2 generations\n\n')
+            for x in results:
+              f.write(f"Seed {x['seed']}, {x['mode']}: PF Q1/Q2 "
+                      f"{x['pf_q1']:.3f}/{x['pf_q2']:.3f}, executed "
+                      f"{x['executed_per_hour']:.3f}/h, DD {x['drawdown_pct']:.2f}%, "
+                      f"gate accepted {x['gate_accepted']}; qualifies {x['qualifies']}\n\n")
+            f.write(f"**Phase 2 required: {not decision}.** Q3 untouched.\n")
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr38-gate-sensitivity-summary
+          path: reports/pr38-phase1-summary.json
+          if-no-files-found: error
+          retention-days: 90
