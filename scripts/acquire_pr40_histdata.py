@@ -52,6 +52,7 @@ def parse_source_form(html,symbol,period):
         if x["fields"].get("timeframe","").upper()=="M1"
         and x["fields"].get("fxpair","").upper()==symbol
         and x["fields"].get("tk")
+        and x.get("action","").split("?")[0].rstrip("/") == "/get.php"
     ]
     if len(matches)!=1:
         # HistData currently may render tk outside a <form>. The public
