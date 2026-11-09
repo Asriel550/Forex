@@ -101,4 +101,7 @@ def test_multiplicative_fitness_rewards_frequency_and_pf_symmetrically():
     assert product_b==pytest.approx(1.2)
     assert product_c==pytest.approx(1.2)
     assert score_b>score_a and score_c>score_a
-    assert pf_frequency_objective(fake_report(dd=20.))[0] < score_a
+    # Compare only drawdown: same PF and executed rate in both cases.
+    assert pf_frequency_objective(fake_report(dd=20.))[0] < pf_frequency_objective(
+        fake_report(dd=10.)
+    )[0]
