@@ -1,0 +1,1 @@
+Re-run ONLY the still-unpublished GBPUSD Q3 official HistData dataset, with fixed June 2026 causal GARCH fallback after original H1 GARCH nonconvergence. Preserve existing EUR, AUD, CAD immutable releases and do not run PR44 OOS.
