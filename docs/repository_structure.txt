@@ -1,8 +1,0 @@
-src/: data_loader.py, quant_engine.py, environment.py, agent.py, train.py, backtest.py, metrics.py, telegram_bot.py, artifacts.py
-.github/workflows/pipeline.yml: pruebas, investigación y alertas
-requirements.txt: stack completo; requirements-alerts.txt: inferencia
-models/: pesos, normalizador y manifiesto generados; ignorados en Git
-reports/: métricas, operaciones, equity y gráficas generadas; ignorados en Git
-data/: Parquet, checkpoints, outbox Telegram; ignorados en Git
-tests/: pruebas deterministas y prueba remota opt-in
-docs/: entorno/PPO, backtest y alertas

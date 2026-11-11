@@ -22,7 +22,7 @@ from src.evolution_multiscale import POPULATION, evolve_population
 from src.garch_sweetspot import normalized_garch_ratio
 from src.m5_multiasset_inputs import verify_new_asset
 from src.m5_multiasset_portfolio import SYMBOLS,START,Q2,END
-from src.train import write_json
+from src.artifacts import write_json
 from src.upstream_filters import GENE_COUNT
 from src.reproducibility import array_sha256
 

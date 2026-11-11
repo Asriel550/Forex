@@ -20,7 +20,7 @@ from scripts.run_pr42_isolated_silos import (
     SEEDS, SYMBOLS, SOURCE_SHA, frozen_candidate, native_problem,
 )
 from src.evolution_multiscale import POPULATION, evolve_population
-from src.train import write_json
+from src.artifacts import write_json
 
 PROTOCOL = "PR43_continue_PR42_champions_100_gen_H1_IS_v1"
 ADDITIONAL_GENERATIONS = 100

@@ -426,6 +426,62 @@ def enrich_features(df: pd.DataFrame, config: QuantConfig | None = None, *, time
     return out
 
 
+def extend_quant_history(baseline, recent):
+    """Actualiza solo barras nuevas, con la misma fase de refit que el histórico.
+
+    El forecast sigma[t+1|t] archivado proporciona h para el próximo retorno.
+    omega/alpha/beta están en puntos básicos² según quant_engine. Los fits
+    nuevos usan únicamente su ventana pasada; MC reutiliza la misma semilla.
+    """
+    config = QuantConfig.from_metadata(baseline.attrs['quant_config'])
+    count = baseline.attrs['source_rows']
+    if not isinstance(count,int) or count < len(baseline):
+        raise QuantError('Contador de origen GARCH inválido')
+    fresh = recent.loc[recent.timestamp > baseline.timestamp.iloc[-1]].copy()
+    fresh = fresh.sort_values('timestamp').reset_index(drop=True)
+    if fresh.timestamp.duplicated().any():
+        raise QuantError('Datos recientes duplicados')
+    result = pd.concat([baseline,fresh],ignore_index=True)
+    fits = [dict(fit) for fit in baseline.attrs['garch_fits']]
+    if not fits or fits[-1]['row'] >= count:
+        raise QuantError('Estado GARCH inválido')
+    omega,alpha,beta = (float(fits[-1][key]) for key in ('omega','alpha','beta'))
+    next_h = float(baseline.cond_volatility.iloc[-1]*SCALE)**2
+    mc = MonteCarloGBM(config.n_paths,config.horizon,config.seed)
+    closes = result.close.to_numpy(dtype=float)
+    if not np.isfinite(closes).all() or (closes<=0).any() or not np.isfinite(next_h) or next_h<=0:
+        raise QuantError('Precios o varianza base inválidos')
+    for k in range(len(fresh)):
+        i,global_row = len(baseline)+k,count+k
+        sample_start = max(0,i-config.window)
+        current_return = (np.log(closes[i])-np.log(closes[i-1]))*SCALE
+        if (global_row-config.min_observations)%config.refit_every == 0:
+            sample = np.diff(np.log(closes[sample_start:i+1]))*SCALE
+            if len(sample)<config.min_observations or len(sample)!=min(config.window,global_row):
+                raise QuantError('Contexto histórico insuficiente para reestimar GARCH')
+            omega,alpha,beta,h_t = _fit_garch(sample,config.max_iterations)
+            fits.append(dict(row=global_row,first_return=global_row-len(sample),
+                             omega=omega,alpha=alpha,beta=beta))
+        else:
+            h_t = next_h
+        next_h = omega+alpha*current_return**2+beta*h_t
+        if not np.isfinite(next_h) or next_h<=0:
+            raise QuantError('Varianza GARCH no válida')
+        sigma = np.sqrt(next_h)/SCALE
+        result.loc[i,'cond_volatility'] = sigma
+        if config.drift_mode=='momentum' and i<min(config.drift_window,global_row):
+            raise QuantError('Contexto histórico insuficiente para momentum causal')
+        start = max(0,i-config.drift_window)
+        sigma_window = np.full(i-start+1,np.nan);sigma_window[-1] = sigma
+        drift = causal_drift(closes[start:i+1],sigma_window,config,result.timestamp.iloc[start:i+1])
+        mu = float(drift['mc_drift'][-1])
+        for name in DRIFT_AUDIT_FEATURES:result.loc[i,name] = float(drift[name][-1])
+        for name,value in project_monte_carlo(mc,closes[i],sigma,mu).items():
+            result.loc[i,name] = float(value)
+    result.attrs = dict(baseline.attrs,source_rows=count+len(fresh),garch_fits=fits)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=ROOT / "data/eurusd_m15.parquet")

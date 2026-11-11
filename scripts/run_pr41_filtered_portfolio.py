@@ -18,7 +18,7 @@ from scripts.run_pr41_native_asset_evolution import (
 )
 from src.conviction_regime_gate import gate_reasons
 from src.m5_multiasset_portfolio import replay_portfolio,meets_portfolio_targets
-from src.train import write_json
+from src.artifacts import write_json
 
 
 OUTPUT=Path("reports/pr41-filtered-portfolio")

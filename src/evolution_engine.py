@@ -15,7 +15,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import numpy as np
 import pandas as pd
 
-from .artifacts import file_sha256
+from .artifacts import file_sha256, write_json
 from .decision import RiskConfig
 from .environment import BinaryOptionsEnv, prepare_market_data
 from .evolution_context import CONTEXT_SETTINGS, M15_DIRECTION_CLIP, build_observations, m15_direction_bias
@@ -27,7 +27,7 @@ from .evolution_lineage import FORMAT, MARKET, MARKET_FEATURES, genome_payload, 
 from .market import PROTECTED_HOLDOUT_START
 from .metrics import _atomic_write, calculate_metrics
 from .trading_profiles import resolve_profile
-from .train import chronological_market_split, write_json
+from .splits import chronological_market_split
 
 LOG = logging.getLogger(__name__)
 MAX_POPULATION_SIZE = 128

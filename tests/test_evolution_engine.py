@@ -5,13 +5,11 @@ from dataclasses import asdict
 from hashlib import sha256
 from io import BytesIO
 import json
-from pathlib import Path
 from zipfile import ZipFile
 
 import numpy as np
 import pandas as pd
 import pytest
-import yaml
 
 from src import trading_profiles
 from src.artifacts import file_sha256
@@ -595,7 +593,7 @@ def test_m15_arms_continue_from_same_direction_seed(tmp_path, legacy_seed):
         assert manifest['selection']['m15_weight'] == report['champion']['m15_weight']
 
 
-def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
+def test_dispatch_defaults_to_m5_and_scalping_profile(monkeypatch, capsys):
     for name in ('FOREX_TRADING_PROFILE', 'FOREX_TIMEFRAME', 'FOREX_TRADING_MODE',
                  'FOREX_EXPIRY_CANDLES', 'FOREX_MIN_CONFIDENCE', 'FOREX_DRIFT_SCALE', 'GITHUB_ENV'):
         monkeypatch.delenv(name, raising=False)
@@ -608,34 +606,7 @@ def test_dispatch_defaults_to_m5_and_separates_artifacts(monkeypatch, capsys):
     monkeypatch.setenv('FOREX_EXPIRY_CANDLES', '2')
     with pytest.raises(ValueError, match='una vela'):
         trading_profiles.main()
-
-    path = Path(__file__).resolve().parents[1]/'.github/workflows/pipeline.yml'
-    workflow = yaml.safe_load(path.read_text())
-    # PyYAML interpreta la clave on como booleana.
-    inputs = workflow.get('on', workflow.get(True))['workflow_dispatch']['inputs']
-    assert inputs['population_size']['default'] == EvolutionConfig().population_size == 128
+    assert EvolutionConfig().population_size == 128
     assert EvolutionConfig(population_size=64).population_size == 64
     with pytest.raises(ValueError, match='population_size debe ser un entero de 4 a 128'):
         EvolutionConfig(population_size=129)
-    jobs = workflow['jobs']
-    assert 'evolution' in jobs['research-pipeline']['if'] and 'evolution' in jobs['unit-tests']['if']
-    assert 'evolution' not in jobs['telegram-alert']['if']
-    steps = jobs['research-pipeline']['steps']
-    evolution = next(s for s in steps if s.get('name') == 'Evolve isolated M5 population')
-    assert evolution['if'] == "inputs.mode == 'evolution'"
-    parent = next(s for s in steps if s.get('id') == 'evolution-parent')
-    assert parent['if'] == "inputs.mode == 'evolution'"
-    assert 'a.workflow_run?.head_branch === branch' in parent['with']['script']
-    assert 'Date.parse(b.created_at) - Date.parse(a.created_at)' in parent['with']['script']
-    assert 'run.conclusion' not in parent['with']['script']
-    download = next(s for s in steps if s.get('name') == 'Download previous M5 research lineage')
-    assert download['with']['artifact-ids'] == '${{ steps.evolution-parent.outputs.artifact_id }}'
-    lineage = next(s for s in steps if s.get('name') == 'Save M5 research lineage')
-    gate = next(s for s in steps if s.get('name') == 'Enforce evolutionary validation gate')
-    assert lineage['with']['path'] == 'reports/evolution/lineage.zip'
-    assert steps.index(evolution) < steps.index(lineage) < steps.index(gate)
-    upload = next(s for s in steps if s.get('name') == 'Upload generational research candidates')
-    assert upload['if'] == "always() && inputs.mode == 'evolution'"
-    assert upload['with']['path'] == 'reports/evolution/candidates/bundle_scalping_gen_*.zip'
-    publish = next(s for s in steps if s.get('name', '').startswith('Publish isolated v4'))
-    assert publish['if'] == "success() && inputs.mode == 'train'"

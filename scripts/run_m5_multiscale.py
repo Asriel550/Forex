@@ -25,7 +25,7 @@ from src.evolution_multiscale import (
     directions, evolve_replica, fit_scale, project_founder, scale_inputs, volatility_groups,
 )
 from src.market import PROTECTED_HOLDOUT_START
-from src.train import write_json
+from src.artifacts import write_json
 
 
 FORMAT = 'forex_m5_multiscale_direction_v1'

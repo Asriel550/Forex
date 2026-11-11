@@ -1,121 +1,101 @@
-Perfiles scalping, intraday, daily y swing en Actions. [Configuración y datos M1/M5](docs/trading_profiles.md).
+# Forex — laboratorio evolutivo M5 + M15
 
-PR #10: [temporalidad, binarias/Forex spot y expiración; contrato v4](docs/market_contract_v4.md). Los nuevos pesos son investigación y no sustituyen al bot v3. M5 requiere fuente M1.
+Investigación cuantitativa de opciones binarias sobre cuatro pares FX
+(EURUSD, GBPUSD, AUDUSD, USDCAD). El proyecto activo es un laboratorio
+evolutivo de genomas de 22 genes que combina señal M5, contexto M15 y
+volatilidad GARCH causal. No coloca órdenes ni se conecta a un broker.
 
-Holdout congelado: [diagnóstico MC/PPO, barrido de semillas y prueba Telegram](docs/train_validation_diagnostics.md). Investigación solo manual; `mode=diagnostics` no publica pesos. [Resultados MC/PPO y tres semillas](docs/research/pr8_filter_policy_diagnosis.md).
+## Alcance actual
 
-Exploración PPO configurable: [entropía, incentivos y auditoría](docs/ppo_exploration.md). Default `ent_coef=0.02`; [comparación local con resultados y límites](docs/research/ppo_exploration_comparison.md).
+- Señal en M5 y contexto M15; H1/H4 quedaron descartados por ruido.
+- Genomas de 22 genes: 8 inputs por timeframe (mercado + contexto).
+- Cuatro pares y semillas 42/43/44.
+- 24 genomas congelados para la auditoría OOS Q3 2026: 12 controles PR42
+  y 12 evolucionados PR43.
+- Fundador embebido en `config/evolution_m5_seed_gen20.json`.
+- Sin Telegram, sin PPO y sin entrenamiento con PyTorch.
 
-# Forex EUR/USD M15 — research and Telegram signals
+## Estructura
 
-Escala/umbral controlados: [sensibilidad 58–65% y payout](docs/drift_threshold_sensitivity.md). Nuevos defaults: escala 1.5, umbral 60%.
+```text
+src/            núcleo: evolución, GARCH/MC, entorno, decisión, replay, métricas
+scripts/        linaje PR41–PR45 y experimentos M15 Control/Feature/Anchor
+tests/          pruebas deterministas y sintéticas
+docs/           protocolos PR44/PR45 y contrato de drift
+config/         fundador evolutivo y cierres de datos
+datasets/       manifiesto HistData y procedencia
+```
 
-Drift de momentum causal: [fórmula, parámetros, compatibilidad y límites](docs/dynamic_drift.md).
+El núcleo no depende de `stable-baselines3`, `torch` ni `tensorboard`.
+`gymnasium` se usa solo para el contrato del entorno.
 
-Cambios v3 de inacción/riesgo: [diseño, uso y límites](docs/risk_filter.md). Los bundles v2 requieren regenerar features y reentrenar.
+## Entorno local
 
-Sistema de investigación en Python para opciones binarias de una vela M15:
-archivos históricos CSV/ZIP, GARCH(1,1), Monte Carlo GBM, Gymnasium, PPO, holdout y
-alertas Telegram. No coloca órdenes ni utiliza MetaTrader, Windows o Yahoo.
-
-## Ejecución local
-
-Python 3.11/3.12; se valida con Python 3.12 y Torch CPU.
+Python 3.11/3.12. El entorno validado se congela con `requirements.txt`.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r requirements.txt
 python -m pytest -q
-python -m src.data_loader --input-dir datasets/eurusd
-python -m src.quant_engine --drop-warmup
-python -m src.train --total-timesteps 100000
-python -m src.backtest
 ```
 
-## Contrato de simulación
+En esta máquina se validó el stack sin PPO: la suite local completa pasa
+con 277 pruebas.
 
-0=PUT, 1=NEUTRO, 2=CALL. La decisión usa información conocida al cierre de t,
-con entrada de referencia en close[t] y expiración en close[t+1], quince minutos
-después. Un acierto paga +0.8 stakes netos; una pérdida resta un stake. Empates
-se reembolsan por defecto y se pueden configurar como pérdida. No hay contratos
-que crucen huecos de datos. El timestamp del Parquet es apertura de vela UTC.
+## Auditoría OOS Q3 2026 (PR44)
 
-El resultado es una simulación al cierre, sin modelar latencia o cotización
-contractual real de un broker. Los percentiles MC son terminales a 32 barras;
-no son niveles garantizados de soporte/resistencia ni una probabilidad de acierto.
+El protocolo está pre-registrado en
+`docs/research/pr44_q3_single_pass_protocol.md` y se ejecuta con:
 
-## Causalidad y evaluación
+```bash
+python -m scripts.run_pr44_q3_single_pass_audit \
+  --control-root <artefactos PR41> \
+  --evolved-root <artefactos PR43> \
+  --q3-root <universos Q3>
+```
 
-GARCH se ajusta a ventanas históricas con refits periódicos; entre refits se
-actualiza su recursión. MC usa 10,000 rutas de 32 pasos y common random numbers
-para obtener percentiles empíricos sin un tensor gigante por cada vela.
-Las observaciones combinan RSI/ATR, spread opcional, retornos, features cuantitativas
-y estado simulado de cuenta.
+Evalúa una sola vez los 24 genomas congelados sobre Q3
+(2026-07-01T00:00Z a 2026-10-01T00:00Z, fin exclusivo), sin evolucionar,
+seleccionar, reajustar ni cambiar pesos. Criterios simultáneos:
+PF Q3 > 1.15, drawdown < 15 %, degradación < 40 % frente al PF H1
+reconstruido y al menos una operación ejecutada. Si falta cualquier
+universo Q3, el script falla; no inventa métricas.
 
-Tras el warmup se separa cronológicamente 70% train, 20% validación y 10% test,
-con una barra adicional de purga en los límites. Solo train ajusta el normalizador
-y pesos; validación selecciona el checkpoint por score de retorno, drawdown e intentos bloqueados. El holdout se evalúa después,
-sin seleccionar hiperparámetros con él. SHA256 vincula datos, pesos y normalizador.
-Los hashes son checks de consistencia, no una firma ni garantía sobre datos externos.
+Los cuatro universos Q3 nativos (M5/M15/GARCH) están publicados como
+Releases `data-pr44-q3-*`. La auditoría todavía no se ejecutó en GitHub
+Actions: los runs fallaron por límite de facturación de la cuenta. Puede
+correrse localmente con los assets de esas Releases.
 
-Reportes: reports/metrics.json, trades.csv, signals.csv, equity.csv,
-equity_drawdown.png y signals.png. Los ratios indefinidos se representan con null
-y un estado explícito. Sharpe incluye barras inactivas y usa la convención 252*96.
+## Experimento M15
 
-## GitHub Actions
+La dirección M15 no es un feed independiente: se agrega causalmente desde M5.
+El experimento compara tres brazos sobre los mismos datos:
 
-El workflow .github/workflows/pipeline.yml contiene pruebas, investigación e
-inferencia separados. Las PR solo ejecutan pruebas sin secretos. La investigación
-lee los archivos estáticos de datasets/eurusd, calcula features, entrena, evalúa
-el holdout y publica el artefacto forex-alert-bundle. No descarga cotizaciones.
+```bash
+python -m scripts.run_m5_direction_ablation \
+  --seed-bundle <bundle> \
+  --m15-arm control \
+  --m15-arm feature \
+  --m15-arm anchor
+```
 
-1. Los archivos HistData de 2021–2025 y enero–octubre de 2026 ya están incluidos en datasets/eurusd/. No hace falta subirlos manualmente ([procedencia](datasets/eurusd/manifest.json)).
-2. Añadir los secretos de repositorio TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID.
-3. Dar al bot permiso para publicar en el chat/canal configurado.
-4. Ejecutar manualmente el workflow con mode=train y esperar a que termine bien.
-5. Usar mode=alerts o el cron de alertas cada quince minutos.
+## Datos
 
-Los runners recuperan el último bundle de una ejecución exitosa de este workflow
-en la rama por defecto. No se entrena cada quince minutos. El bot continúa GARCH
-desde el estado archivado y solo usa la última vela cerrada y aún vigente.
+- `datasets/eurusd/manifest.json`: procedencia y hashes de las fuentes
+  HistData usadas por la preparación local.
+- `config/closures.json`: huecos observados del feed; no son afirmaciones
+  de mercado cerrado.
+- Los ZIP M15 históricos fueron retirados. Los universos de investigación
+  se publican como Releases y no se versionan en Git.
 
-GitHub Actions no garantiza puntualidad. Con retraso superior a 180 segundos,
-mercado cerrado o datos incompletos se omite la alerta. La outbox y concurrencia
-reducen duplicados; la caché no garantiza exactly-once. Una entrega incierta queda
-pending para evitar reintentar un POST que quizá ya se entregó.
+## Documentación
 
-La ingesta es exclusivamente local: CSV, ZIP con CSV y Parquet. HistData usa
-EST fijo (UTC-5), sin horario de verano. Los M1 con nombre oficial se agregan a
-M15 con 15 minutos completos; para M1 renombrados usar --input-timeframe M1.
-Los CSV ya convertidos a UTC deben incluir Z/offset o usar --timezone UTC.
-No se interpolan huecos. Cierres comprobados se declaran en config/closures.json.
+- [Contrato de drift causal](docs/dynamic_drift.md)
+- [Protocolo PR44 Q3](docs/research/pr44_q3_single_pass_protocol.md)
+- [Fuentes nativas PR45](docs/research/pr45_q3_histdata_native_sources.md)
+- [PR41: 20 generaciones por activo](docs/research/pr41_independent_20_generations.md)
+- [PR42: silos independientes](docs/research/pr42_isolated_silos.md)
+- [PR43: 100 entrenamientos](docs/research/pr43_100_independent_trainings.md)
 
-El snapshot incluido contiene 135,706 velas M15 UTC. Se descargaron 15 ZIP
-oficiales de HistData y se agregaron únicamente grupos de 15 minutos completos.
-Se excluyeron minutos contradictorios y grupos incompletos; config/closures.json
-registra los huecos observados del feed, sin afirmar que fueran cierres de
-mercado y sin rellenarlos. La validación sigue rechazando huecos no documentados.
-El entorno separa los segmentos y no expira contratos atravesando un hueco.
-
-Un histórico estático sirve para investigar y entrenar. Para señales vigentes
-hay que actualizar los archivos con la última vela cerrada; el cron no obtiene
-precios nuevos y omite datos caducados. Los secretos Telegram siguen vigentes.
-
-## Documentación y alcance de pruebas
-
-- [Ingesta estática y carga desde Android](docs/static_ingestion.md)
-- [Inferencia y alertas](docs/telegram_alerts.md)
-- [Entorno y PPO](docs/binary_options_training.md)
-- [Backtest y métricas](docs/backtesting_pipeline.md)
-
-Las pruebas deterministas incluyen lectura CSV/ZIP sin red, conversión EST/UTC,
-agregación M1, integridad de caché, un entrenamiento PPO mínimo con datos
-sintéticos, holdout, causalidad e inferencia incremental. Telegram se simula:
-las pruebas no envían mensajes reales. Los reintentos HTTP restantes pertenecen
-exclusivamente a Telegram; no existe cliente HTTP de datos de mercado.
-
-Sin un histórico/modelo reales y un backtest independiente completado, estas
-pruebas no acreditan rendimiento financiero de mercado.
-
+Los resultados son investigación reproducible, no una promesa de rendimiento.

@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 
 from src.m5_multiasset_portfolio import SYMBOLS
-from src.train import write_json
+from src.artifacts import write_json
 
 
 INVENTORY=Path("datasets/multiasset/pr40_asset_inventory.json")

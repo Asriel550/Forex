@@ -38,7 +38,7 @@ from src.m5_multiasset_portfolio import SYMBOLS,Q2
 from src.quant_engine import enrich_features
 from src.reproducibility import array_sha256,market_frame_fingerprint
 from src.upstream_filters import SIGNAL_NAMES,timeframe_features
-from src.train import write_json
+from src.artifacts import write_json
 
 
 def read_candles(asset_path,manifest_path,symbol):

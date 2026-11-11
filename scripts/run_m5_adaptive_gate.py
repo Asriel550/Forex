@@ -26,7 +26,7 @@ from src.evolution_lineage import MARKET
 from src.evolution_multiscale import FEATURE_NAMES, M5_TACTICAL, arm_inputs, direction_scores, scale_inputs
 from src.market import PROTECTED_HOLDOUT_START
 from src.replay_engine import replay_contracts
-from src.train import write_json
+from src.artifacts import write_json
 
 
 SOURCE = Path('data/adaptive-source')

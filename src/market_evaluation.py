@@ -150,7 +150,7 @@ def evaluate_market_policy(model,env,report_dir=None,*,trading_profile=None):
         if env.market.timeframe == 'M5':
             result['validation_quality'] = scalping_m5_quality(result, frequency_target)
     if report_dir is not None:
-        from .train import write_json
+        from .artifacts import write_json
         root=Path(report_dir);root.mkdir(parents=True,exist_ok=True)
         write_json(root/'validation_metrics.json',result)
         signals.to_csv(root/'validation_decisions.csv',index=False)

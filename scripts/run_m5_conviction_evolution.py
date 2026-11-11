@@ -22,7 +22,7 @@ from src.evolution_engine import MAX_TRADES_HOUR, MIN_PROFIT_FACTOR, MIN_TRADES_
 from src.evolution_multiscale import POPULATION, SEEDS, arm_inputs, direction_scores, evolve_population, scale_inputs
 from src.market import PROTECTED_HOLDOUT_START
 from src.replay_engine import apply_hourly_cap, replay_contracts
-from src.train import write_json
+from src.artifacts import write_json
 
 
 OUTPUT = Path('reports/m5-conviction-evolution')

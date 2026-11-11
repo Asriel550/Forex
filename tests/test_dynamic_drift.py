@@ -5,9 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 from src.quant_engine import (QuantConfig,MonteCarloGBM,causal_drift,enrich_features,
-    project_monte_carlo,DRIFT_AUDIT_FEATURES,PROBABILITY_FEATURES,QuantError)
+    project_monte_carlo,DRIFT_AUDIT_FEATURES,PROBABILITY_FEATURES,QuantError,extend_quant_history)
 from src.decision import ensure_probabilities,resolve_action,RiskConfig
-from src.telegram_bot import extend_quant_history
 
 
 def prices(mean,n=40):
@@ -148,9 +147,8 @@ def test_vectorized_drift_200k_origins_budget():
 
 
 def test_truncated_baseline_cannot_silently_zero_missing_momentum_history():
-    from src.telegram_bot import AlertError
     cfg=QuantConfig(window=384,min_observations=128,drift_window=600)
     raw=frame(800)
     base=enrich_features(raw.iloc[:700],cfg).dropna(subset=['cond_volatility']).reset_index(drop=True)
-    with pytest.raises(AlertError,match='momentum causal'):
+    with pytest.raises(QuantError,match='momentum causal'):
         extend_quant_history(base,raw.iloc[699:])

@@ -21,7 +21,7 @@ from src.evolution_context import native_direction_context
 from src.evolution_lineage import MARKET
 from src.evolution_multiscale import FEATURE_NAMES, M5_TACTICAL, arm_inputs, direction_scores, scale_inputs
 from src.replay_engine import apply_hourly_cap, replay_contracts
-from src.train import write_json
+from src.artifacts import write_json
 
 
 OUTPUT = Path('reports/m5-semester-replay')

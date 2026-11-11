@@ -24,7 +24,7 @@ from src.evolution_engine import M5Simulation
 from src.evolution_lineage import MARKET, MARKET_FEATURES, load_founder
 from src.market import PROTECTED_HOLDOUT_START
 from src.quant_engine import QuantConfig
-from src.train import write_json
+from src.artifacts import write_json
 
 
 SEEDS = Path('config/m5-direction-benchmark')

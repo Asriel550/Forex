@@ -21,7 +21,7 @@ from scripts.build_histdata_dataset import read_native_minutes
 from src.artifacts import file_sha256
 from src.resampling import aggregate
 from src.reproducibility import market_frame_fingerprint
-from src.train import write_json
+from src.artifacts import write_json
 
 SYMBOLS=("GBPUSD","AUDUSD","USDCAD")
 MONTHS=tuple(f"2026{m:02d}" for m in range(1,7))

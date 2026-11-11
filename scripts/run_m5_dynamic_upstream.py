@@ -28,7 +28,7 @@ from src.model_training import directional_tanh_loss
 from src.replay_engine import apply_hourly_cap, replay_contracts
 from src.conviction_regime_gate import gate_reasons
 from src.upstream_filters import GENE_COUNT, dynamic_upstream
-from src.train import write_json
+from src.artifacts import write_json
 
 
 OUTPUT = Path("reports/m5-dynamic-upstream")

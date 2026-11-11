@@ -24,7 +24,7 @@ from src.evolution_multiscale import (
 from src.market import PROTECTED_HOLDOUT_START
 from src.replay_engine import ContractExits, replay_contracts
 from src.trading_profiles import resolve_profile
-from src.train import write_json
+from src.artifacts import write_json
 
 
 SEAL_SHA256 = 'e201a87c12131af0441b03855175e43afccc4f79252587efdfadea7e8010612c'

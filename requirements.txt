@@ -9,11 +9,8 @@ scipy>=1.13,<2
 scikit-learn>=1.6,<2
 arch>=7.2,<9
 numba>=0.61,<1
-# Entrenamiento PPO y simulación
+# Entorno de simulación
 gymnasium==1.1.1
-stable-baselines3==2.7.1
-torch==2.6.0
-tensorboard>=2.18,<3
 # Configuración, evaluación y pruebas
 PyYAML>=6.0.2,<7
 matplotlib>=3.9,<4

@@ -23,7 +23,7 @@ from src.evolution_lineage import MARKET, MARKET_FEATURES, load_founder
 from src.market import PROTECTED_HOLDOUT_START
 from src.quant_engine import FEATURES, QuantConfig, enrich_features
 from src.resampling import aggregate
-from src.train import write_json
+from src.artifacts import write_json
 
 
 FROZEN_SEED_SHA256 = '57a8634b5957e4a89353218d4cf3c8fd689eb470aa028670308e66744dd508da'

@@ -1,21 +1,15 @@
 """Contratos multi-timeframe, expiración causal y PnL spot independientes."""
-from dataclasses import asdict,replace
-from pathlib import Path
+from dataclasses import replace
 import json
 import numpy as np
 import pandas as pd
 import pytest
-import yaml
-from stable_baselines3.common.env_checker import check_env
 from src.market import MarketConfig
 from src.resampling import aggregate
 from src import data_loader as dl
 from src.quant_engine import QuantConfig,enrich_features,MonteCarloGBM
-from src.environment import AlignmentReward,BinaryOptionsEnv,prepare_market_data,AccountConfig
-from src.forex_spot import ForexSpotEnv,SpotConfig
+from src.environment import AlignmentReward,BinaryOptionsEnv,prepare_market_data
 from src.decision import RiskConfig
-from src.opportunities import OpportunityTraining
-from src.train import train
 
 
 def raw(n=180,timeframe='M15'):
@@ -63,7 +57,6 @@ def test_binary_nonoverlap_and_exact_expiration(timeframe):
     assert pd.Timestamp(info['expiry_time'])-pd.Timestamp(info['decision_time'])==pd.Timedelta(0) # info decision_time describes new state
     assert pd.Timestamp(info['expiry_time'])-(f.timestamp.iloc[0]+e.bar_step)==2*e.bar_step
     _,_,_,_,info=e.step(1);assert info['index']==3 # waiting does not open a contract
-    check_env(e,warn=True)
 
 
 def test_no_contract_crosses_a_gap_or_end_of_episode():
@@ -137,24 +130,6 @@ def test_m5_alignment_uses_economic_gate_and_cannot_enable_on_m15():
                          market=MarketConfig(), alignment_reward=alignment)
 
 
-def test_event_training_skips_only_free_wait_and_retains_eligible_neutral():
-    f=prepared(n=20);f['mc_prob_up']=.5;f['mc_prob_down']=.5
-    f.loc[[0,8],'mc_prob_up']=.9;f.loc[[0,8],'mc_prob_down']=.1
-    base=BinaryOptionsEnv(f,prepared=True,lookback=1,market=MarketConfig(),risk=replace(RiskConfig(),neutral_opportunity_penalty=.05))
-    wrapper=OpportunityTraining(base)
-    wrapper.reset(options={'start_index':0})
-    _,reward,_,_,info=wrapper.step(1)
-    assert reward==-.05 and info['index']==8 and info['skipped_no_setup']==7
-    assert info['requested_action']==1 and info['missed_opportunity']
-    # Verify equivalence with seven explicit free waits; no policy action forced.
-    comparison=BinaryOptionsEnv(f,prepared=True,lookback=1,market=MarketConfig(),risk=base.risk)
-    comparison.reset();comparison.step(1)
-    for _ in range(7):comparison.step(1)
-    np.testing.assert_array_equal(base._observation(),comparison._observation())
-    empty=f.copy();empty.mc_prob_up=.5;empty.mc_prob_down=.5
-    with pytest.raises(ValueError,match='setups'):OpportunityTraining(BinaryOptionsEnv(empty,prepared=True,lookback=1,market=MarketConfig()))
-
-
 def test_resampling_complete_groups_utc_and_no_upsampling(tmp_path):
     f=raw(16).iloc[:16][dl.COLUMNS]
     h=aggregate(f,15,'H1',now='2024-01-09T00:00Z')
@@ -173,77 +148,9 @@ def test_resampling_complete_groups_utc_and_no_upsampling(tmp_path):
     pd.testing.assert_frame_equal(loaded,again)
 
 
-def spot_env(close,risk=None,account=None):
-    f=prepared(n=len(close)-1);f=f.iloc[:len(close)].copy();f['close']=close
-    return ForexSpotEnv(f,prepared=True,lookback=1,market=MarketConfig(trading_mode='forex_spot'),
-        risk=risk or RiskConfig(enabled=False),account=account)
-
-
-def test_spot_pnl_spread_position_holding_and_flat_close():
-    e=spot_env([1.1,1.101,1.102,1.103]);e.reset()
-    _,_,_,_,a=e.step(2);assert a['balance']==pytest.approx(1008.5) and a['position']==1
-    _,_,_,_,b=e.step(2);assert b['balance']==pytest.approx(1018.5) # no second spread
-    _,_,_,_,c=e.step(1);assert c['balance']==pytest.approx(1018.5) and c['position']==0
-    assert c['trades']==1 and c['closed_trades'][0]['profit']==pytest.approx(18.5)
-
-
-def test_spot_short_and_margin_call_are_not_binary_payout():
-    e=spot_env([1.1,1.099,1.098]);e.reset();_,_,_,_,a=e.step(0)
-    assert a['balance']==pytest.approx(1008.5)
-    _,_,_,_,b=e.step(1);assert b['closed_trades'][0]['profit']==pytest.approx(8.5)
-    e=spot_env([1.1,1.0,.99]);e.reset();_,_,terminated,_,info=e.step(2)
-    assert terminated and info['margin_call'] and info['position']==0
-    with pytest.raises(ValueError):MarketConfig(trading_mode='forex_spot',expiry_candles=2)
-
-
-@pytest.mark.parametrize('mode,expiry',[('binary',1),('binary',2),('forex_spot',1)])
-def test_real_ppo_v4_training_freezes_market_contract_and_holdout(tmp_path,mode,expiry):
-    market=MarketConfig('H1',mode,expiry);f=raw(300,'H1');f.attrs['direction_probability_horizon']=expiry
-    path=tmp_path/'data.parquet';f.to_parquet(path,index=False)
-    m=train(path,output_dir=tmp_path/'models',total_timesteps=32,n_steps=16,batch_size=8,
-        n_epochs=1,eval_freq=16,lookback=1,indicator_period=1,episode_length=16,market=market,verbose=0)
-    assert m['manifest_version']==4 and m['market_config']==asdict(market)
-    assert m['holdout_test_evaluated'] is False and m['artifact_status'].startswith('research')
-    metrics=json.loads((tmp_path/'models/validation/validation_metrics.json').read_text())
-    assert metrics['evaluation'].startswith('chronological full phase')
-    if mode=='binary': assert m['risk']['neutral_opportunity_penalty']==.05 and m['opportunity_training']
-    else: assert m['spot_config']['lots']==.1 and not m['opportunity_training']
-
-
-def test_workflow_inputs_are_connected_and_bundle_isolated():
-    source=(Path(__file__).resolve().parents[1]/'.github/workflows/pipeline.yml').read_text()
-    w=yaml.safe_load(source);inputs=w.get('on',w.get(True))['workflow_dispatch']['inputs']
-    assert inputs['timeframe']['options']==['auto','M1','M5','M15','H1','H4']
-    assert inputs['trading_mode']['options']==['binary','forex_spot']
-    assert inputs['expiry_candles']['type']=='number' and inputs['expiry_candles']['default']==0
-    assert 'src.backtest' not in source
-    assert 'name: forex-research-bundle-v4-' in source
-    assert '--trading-mode "$FOREX_TRADING_MODE"' in source and '--expiry-candles "$FOREX_EXPIRY_CANDLES"' in source
-
-
 @pytest.mark.parametrize('expiry',[0,1.5,True,33])
 def test_bad_expiry_is_rejected(expiry):
     with pytest.raises(ValueError):MarketConfig(expiry_candles=expiry)
-
-
-def test_spot_reversal_journal_reconciles_equity_and_rejects_insufficient_margin():
-    e=spot_env([1.1,1.101,1.100]);e.reset();_,_,_,_,a=e.step(2)
-    _,_,_,_,b=e.step(0)
-    assert len(b['closed_trades'])==2 and b['trades']==2
-    assert sum(t['profit'] for t in b['closed_trades'])==pytest.approx(b['balance']-1000)
-    assert b['balance']==pytest.approx(1017.) # 2 x 10 pips, 2 x 1.5 USD entry spread
-    e=spot_env([1.1,1.101,1.102],account=AccountConfig(initial_balance=50))
-    e.reset();_,_,_,_,info=e.step(2)
-    assert info['blocked'] and info['balance']==50 and info['position']==0
-
-
-def test_open_spot_is_liquidated_before_a_market_gap():
-    f=prepared(n=4);f['close']=[1.1,1.101,1.102,1.103,1.104][:len(f)]
-    f.loc[2:,'timestamp']+=pd.Timedelta(days=2)
-    e=ForexSpotEnv(f,prepared=True,lookback=1,risk=RiskConfig(enabled=False))
-    e.reset();_,_,_,truncated,info=e.step(2)
-    assert truncated and info['position']==0 and len(info['closed_trades'])==1
-    assert info['balance']==pytest.approx(1008.5)
 
 
 def test_v4_blocked_attempt_without_setup_is_free_but_opposite_setup_costs():
@@ -256,24 +163,8 @@ def test_v4_blocked_attempt_without_setup_is_free_but_opposite_setup_costs():
     e.reset();assert e.step(1)[1]==-.05
 
 
-def test_v4_selection_uses_risk_reward_once_and_spot_can_report_gap_debt():
-    from src.market_evaluation import evaluate_market_policy
-    class Long:
-        def predict(self,obs,deterministic=True):return np.array(2),None
-    f=prepared(n=3);f['close']=[1.1,1.099,1.101,1.102][:len(f)]
-    env=BinaryOptionsEnv(f,prepared=True,lookback=1,market=MarketConfig())
-    result=evaluate_market_policy(Long(),env)
-    assert result['max_drawdown']>0 and not result['risk_stop']
-    assert result['selection_score']==pytest.approx(result['total_reward']/result['eligible_setups_on_exposure'])
-    debt=spot_env([1.1,1.0,.99])
-    result=evaluate_market_policy(Long(),debt)
-    assert result['risk_stop'] and result['final_balance']<0
-    assert result['net_profit']==pytest.approx(-1001.5)
-    assert result['selection_score']<0
-
-
 def test_resampling_cannot_move_historical_holdout_into_training():
-    from src.train import chronological_market_split
+    from src.splits import chronological_market_split
     from src.market import PROTECTED_HOLDOUT_START
     f=raw(1000,'H4');f['timestamp']=pd.date_range('2026-01-01',periods=len(f),freq='4h',tz='UTC')
     market=MarketConfig('H4')

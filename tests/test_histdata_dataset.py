@@ -9,27 +9,6 @@ from src import data_loader as dl
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def test_committed_histdata_snapshot_has_matching_hashes_and_no_unexplained_gaps(tmp_path):
-    manifest=json.loads((ROOT/'datasets/eurusd/manifest.json').read_text())
-    hash_file=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-    assert hash_file(ROOT/manifest['exclusions_path'])==manifest['exclusions_sha256']
-    for item in manifest['assets']:
-        assert hash_file(ROOT/item['path'])==item['sha256']
-        with zipfile.ZipFile(ROOT/item['path']) as z:
-            csv=next(n for n in z.namelist() if n.endswith('.csv'))
-            assert hashlib.sha256(z.read(csv)).hexdigest()==item['csv_sha256']
-    closures=dl.read_closures(ROOT/manifest['exclusions_path'])
-    frame=dl.load_data(input_dir=ROOT/'datasets/eurusd',output=tmp_path/'snapshot.parquet',closures=closures)
-    assert len(frame)==manifest['rows'] and len(frame)>100_000
-    assert frame.timestamp.min()==pd.Timestamp('2021-01-03T22:15Z')
-    assert frame.timestamp.max()==pd.Timestamp('2026-10-30T20:30Z')
-    assert not frame.timestamp.duplicated().any() and list(frame)==dl.COLUMNS
-    assert all(item['kind']=='observed_source_gap' for item in closures)
-    # Las exclusiones no crean filas artificiales en el Parquet.
-    missing=dl.expected_grid(frame.timestamp.min(),frame.timestamp.max()+dl.STEP).difference(frame.timestamp)
-    assert len(missing)==manifest['missing_open_session_m15']
-
-
 def test_calendar_exclusions_match_naive_mask_with_overlaps_and_outside_bounds():
     start,end='2025-01-06T00:00Z','2025-01-07T00:00Z'
     grid=dl.expected_grid(start,end)

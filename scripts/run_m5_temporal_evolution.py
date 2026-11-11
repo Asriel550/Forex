@@ -34,7 +34,7 @@ from src.model_training import directional_tanh_loss
 from src.reproducibility import market_frame_fingerprint, admissions_fingerprint, canonical_open_diff, array_sha256
 from src.resampling import aggregate
 from src.replay_engine import apply_hourly_cap, replay_contracts
-from src.train import write_json
+from src.artifacts import write_json
 
 
 OUTPUT = Path('reports/m5-temporal-evolution')

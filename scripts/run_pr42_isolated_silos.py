@@ -26,7 +26,7 @@ from src.environment import AccountConfig
 from src.m5_multiasset_inputs import verify_new_asset
 from src.m5_multiasset_portfolio import START, Q2, END, check_streams
 from src.replay_engine import replay_contracts
-from src.train import write_json
+from src.artifacts import write_json
 
 
 PR41_RUN_ID = 42576852134

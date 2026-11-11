@@ -24,7 +24,7 @@ from src.evolution_multiscale import FEATURE_NAMES
 from src.reproducibility import market_frame_fingerprint, array_sha256
 from src.resampling import aggregate
 from src.upstream_filters import SIGNAL_NAMES, timeframe_features
-from src.train import write_json
+from src.artifacts import write_json
 
 
 FORMAT = "pr36_full_m5_m15_is_universe_v2"

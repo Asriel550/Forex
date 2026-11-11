@@ -5,7 +5,6 @@ from src.decision import RiskConfig
 import numpy as np
 import pandas as pd
 import pytest
-from stable_baselines3.common.env_checker import check_env
 
 from src.environment import (AccountConfig, BinaryOptionsEnv, market_feature_names,
                              prepare_market_data)
@@ -192,9 +191,13 @@ def test_missing_features_and_nonconsecutive_data_fail():
     with pytest.raises(ValueError): BinaryOptionsEnv(frame, prepared=True, lookback=2)
 
 
-def test_gymnasium_and_stable_baselines_contract():
+def test_gymnasium_contract():
     env = env_for(np.linspace(1.1,1.2,100))
-    check_env(env, warn=True, skip_render_check=True)
+    obs, _ = env.reset()
+    assert env.observation_space.contains(obs)
+    assert env.action_space.contains(1)
+    obs, _, _, _, _ = env.step(1)
+    assert env.observation_space.contains(obs)
 
 
 
